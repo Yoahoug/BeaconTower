@@ -71,6 +71,7 @@ services:
 | `BEACON_COLLECT_INTERVAL` | `10` | 采集间隔秒数（下限 5） |
 | `BEACON_SITE_TITLE` | `BeaconTower` | 站点标题 |
 | `BEACON_TRUSTED_PROXIES` | 空 | 反代 CIDR 列表，启用后从 `X-Real-IP` 取来源 |
+| `BEACON_GEOIP_CITY` / `BEACON_GEOIP_COUNTRY` | 空（降级在线回显） | 离线 IP 库路径（GeoLite2 City/Country mmdb）；缺省时亦可放入数据目录 `geolite2-city.mmdb` / `geolite2-country.mmdb` 自动载入 |
 
 ## 4. HTTPS 反向代理（推荐 Caddy，自动证书）
 

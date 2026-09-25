@@ -12,6 +12,9 @@ import OverviewView from '../views/monitor/OverviewView.vue'
 import NotFoundView from '../views/error/NotFoundView.vue'
 import { getCachedStatus } from '../api/auth'
 
+// 节点详情（公开只读，首屏直载：总览卡片点击即进，无需懒加载等待）
+import ServerDetailView from '../views/monitor/ServerDetailView.vue'
+
 // 管理端按路由懒加载：公开页 bundle 不包含节点/凭据等管理代码。
 const AdminLayout = () => import('../views/admin/AdminLayout.vue')
 const ServersView = () => import('../views/admin/ServersView.vue')
@@ -33,6 +36,13 @@ const router = createRouter({
           name: 'overview',
           component: OverviewView,
           meta: { breadcrumb: [{ label: '总览' }] },
+        },
+        {
+          path: 'server/:id',
+          name: 'server-detail',
+          component: ServerDetailView,
+          props: true,
+          meta: { breadcrumb: [{ label: '总览', to: '/' }, { label: '节点详情' }] },
         },
         {
           path: 'admin/setup',
@@ -108,7 +118,7 @@ async function getStatus() {
 }
 
 router.beforeEach(async (to) => {
-  if (to.meta.public || to.name === 'not-found' || to.name === 'overview') return true
+  if (to.meta.public || to.name === 'not-found' || to.name === 'overview' || to.name === 'server-detail') return true
 
   if (to.meta.requiresAuth || to.path.startsWith('/admin')) {
     const st = await getStatus()

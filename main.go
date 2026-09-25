@@ -12,6 +12,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/collector"
 	"github.com/Yoahoug/BeaconTower/internal/config"
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
+	"github.com/Yoahoug/BeaconTower/internal/geoip"
 	"github.com/Yoahoug/BeaconTower/internal/handler"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/router"
@@ -55,6 +56,9 @@ func main() {
 	if cfg.MasterKeyHex == "" {
 		log.Printf("[beacontower] 未提供 BEACON_MASTER_KEY，已使用 data/master.key（0600）；生产环境建议显式提供并单独备份")
 	}
+
+	// 离线 IP 库（可选）：缺失则降级在线回显 + 静态映射
+	geoip.Init(cfg.DataDir)
 
 	// 后台任务 + 采集器
 	taskStop := make(chan struct{})

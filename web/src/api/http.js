@@ -103,6 +103,19 @@ export async function request(path, options = {}) {
       clearTimeout(timer)
       if (signal) signal.removeEventListener('abort', onExternalAbort)
 
+      // 来源 doc/04 §5/§6：HTTP 401 附带的 {code,msg} 优先按业务码解包，
+      // 保留后端原 msg（如"长期历史需登录后查看"），而非一律改写。
+      if (res.status === 401 || res.status === 403 || res.status === 429) {
+        try {
+          const data = await res.clone().json()
+          if (typeof data?.code === 'number' && data.code !== 0) {
+            throw envelopeError(data.code, data.msg ?? data.message, res.status)
+          }
+        } catch (e) {
+          if (e instanceof ApiError) throw e
+          /* 非 JSON 错误体，沿用下方默认文案 */
+        }
+      }
       if (res.status === 401) {
         throw new ApiError({ code: 'UNAUTHORIZED', message: '登录已过期，请重新登录', status: 401 })
       }

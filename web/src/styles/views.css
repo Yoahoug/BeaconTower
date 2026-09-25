@@ -445,6 +445,53 @@
   flex-wrap: wrap;
 }
 
+/* 卡片标题即详情入口：hover 显示品牌色下划线，焦点环走全局 :focus-visible */
+.node-card__link {
+  color: inherit;
+}
+
+.node-card__link:hover {
+  color: var(--bt-brand-600);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* 卡片底部"历史曲线"入口：右对齐文字链，箭头复用 arrow-left 水平翻转 */
+.node-card__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-3);
+}
+
+.node-card__more:hover {
+  color: var(--bt-brand-600);
+}
+
+.node-card__more svg {
+  width: 13px;
+  height: 13px;
+}
+
+.node-card__more .flip {
+  transform: scaleX(-1);
+}
+
+/* ================= 节点详情页 ================= */
+.detail-card {
+  margin-bottom: var(--bt-space-4);
+}
+
+.detail-card .node-card {
+  cursor: default;
+}
+
+.detail-range {
+  margin-bottom: var(--bt-space-4);
+}
+
 /* ================= 登录 / 初始化 ================= */
 .auth-wrap {
   min-height: calc(100vh - 220px);

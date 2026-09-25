@@ -56,7 +56,7 @@
 
 `GET /api/v1/public/servers/:id/history?range=1h|6h|24h|7d`
 
-- 访客默认可用 `1h/6h/24h`（原始/细粒度数据）；`7d` 及以上仅返回粗粒度聚合（借鉴 Nezha "游客看实时+短期" 的分级思路，具体放开程度可由管理端设置）；
+- 访客默认可用 `1h/6h/24h`（原始采样降采样至 ≤240 点，字段白名单 `ts/cpu_pct/mem_used/disk_used/net_in_out_bps/power_w`）；`7d` 走小时聚合，默认仅登录可见（匿名返回 `401 {code:1002,msg:"长期历史需登录后查看"}`，管理端可配 `open_7d_history` 放开）；前端 `/server/:id` 节点详情页经 `api/monitor.js` 消费本接口（`normalizePoints` 统一短期/聚合字段）；
 - 隐藏节点（`hidden=1`）返回 404。
 
 ### 1.4 实时流（SSE）

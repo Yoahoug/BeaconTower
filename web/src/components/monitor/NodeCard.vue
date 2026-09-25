@@ -24,6 +24,8 @@ import {
 const props = defineProps({
   server: { type: Object, required: true },
   lastUpdated: { type: Number, default: 0 },
+  // 详情页头部复用时隐藏入口链接（避免自己链向自己）
+  linkable: { type: Boolean, default: true },
 })
 
 const memPct = computed(() =>
@@ -71,7 +73,14 @@ const powerHistory = computed(() =>
         <AppIcon name="linux" />
       </div>
       <div class="node-card__titles">
-        <div class="node-card__name" :title="server.name">{{ server.name }}</div>
+        <RouterLink
+          v-if="linkable"
+          class="node-card__name node-card__link"
+          :title="server.name"
+          :aria-label="`${server.name} · 查看详情`"
+          :to="`/server/${server.id}`"
+        >{{ server.name }}</RouterLink>
+        <div v-else class="node-card__name" :title="server.name">{{ server.name }}</div>
         <div class="node-card__meta">
           <AppIcon v-if="server.regionSource === 'auto'" name="pin" aria-hidden="true" />
           <span class="ellipsis">{{ server.region }} · {{ server.profile.os }} · {{ server.profile.arch }}</span>
@@ -174,5 +183,13 @@ const powerHistory = computed(() =>
       <span>在线 {{ fmtUptime(server.metrics.uptimeDays) }}</span>
       <span>{{ server.online ? `更新于 ${agoText(lastUpdated)}` : `断开 ${server.offlineSince}` }}</span>
     </div>
+    <RouterLink
+      v-if="linkable"
+      class="node-card__more"
+      :to="`/server/${server.id}`"
+      :aria-label="`查看 ${server.name} 历史曲线`"
+    >
+      历史曲线<AppIcon name="arrow-left" class="flip" aria-hidden="true" />
+    </RouterLink>
   </article>
 </template>
