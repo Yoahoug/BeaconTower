@@ -3,10 +3,13 @@
 // 收敛旧 AdminPanelView.vue 内散落的 loading/authed/tab 状态：
 // - auth：初始化与否 / 是否登录 / 用户名
 // - servers/settings/audit：统一 loading + error + 重试
-// 视图层只读 state、只调 actions，禁止直调 adminClient。
+// 视图层只读 state、只调 actions，禁止直调 adminClient/authClient。
+// 鉴权（status/logout）走轻量 authClient，节点/设置/审计走 adminClient，
+// 保证公开首屏不含管理代码（管理 chunk 懒加载后才引入本 store）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { adminClient } from '../api/admin'
+import { authClient, resetAuthCache } from '../api/auth'
 
 export const useAdminStore = defineStore('admin', {
   state: () => ({
@@ -49,7 +52,7 @@ export const useAdminStore = defineStore('admin', {
   actions: {
     async checkAuth() {
       try {
-        const st = await adminClient.status()
+        const st = await authClient.status()
         this.initialized = st.initialized
         this.loggedIn = st.loggedIn
         this.username = st.username || ''
@@ -60,13 +63,14 @@ export const useAdminStore = defineStore('admin', {
     },
 
     markAuthed(username = '') {
+      resetAuthCache()
       this.loggedIn = true
       this.initialized = true
       if (username) this.username = username
     },
 
     async logout() {
-      await adminClient.logout()
+      await authClient.logout()
       this.loggedIn = false
       this.username = ''
     },

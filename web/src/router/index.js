@@ -1,21 +1,25 @@
 // ============================================================
 // BeaconTower · 企业级路由表
 // - 管理端改为嵌套路由：/admin/servers|settings|security|audit（可深链/刷新保持）
+// - 管理入口隐藏：公开 UI（侧栏/顶栏/404）不设任何管理链接，仅直接访问 /admin 进入
 // - 全局守卫：初始化→setup；未登录→login；已登录访问login→servers
 // - 通配符→独立 404 页（禁止静默回首页）
+// - 管理子页懒加载：公开首屏不含管理代码（隐藏接口 + 首屏体积）
 // ============================================================
 import { createRouter, createWebHistory } from 'vue-router'
 import AppShell from '../layouts/AppShell.vue'
 import OverviewView from '../views/monitor/OverviewView.vue'
-import AdminLayout from '../views/admin/AdminLayout.vue'
-import ServersView from '../views/admin/ServersView.vue'
-import SettingsView from '../views/admin/SettingsView.vue'
-import SecurityView from '../views/admin/SecurityView.vue'
-import AuditView from '../views/admin/AuditView.vue'
-import LoginView from '../views/admin/LoginView.vue'
-import SetupView from '../views/admin/SetupView.vue'
 import NotFoundView from '../views/error/NotFoundView.vue'
-import { adminClient } from '../api/admin'
+import { getCachedStatus } from '../api/auth'
+
+// 管理端按路由懒加载：公开页 bundle 不包含节点/凭据等管理代码。
+const AdminLayout = () => import('../views/admin/AdminLayout.vue')
+const ServersView = () => import('../views/admin/ServersView.vue')
+const SettingsView = () => import('../views/admin/SettingsView.vue')
+const SecurityView = () => import('../views/admin/SecurityView.vue')
+const AuditView = () => import('../views/admin/AuditView.vue')
+const LoginView = () => import('../views/admin/LoginView.vue')
+const SetupView = () => import('../views/admin/SetupView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -94,24 +98,13 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 }),
 })
 
-let statusCache = null
-let statusAt = 0
-
 async function getStatus() {
-  // 30 秒内复用，避免每次跳转都打一次 status 接口
-  if (statusCache && Date.now() - statusAt < 30_000) return statusCache
+  // 30 秒内复用，避免每次跳转都打一次 status 接口（缓存实现见 api/auth.js）
   try {
-    statusCache = await adminClient.status()
-    statusAt = Date.now()
-    return statusCache
+    return await getCachedStatus()
   } catch {
     return { initialized: true, loggedIn: false }
   }
-}
-
-export function __resetRouteCache() {
-  statusCache = null
-  statusAt = 0
 }
 
 router.beforeEach(async (to) => {

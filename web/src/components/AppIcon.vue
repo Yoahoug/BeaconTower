@@ -144,6 +144,66 @@
       <path d="M9.1 3.2c.7-.8 1.2-1.9 1-3-1 .1-2 .7-2.7 1.5-.6.7-1.1 1.8-1 2.9 1.1 0 2.1-.6 2.7-1.4z" fill="currentColor" stroke="none" />
       <path d="M11.9 8.5c0-1.7 1.4-2.5 1.5-2.6-.8-1.2-2.1-1.4-2.5-1.4-1.1-.1-2.1.6-2.7.6-.6 0-1.4-.6-2.3-.6-1.2 0-2.3.7-2.9 1.8-1.2 2.1-.3 5.3.9 7 .6.9 1.3 1.8 2.2 1.8.9 0 1.2-.6 2.3-.6s1.4.6 2.3.6c1 0 1.6-.9 2.2-1.7.7-1 1-2 1-2.1-.1 0-2-.8-2-2.8z" fill="currentColor" stroke="none" />
     </template>
+    <!-- v2.0 新增：吞吐方向 -->
+    <template v-else-if="name === 'arrow-up'">
+      <path d="M8 12.8V3.2M4.4 6.8 8 3.2l3.6 3.6" />
+    </template>
+    <template v-else-if="name === 'arrow-down'">
+      <path d="M8 3.2v9.6M4.4 9.2 8 12.8l3.6-3.6" />
+    </template>
+    <!-- CPU 芯片 -->
+    <template v-else-if="name === 'cpu'">
+      <rect x="4" y="4" width="8" height="8" rx="1.6" />
+      <rect x="6.4" y="6.4" width="3.2" height="3.2" rx="0.8" />
+      <path d="M6.4 1.8v1.4M9.6 1.8v1.4M6.4 12.8v1.4M9.6 12.8v1.4M1.8 6.4h1.4M1.8 9.6h1.4M12.8 6.4h1.4M12.8 9.6h1.4" />
+    </template>
+    <!-- 内存条 -->
+    <template v-else-if="name === 'memory'">
+      <rect x="1.8" y="5" width="12.4" height="6" rx="1.2" />
+      <path d="M4.4 5V3.8M8 5V3.8M11.6 5V3.8M4.4 12.2V11M8 12.2V11M11.6 12.2V11" />
+      <path d="M4.6 7.2v1.6M8 7.2v1.6M11.4 7.2v1.6" />
+    </template>
+    <!-- 磁盘 -->
+    <template v-else-if="name === 'disk'">
+      <circle cx="8" cy="8" r="6.2" />
+      <circle cx="8" cy="8" r="1.8" />
+      <path d="M8 1.8v2.4" />
+    </template>
+    <!-- 地球：地区 / 节点数 -->
+    <template v-else-if="name === 'globe'">
+      <circle cx="8" cy="8" r="6.2" />
+      <path d="M1.8 8h12.4M8 1.8c-1.7 1.6-2.6 3.7-2.6 6.2s.9 4.6 2.6 6.2c1.7-1.6 2.6-3.7 2.6-6.2S9.7 3.4 8 1.8z" />
+    </template>
+    <!-- 波动：吞吐 / 活动 -->
+    <template v-else-if="name === 'activity'">
+      <path d="M1.8 8h2.6L6.4 4l3.2 8 2-5.4 1.2 1.4h1.4" />
+    </template>
+    <!-- 仪表：负载 -->
+    <template v-else-if="name === 'gauge'">
+      <path d="M2.5 12.6a6.4 6.4 0 1 1 11 0" />
+      <path d="M8 8.6 10.8 5" />
+      <circle cx="8" cy="9.2" r="1.2" />
+    </template>
+    <!-- 闪电簇：能耗 -->
+    <template v-else-if="name === 'sparkles'">
+      <path d="M8 2.2 8.9 5l2.8.9-2.8.9L8 9.6 7.1 6.8 4.3 5.9l2.8-.9L8 2.2z" />
+      <path d="M11.8 9.8l.55 1.65 1.65.55-1.65.55-.55 1.65-.55-1.65-1.65-.55 1.65-.55.55-1.65z" />
+    </template>
+    <!-- 层叠：总量 -->
+    <template v-else-if="name === 'layers'">
+      <path d="m8 1.8 6 3.2-6 3.2-6-3.2 6-3.2z" />
+      <path d="m2 8.6 6 3.2 6-3.2M2 11.8l6 3.2 6-3.2" />
+    </template>
+    <!-- 退出登录 -->
+    <template v-else-if="name === 'logout'">
+      <path d="M9.5 2.6H4.2a1.2 1.2 0 0 0-1.2 1.2v8.4a1.2 1.2 0 0 0 1.2 1.2h5.3" />
+      <path d="M11 5.2 13.8 8 11 10.8M13.8 8H6.4" />
+    </template>
+    <!-- 日历：月度 -->
+    <template v-else-if="name === 'calendar'">
+      <rect x="2" y="3" width="12" height="11" rx="1.8" />
+      <path d="M2 6.6h12M5.4 1.8V4M10.6 1.8V4" />
+    </template>
   </svg>
 </template>
 

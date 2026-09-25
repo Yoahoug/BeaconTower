@@ -1,4 +1,4 @@
-<!-- 采集与展示设置 -->
+<!-- 采集与展示设置（v2.0：玻璃卡分组 + 首屏分层淡入） -->
 <script setup>
 import { onMounted } from 'vue'
 import AppIcon from '../../components/AppIcon.vue'
@@ -30,7 +30,7 @@ async function save() {
     <StateSkeleton v-if="admin.settingsLoading" :rows="5" />
     <StateError v-else-if="admin.settingsError && !admin.settings" :message="admin.settingsError" @retry="admin.loadSettings()" />
     <template v-else-if="admin.settings">
-      <section class="bt-card" aria-labelledby="set-collect">
+      <section class="bt-card bt-enter" style="--i: 0" aria-labelledby="set-collect">
         <div class="bt-card__head"><div id="set-collect" class="bt-card__title">采集</div></div>
         <div class="bt-card__body">
           <div class="bt-form-grid">
@@ -47,7 +47,7 @@ async function save() {
         </div>
       </section>
 
-      <section class="bt-card" aria-labelledby="set-power">
+      <section class="bt-card bt-enter" style="--i: 1" aria-labelledby="set-power">
         <div class="bt-card__head"><div id="set-power" class="bt-card__title">功耗展示</div></div>
         <div class="bt-card__body">
           <div class="bt-form-grid">
@@ -68,7 +68,7 @@ async function save() {
         </div>
       </section>
 
-      <section class="bt-card" aria-labelledby="set-public">
+      <section class="bt-card bt-enter" style="--i: 2" aria-labelledby="set-public">
         <div class="bt-card__head"><div id="set-public" class="bt-card__title">公开页面</div></div>
         <div class="bt-card__body">
           <div class="bt-form-grid">
@@ -88,7 +88,7 @@ async function save() {
         </div>
       </section>
 
-      <section class="bt-card" aria-labelledby="set-ssh">
+      <section class="bt-card bt-enter" style="--i: 3" aria-labelledby="set-ssh">
         <div class="bt-card__head"><div id="set-ssh" class="bt-card__title">SSH 安全</div></div>
         <div class="bt-card__body">
           <label class="bt-check">
@@ -99,13 +99,15 @@ async function save() {
         </div>
       </section>
 
-      <div v-if="admin.settingsError" class="bt-alert bt-alert--error" role="alert">
-        <AppIcon name="warn" aria-hidden="true" />{{ admin.settingsError }}
-      </div>
+      <Transition name="page-sub">
+        <div v-if="admin.settingsError" class="bt-alert bt-alert--error" role="alert">
+          <AppIcon name="warn" aria-hidden="true" />{{ admin.settingsError }}
+        </div>
+      </Transition>
 
       <div class="settings-save no-print">
         <button class="bt-btn bt-btn--primary" type="button" :disabled="admin.settingsSaving" @click="save">
-          <AppIcon :name="admin.settingsSaved ? 'check' : 'sliders'" aria-hidden="true" />
+          <AppIcon :name="admin.settingsSaved ? 'check' : 'sliders'" :class="{ 'is-spin': admin.settingsSaving }" aria-hidden="true" />
           {{ admin.settingsSaved ? '已保存' : admin.settingsSaving ? '保存中…' : '保存设置' }}
         </button>
       </div>

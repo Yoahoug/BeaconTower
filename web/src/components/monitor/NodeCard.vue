@@ -1,13 +1,14 @@
 <!-- ============================================================
-     节点卡片（企业级重构版）
-     - 实色白卡 + hairline，无玻璃/倾斜/入场动画
-     - ECharts 仪表环 + 迷你趋势（CPU 走势）
-     - 离线用虚线边框 + 文字徽标，不只依赖颜色
+     节点卡片（v2.0 玻璃卡）
+     - 指针辉光 + 悬停上浮；OS 徽标微转
+     - 三枚渐变仪表环（阈值自动换色 + 端点发光）
+     - 吞吐双色格 · 功耗琥珀条 · 双走势（入场描画 + 末端脉冲）
+     - 离线 = 虚线描边 + 降饱和 + 文字徽标（状态双通道）
      ============================================================ -->
 <script setup>
 import { computed } from 'vue'
 import AppIcon from '../AppIcon.vue'
-import UsageRing from '../charts/UsageRing.vue'
+import GaugeRing from '../charts/GaugeRing.vue'
 import SparkLine from '../charts/SparkLine.vue'
 import {
   fmtBps,
@@ -59,7 +60,12 @@ const powerHistory = computed(() =>
 </script>
 
 <template>
-  <article class="bt-card node-card" :class="{ 'is-offline': !server.online }" :aria-label="`节点 ${server.name}`">
+  <article
+    class="bt-card bt-card--hover spot node-card"
+    :class="{ 'is-offline': !server.online }"
+    v-spotlight
+    :aria-label="`节点 ${server.name}`"
+  >
     <div class="node-card__head">
       <div class="node-card__os" :class="{ 'is-off': !server.online }" aria-hidden="true">
         <AppIcon name="linux" />
@@ -72,21 +78,26 @@ const powerHistory = computed(() =>
         </div>
       </div>
       <span class="bt-tag" :class="server.online ? 'bt-tag--success' : 'bt-tag--danger'">
-        <span class="dot" aria-hidden="true"></span>{{ server.online ? '在线' : '离线' }}
+        <span
+          class="pulse-dot"
+          :class="{ 'pulse-dot--still': !server.online }"
+          aria-hidden="true"
+        />
+        {{ server.online ? '在线' : '离线' }}
       </span>
     </div>
 
     <div class="node-gauges" role="group" aria-label="资源使用率">
       <div class="gauge-cell">
-        <UsageRing label="CPU" :value="server.metrics.cpu" :size="92" />
+        <GaugeRing label="CPU" :value="server.metrics.cpu" :size="92" />
         <div class="gauge-cell__label"><span>CPU</span><span class="gauge-cell__sub">{{ server.profile.cores }}核</span></div>
       </div>
       <div class="gauge-cell">
-        <UsageRing label="内存" :value="memPct" :size="92" />
+        <GaugeRing label="内存" :value="memPct" :size="92" tone="violet" />
         <div class="gauge-cell__label"><span>内存</span><span class="gauge-cell__sub">{{ memDetail }}</span></div>
       </div>
       <div class="gauge-cell">
-        <UsageRing label="磁盘" :value="diskPct" :size="92" />
+        <GaugeRing label="磁盘" :value="diskPct" :size="92" tone="brand" />
         <div class="gauge-cell__label">
           <span>磁盘</span>
           <span class="gauge-cell__sub">{{ fmtSizeShort(server.metrics.diskUsed) }}/{{ fmtSizeShort(server.metrics.diskTotal) }}</span>
@@ -95,17 +106,21 @@ const powerHistory = computed(() =>
     </div>
 
     <div class="node-net tnum" aria-label="实时吞吐">
-      <div class="node-net__cell">
-        <span class="node-net__dir node-net__dir--up" aria-hidden="true">↑</span>
-        <span class="node-net__val">↑ {{ fmtBps(server.metrics.netUp) }}</span>
+      <div class="node-net__cell node-net__cell--up">
+        <span class="node-net__dir" aria-hidden="true"><AppIcon name="arrow-up" /></span>
+        <span>{{ fmtBps(server.metrics.netUp) }}</span>
       </div>
-      <div class="node-net__cell">
-        <span class="node-net__dir node-net__dir--down" aria-hidden="true">↓</span>
-        <span class="node-net__val">↓ {{ fmtBps(server.metrics.netDown) }}</span>
+      <div class="node-net__cell node-net__cell--down">
+        <span class="node-net__dir" aria-hidden="true"><AppIcon name="arrow-down" /></span>
+        <span>{{ fmtBps(server.metrics.netDown) }}</span>
       </div>
     </div>
 
-    <div v-if="hasPower" class="node-power" :title="`整机 ${fmtWatts(server.power.watts.total)}（CPU ${fmtWatts(server.power.watts.cpu)} + 基础 ${fmtWatts(server.power.baseLoadW)}）`">
+    <div
+      v-if="hasPower"
+      class="node-power"
+      :title="`整机 ${fmtWatts(server.power.watts.total)}（CPU ${fmtWatts(server.power.watts.cpu)} + 基础 ${fmtWatts(server.power.baseLoadW)}）`"
+    >
       <div class="node-power__main">
         <AppIcon name="bolt" aria-hidden="true" />
         <span class="node-power__val tnum">{{ fmtWatts(server.power.watts.total) }}</span>
@@ -129,13 +144,25 @@ const powerHistory = computed(() =>
         <span>CPU 走势 · 近 2 分钟</span>
         <span>负载 {{ server.metrics.load.map((l) => l.toFixed(2)).join(' / ') }}</span>
       </div>
-      <SparkLine :data="cpuHistory" color="var(--bt-brand-500)" :height="56" label="CPU 走势" :format="(v) => `${Math.round(v)}%`" />
+      <SparkLine
+        :data="cpuHistory"
+        color="#0ea5e9"
+        :height="56"
+        label="CPU 走势"
+        :format="(v) => `${Math.round(v)}%`"
+      />
       <template v-if="hasPower && powerHistory.length > 1">
         <div class="node-spark__head" style="margin-top: 8px">
           <span>功耗走势 · 与 CPU 同窗</span>
           <span>{{ fmtWatts(server.power.watts.total) }}</span>
         </div>
-        <SparkLine :data="powerHistory" color="var(--bt-warning-500)" :height="44" label="功耗走势" :format="(v) => `${Number(v).toFixed(1)} W`" />
+        <SparkLine
+          :data="powerHistory"
+          color="#f59e0b"
+          :height="44"
+          label="功耗走势"
+          :format="(v) => `${Number(v).toFixed(1)} W`"
+        />
       </template>
     </div>
 

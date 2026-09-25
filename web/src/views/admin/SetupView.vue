@@ -3,7 +3,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '../../components/AppIcon.vue'
-import { adminClient, passwordStrength } from '../../api/admin'
+import { authClient, passwordStrength } from '../../api/auth'
 import { useAdminStore } from '../../stores/admin'
 import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 
@@ -29,8 +29,10 @@ const strengthItems = computed(() => [
 
 onMounted(async () => {
   try {
-    const st = await adminClient.status()
+    const st = await authClient.status()
     admin.initialized = st.initialized
+    admin.loggedIn = st.loggedIn
+    if (st.username) admin.username = st.username
     if (st.initialized) {
       router.replace(st.loggedIn ? '/admin/servers' : '/admin/login')
       return
@@ -50,7 +52,7 @@ async function submit() {
       step.value = 'confirm'
     } else {
       if (password.value !== password2.value) throw new Error('两次输入的密码不一致')
-      await adminClient.setup({ username: username.value, password: password.value })
+      await authClient.setup({ username: username.value, password: password.value })
       admin.markAuthed(username.value)
       router.push('/admin/servers')
     }
@@ -65,12 +67,12 @@ async function submit() {
 
 <template>
   <div class="auth-wrap">
-    <div v-if="checking" class="bt-card auth-card">
+    <div v-if="checking" class="bt-card spot auth-card" v-spotlight>
       <StateSkeleton :rows="3" />
     </div>
-    <div v-else class="bt-card auth-card">
+    <div v-else class="bt-card spot auth-card bt-enter" v-spotlight style="--i: 0">
       <div class="auth-brand">
-        <span class="auth-logo" aria-hidden="true"><AppIcon name="beacon" /></span>
+        <span class="auth-logo bt-beacon-glow" aria-hidden="true"><AppIcon name="beacon" /></span>
         <div>
           <h2>初始化向导</h2>
           <p class="auth-sub">{{ step === 'form' ? '首次使用：创建管理员账号（仅需一次）' : '请再次输入密码确认' }}</p>
@@ -78,32 +80,39 @@ async function submit() {
       </div>
 
       <form class="auth-form" @submit.prevent="submit">
-        <label class="bt-field">
-          <span class="bt-field__label">用户名<i class="req">*</i></span>
-          <input v-model="username" class="bt-input" type="text" autocomplete="username" placeholder="admin" required />
-        </label>
+        <Transition name="page-sub" mode="out-in">
+          <div :key="step" style="display: flex; flex-direction: column; gap: var(--bt-space-4)">
+            <label class="bt-field">
+              <span class="bt-field__label">用户名<i class="req">*</i></span>
+              <input v-model="username" class="bt-input" type="text" autocomplete="username" placeholder="admin" required />
+            </label>
 
-        <label class="bt-field">
-          <span class="bt-field__label">密码<i class="req">*</i></span>
-          <input v-model="password" class="bt-input" type="password" autocomplete="new-password" placeholder="••••••••••" required />
-        </label>
+            <label class="bt-field">
+              <span class="bt-field__label">密码<i class="req">*</i></span>
+              <input v-model="password" class="bt-input" type="password" autocomplete="new-password" placeholder="••••••••••" required />
+            </label>
 
-        <div class="bt-pw-rules" aria-label="密码强度要求">
-          <span v-for="r in strengthItems" :key="r.key" class="bt-pw-rule" :class="{ 'is-ok': r.ok }">
-            <AppIcon :name="r.ok ? 'check' : 'plus'" aria-hidden="true" />{{ r.label }}
-          </span>
-        </div>
+            <div class="bt-pw-rules" aria-label="密码强度要求">
+              <span v-for="r in strengthItems" :key="r.key" class="bt-pw-rule" :class="{ 'is-ok': r.ok }">
+                <AppIcon :name="r.ok ? 'check' : 'plus'" aria-hidden="true" />{{ r.label }}
+              </span>
+            </div>
 
-        <label v-if="step === 'confirm'" class="bt-field">
-          <span class="bt-field__label">确认密码<i class="req">*</i></span>
-          <input v-model="password2" class="bt-input" type="password" autocomplete="new-password" placeholder="再次输入" required />
-        </label>
+            <label v-if="step === 'confirm'" class="bt-field">
+              <span class="bt-field__label">确认密码<i class="req">*</i></span>
+              <input v-model="password2" class="bt-input" type="password" autocomplete="new-password" placeholder="再次输入" required />
+            </label>
+          </div>
+        </Transition>
 
-        <div v-if="error" class="bt-alert bt-alert--error" role="alert">
-          <AppIcon name="warn" aria-hidden="true" />{{ error }}
-        </div>
+        <Transition name="page-sub">
+          <div v-if="error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ error }}
+          </div>
+        </Transition>
 
         <button class="bt-btn bt-btn--primary bt-btn--block" type="submit" :disabled="busy">
+          <AppIcon v-if="busy" name="refresh" class="is-spin" aria-hidden="true" />
           {{ busy ? '请稍候…' : step === 'form' ? '下一步' : '完成初始化' }}
         </button>
       </form>

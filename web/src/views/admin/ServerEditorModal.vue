@@ -1,7 +1,7 @@
 <!-- ============================================================
-     节点编辑器（新增/编辑共用，大弹窗）
+     节点编辑器（新增/编辑共用，大弹窗）· v2.0 玻璃弹窗
      a11y：role=dialog + labelledby + ESC 关闭 + 初始聚焦首个输入。
-     修复旧版缺陷：地址字段不再因画像缓存被锁死，改为显式提示。
+     凭据不回显：编辑时留空 = 保留原值。
      ============================================================ -->
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
@@ -74,6 +74,7 @@ async function runProbe() {
       auth_type: form.value.authType,
       password: form.value.password || undefined,
       private_key: form.value.privateKey || undefined,
+      passphrase: form.value.passphrase || undefined,
     })
   } catch (e) {
     probe.value = null
@@ -243,34 +244,38 @@ onUnmounted(() => {
               <AppIcon name="refresh" :class="{ 'is-spin': probing }" aria-hidden="true" />
               {{ probing ? '正在试连…' : '测试连接并回读画像' }}
             </button>
-            <span v-if="probeError" class="bt-text-danger" style="font-size: 12px" role="alert">
-              {{ probeError }}
-            </span>
+            <Transition name="page-sub">
+              <span v-if="probeError" class="bt-text-danger" style="font-size: 12px" role="alert">
+                {{ probeError }}
+              </span>
+            </Transition>
           </div>
 
-          <div v-if="probe" class="bt-alert" :class="probe.cached ? 'bt-alert--info' : 'bt-alert--success'" style="margin-top: 12px; display: block">
-            <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 8px">
-              <AppIcon name="check" aria-hidden="true" />
-              <span v-if="probe.cached">已保存的画像（修改连接信息后重新试连可刷新）</span>
-              <span v-else>连接成功 · 延迟 {{ probe.latency_ms }}ms</span>
-            </div>
-            <dl class="bt-def-grid" style="padding-top: 0">
-              <div class="bt-def"><dt>主机名</dt><dd class="mono">{{ probe.profile.hostname }}</dd></div>
-              <div class="bt-def"><dt>系统</dt><dd>{{ probe.profile.os_name }} {{ probe.profile.os_version }} · {{ probe.profile.arch }}</dd></div>
-              <div class="bt-def"><dt>CPU</dt><dd>{{ probe.profile.cpu_model }} · {{ probe.profile.cpu_cores }}核</dd></div>
-              <div class="bt-def"><dt>内存 / 磁盘</dt><dd>{{ (probe.profile.mem_total / 1024 ** 3).toFixed(0) }}G / {{ (probe.profile.disk_total / 1024 ** 3).toFixed(0) }}G</dd></div>
-              <div class="bt-def"><dt>虚拟化</dt><dd>{{ probe.profile.virt }}</dd></div>
-              <div class="bt-def"><dt>公网 IP（私有）</dt><dd class="mono">{{ probe.geo?.public_ip || '—' }}{{ probe.geo ? ` · ${probe.geo.country}` : '' }}</dd></div>
-              <div class="bt-def"><dt>Host Key 指纹</dt><dd class="mono">{{ probe.host_key_fp || '—' }}</dd></div>
-              <div class="bt-def">
-                <dt>功耗能力</dt>
-                <dd :class="probe.profile.power?.rapl ? 'bt-text-ok' : 'bt-text-muted'">
-                  {{ probe.profile.power?.rapl ? `RAPL 可用 · 基础功耗 ${fmtWatts(probe.profile.power.base_load_w)}` : '未暴露 RAPL 功率计（AMD/虚拟机常见）' }}
-                  {{ probe.profile.power?.battery ? ' · 含电池（可自动校准）' : '' }}
-                </dd>
+          <Transition name="page-sub">
+            <div v-if="probe" class="bt-alert" :class="probe.cached ? 'bt-alert--info' : 'bt-alert--success'" style="margin-top: 12px; display: block">
+              <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 8px">
+                <AppIcon name="check" aria-hidden="true" />
+                <span v-if="probe.cached">已保存的画像（修改连接信息后重新试连可刷新）</span>
+                <span v-else>连接成功 · 延迟 {{ probe.latency_ms }}ms · 保存时将自动带入本次试连画像/指纹/地区</span>
               </div>
-            </dl>
-          </div>
+              <dl class="bt-def-grid" style="padding-top: 0">
+                <div class="bt-def"><dt>主机名</dt><dd class="mono">{{ probe.profile.hostname }}</dd></div>
+                <div class="bt-def"><dt>系统</dt><dd>{{ probe.profile.os_name }} {{ probe.profile.os_version }} · {{ probe.profile.arch }}</dd></div>
+                <div class="bt-def"><dt>CPU</dt><dd>{{ probe.profile.cpu_model }} · {{ probe.profile.cpu_cores }}核</dd></div>
+                <div class="bt-def"><dt>内存 / 磁盘</dt><dd>{{ (probe.profile.mem_total / 1024 ** 3).toFixed(0) }}G / {{ (probe.profile.disk_total / 1024 ** 3).toFixed(0) }}G</dd></div>
+                <div class="bt-def"><dt>虚拟化</dt><dd>{{ probe.profile.virt }}</dd></div>
+                <div class="bt-def"><dt>公网 IP（私有）</dt><dd class="mono">{{ probe.geo?.public_ip || '—' }}{{ probe.geo ? ` · ${probe.geo.country}` : '' }}</dd></div>
+                <div class="bt-def"><dt>Host Key 指纹</dt><dd class="mono">{{ probe.host_key_fp || '—' }}</dd></div>
+                <div class="bt-def">
+                  <dt>功耗能力</dt>
+                  <dd :class="probe.profile.power?.rapl ? 'bt-text-ok' : 'bt-text-muted'">
+                    {{ probe.profile.power?.rapl ? `RAPL 可用 · 基础功耗 ${fmtWatts(probe.profile.power.base_load_w)}` : '未暴露 RAPL 功率计（AMD/虚拟机常见）' }}
+                    {{ probe.profile.power?.battery ? ' · 含电池（可自动校准）' : '' }}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </Transition>
         </section>
 
         <section v-if="probe?.profile?.power?.rapl">
@@ -292,14 +297,17 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <div v-if="saveError" class="bt-alert bt-alert--error" style="margin-top: 12px" role="alert">
-          <AppIcon name="warn" aria-hidden="true" />{{ saveError }}
-        </div>
+        <Transition name="page-sub">
+          <div v-if="saveError" class="bt-alert bt-alert--error" style="margin-top: 12px" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ saveError }}
+          </div>
+        </Transition>
       </div>
 
       <div class="bt-modal__foot">
         <button class="bt-btn bt-btn--ghost" type="button" @click="emit('close')">取消</button>
         <button class="bt-btn bt-btn--primary" type="button" :disabled="saving" @click="save">
+          <AppIcon v-if="saving" name="refresh" class="is-spin" aria-hidden="true" />
           {{ saving ? '保存中…' : isEdit ? '保存修改' : '保存并添加' }}
         </button>
       </div>

@@ -1,6 +1,6 @@
 <!-- ============================================================
-     节点管理：工具条 + 行列表（画像/功耗能力/最近采集）+ 展开详情。
-     编辑器与删除确认拆分为独立组件（同目录）。
+     节点管理（v2.0）：工具条 + 玻璃行列表（画像/功耗能力/最近采集）
+     + 展开详情。编辑器与删除确认带 spring 弹窗转场。
      ============================================================ -->
 <script setup>
 import { ref, computed, onMounted } from 'vue'
@@ -10,7 +10,8 @@ import StateError from '../../components/ui/StateError.vue'
 import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import ServerEditorModal from './ServerEditorModal.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
-import { adminClient, agoFromTs, fmtTs } from '../../api/admin'
+import { adminClient } from '../../api/admin'
+import { agoFromTs, fmtTs } from '../../api/auth'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
 import { fmtWatts, fmtSizeShort } from '../../utils/format'
@@ -23,6 +24,7 @@ const editing = ref(null)
 const confirmDelete = ref(null)
 const deleting = ref(false)
 const expandedId = ref(0)
+const relocatingId = ref(0)
 
 const sorted = computed(() =>
   [...admin.servers].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
@@ -67,9 +69,13 @@ async function remove() {
 }
 
 async function toggleEnabled(s) {
-  await adminClient.updateServer(s.id, { enabled: !s.enabled })
-  ui.notify(s.enabled ? '节点已暂停' : '节点已启用')
-  await admin.loadServers()
+  try {
+    await adminClient.updateServer(s.id, { enabled: !s.enabled })
+    ui.notify(s.enabled ? '节点已暂停' : '节点已启用')
+    await admin.loadServers()
+  } catch (e) {
+    ui.notify(e?.message || '操作失败')
+  }
 }
 
 async function move(s, dir) {
@@ -78,8 +84,26 @@ async function move(s, dir) {
   const j = i + dir
   if (j < 0 || j >= ids.length) return
   ;[ids[i], ids[j]] = [ids[j], ids[i]]
-  await adminClient.reorder(ids)
-  await admin.loadServers()
+  try {
+    await adminClient.reorder(ids)
+    await admin.loadServers()
+  } catch (e) {
+    ui.notify(e?.message || '排序失败')
+  }
+}
+
+async function relocate(s) {
+  if (relocatingId.value) return
+  relocatingId.value = s.id
+  try {
+    const r = await adminClient.relocate(s.id)
+    ui.notify(`已重新定位：${r?.region || s.region || '—'}`)
+    await admin.loadServers()
+  } catch (e) {
+    ui.notify(e?.message || '重新定位失败')
+  } finally {
+    relocatingId.value = 0
+  }
 }
 
 onMounted(() => {
@@ -110,7 +134,7 @@ onMounted(() => {
       </StateEmpty>
     </div>
 
-    <div v-else class="server-rows">
+    <TransitionGroup v-else name="list" tag="div" class="server-rows">
       <section v-for="s in sorted" :key="s.id" class="server-row" :class="{ 'is-disabled': !s.enabled }" :aria-label="`节点 ${s.name}`">
         <div class="server-row__main">
           <div class="server-row__move" aria-label="调整排序">
@@ -123,7 +147,7 @@ onMounted(() => {
             <div class="server-row__name">
               {{ s.name }}
               <span v-if="s.hidden" class="bt-tag">隐藏</span>
-              <span v-if="!s.enabled" class="bt-tag">已暂停</span>
+              <span v-if="!s.enabled" class="bt-tag bt-tag--warning">已暂停</span>
             </div>
             <div class="server-row__sub">
               <span class="mono">{{ s.ssh.username }}@{{ s.ssh.host }}:{{ s.ssh.port }}</span>
@@ -153,6 +177,9 @@ onMounted(() => {
             <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openEdit(s)">
               <AppIcon name="edit" aria-hidden="true" />编辑
             </button>
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="relocatingId === s.id" @click="relocate(s)">
+              <AppIcon name="refresh" :class="{ 'is-spin': relocatingId === s.id }" aria-hidden="true" />{{ relocatingId === s.id ? '定位中…' : '重定位' }}
+            </button>
             <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :class="{ 'bt-text-danger': s.enabled }" @click="toggleEnabled(s)">
               {{ s.enabled ? '暂停' : '启用' }}
             </button>
@@ -162,42 +189,48 @@ onMounted(() => {
           </div>
         </div>
 
-        <div v-if="expandedId === s.id" class="server-row__detail">
-          <dl class="bt-def-grid">
-            <div class="bt-def"><dt>主机名（私有）</dt><dd class="mono">{{ s.profile?.hostname || '—' }}</dd></div>
-            <div class="bt-def"><dt>公网 IP（私有）</dt><dd class="mono">{{ s.profile?.public_ip || '—' }}</dd></div>
-            <div class="bt-def"><dt>地区来源</dt><dd>{{ s.region_source === 'auto' ? 'IP 自动定位' : '管理员指定' }} · {{ s.region || '未定位' }}</dd></div>
-            <div class="bt-def"><dt>内核</dt><dd class="mono">{{ s.profile?.kernel || '—' }}</dd></div>
-            <div class="bt-def"><dt>CPU</dt><dd>{{ s.profile?.cpu_model || '—' }}</dd></div>
-            <div class="bt-def">
-              <dt>内存 / 磁盘</dt>
-              <dd>{{ s.profile ? `${fmtSizeShort(s.profile.mem_total / 1024 ** 3)} / ${fmtSizeShort(s.profile.disk_total / 1024 ** 3)}` : '—' }}</dd>
+        <Transition name="page-sub">
+          <div v-if="expandedId === s.id" class="server-row__detail">
+            <dl class="bt-def-grid">
+              <div class="bt-def"><dt>主机名（私有）</dt><dd class="mono">{{ s.profile?.hostname || '—' }}</dd></div>
+              <div class="bt-def"><dt>公网 IP（私有）</dt><dd class="mono">{{ s.profile?.public_ip || '—' }}</dd></div>
+              <div class="bt-def"><dt>地区来源</dt><dd>{{ s.region_source === 'auto' ? 'IP 自动定位' : '管理员指定' }} · {{ s.region || '未定位' }}</dd></div>
+              <div class="bt-def"><dt>内核</dt><dd class="mono">{{ s.profile?.kernel || '—' }}</dd></div>
+              <div class="bt-def"><dt>CPU</dt><dd>{{ s.profile?.cpu_model || '—' }}</dd></div>
+              <div class="bt-def">
+                <dt>内存 / 磁盘</dt>
+                <dd>{{ s.profile ? `${fmtSizeShort(s.profile.mem_total / 1024 ** 3)} / ${fmtSizeShort(s.profile.disk_total / 1024 ** 3)}` : '—' }}</dd>
+              </div>
+              <div class="bt-def"><dt>Host Key 指纹</dt><dd class="mono">{{ s.ssh.host_key_fp || '首次连接时记录（TOFU）' }}</dd></div>
+              <div class="bt-def"><dt>添加时间</dt><dd class="tnum">{{ fmtTs(s.created_at) }}</dd></div>
+            </dl>
+            <div v-if="s.power?.last_error" class="detail-error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />最近采集失败：{{ s.power.last_error }}
             </div>
-            <div class="bt-def"><dt>Host Key 指纹</dt><dd class="mono">{{ s.ssh.host_key_fp || '首次连接时记录（TOFU）' }}</dd></div>
-            <div class="bt-def"><dt>添加时间</dt><dd class="tnum">{{ fmtTs(s.created_at) }}</dd></div>
-          </dl>
-          <div v-if="s.power?.last_error" class="detail-error" role="alert">
-            <AppIcon name="warn" aria-hidden="true" />最近采集失败：{{ s.power.last_error }}
+            <div v-if="s.note_private" class="detail-note">
+              <span class="bt-text-muted" style="font-size: 12px">私有备注（访客不可见）</span>
+              <p>{{ s.note_private }}</p>
+            </div>
           </div>
-          <div v-if="s.note_private" class="detail-note">
-            <span class="bt-text-muted" style="font-size: 12px">私有备注（访客不可见）</span>
-            <p>{{ s.note_private }}</p>
-          </div>
-        </div>
+        </Transition>
       </section>
-    </div>
+    </TransitionGroup>
 
-    <ServerEditorModal v-if="showEditor" :server="editing" @close="showEditor = false" @saved="onSaved" />
+    <Transition name="modal">
+      <ServerEditorModal v-if="showEditor" :server="editing" @close="showEditor = false" @saved="onSaved" />
+    </Transition>
 
-    <ConfirmDialog
-      v-if="confirmDelete"
-      title="删除节点"
-      :message="`确认删除「${confirmDelete.name}」？将级联删除其 SSH 凭据、系统画像与全部历史指标，此操作不可恢复。`"
-      confirm-text="确认删除"
-      :busy="deleting"
-      danger
-      @cancel="confirmDelete = null"
-      @confirm="remove"
-    />
+    <Transition name="modal">
+      <ConfirmDialog
+        v-if="confirmDelete"
+        title="删除节点"
+        :message="`确认删除「${confirmDelete.name}」？将级联删除其 SSH 凭据、系统画像与全部历史指标，此操作不可恢复。`"
+        confirm-text="确认删除"
+        :busy="deleting"
+        danger
+        @cancel="confirmDelete = null"
+        @confirm="remove"
+      />
+    </Transition>
   </div>
 </template>

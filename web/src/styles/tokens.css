@@ -1,44 +1,57 @@
 /* ============================================================
-   BeaconTower · 企业级设计令牌（Design Tokens）
-   唯一真相源：所有颜色 / 字阶 / 间距 / 圆角 / 阴影 / 层级
-   必须从这里引用，禁止在组件样式里写死色值与魔法数字。
+   BeaconTower v2.0 ·「天空信标」设计令牌（Design Tokens）
+   唯一真相源：颜色 / 字阶 / 间距 / 圆角 / 阴影 / 动效 / 层级。
+   亮色 · 通透 · 灵动 —— 浅色极光底 + 白玻璃卡 + 青蓝品牌色。
+   组件样式只允许引用本文件变量，禁止写死色值与魔法数字。
    ============================================================ */
 
 :root {
-  /* ---------- 品牌 ---------- */
-  --bt-brand-600: #0057d2;
-  --bt-brand-500: #0a64e0;
-  --bt-brand-100: #e3eefe;
-  --bt-brand-50: #f0f5fe;
-  --bt-brand-gradient: linear-gradient(180deg, #2e86f2 0%, #0a64e0 100%);
+  /* ---------- 品牌（信标青 → 天际蓝 → 紫罗兰） ---------- */
+  --bt-brand-700: #0369a1;
+  --bt-brand-600: #0284c7;
+  --bt-brand-500: #0ea5e9;
+  --bt-brand-400: #38bdf8;
+  --bt-brand-100: #e0f2fe;
+  --bt-brand-50: #f0f9ff;
+  --bt-accent-600: #7c3aed;
+  --bt-accent-500: #8b5cf6;
+  --bt-accent-100: #ede9fe;
+  --bt-brand-gradient: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 45%, #6366f1 100%);
+  --bt-brand-gradient-soft: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(99, 102, 241, 0.16));
 
-  /* ---------- 语义色 ---------- */
-  --bt-success-600: #157f3d;
-  --bt-success-500: #1d9d4e;
-  --bt-success-100: #e1f3e7;
-  --bt-warning-600: #a85f00;
-  --bt-warning-500: #d97a06;
-  --bt-warning-100: #fdf0dc;
-  --bt-danger-600: #c02622;
-  --bt-danger-500: #e5484d;
-  --bt-danger-100: #fdecec;
-  --bt-info-600: #0057d2;
-  --bt-info-100: #e3eefe;
+  /* ---------- 语义色（亮底上保证 4.5:1 对比度的 600 档 + 点缀 500） ---------- */
+  --bt-success-600: #047857;
+  --bt-success-500: #10b981;
+  --bt-success-100: #d1fae5;
+  --bt-warning-600: #b45309;
+  --bt-warning-500: #f59e0b;
+  --bt-warning-100: #fef3c7;
+  --bt-danger-600: #be123c;
+  --bt-danger-500: #f43f5e;
+  --bt-danger-100: #ffe4e6;
+  --bt-info-600: #0369a1;
+  --bt-info-100: #e0f2fe;
 
-  /* ---------- 中性色（文本 / 边框 / 背景） ---------- */
-  --bt-text-1: #161b26;
-  --bt-text-2: #41495c;
-  --bt-text-3: #6e7689;
-  --bt-text-4: #9aa1b2;
-  --bt-border: #e2e6ee;
-  --bt-border-strong: #cbd2df;
-  --bt-bg-page: #f3f5f9;
-  --bt-bg-card: #ffffff;
-  --bt-bg-subtle: #f7f9fc;
-  --bt-bg-hover: #eef2f8;
-  --bt-bg-active: #e3e9f4;
+  /* ---------- 中性色 ---------- */
+  --bt-text-1: #101a2e;
+  --bt-text-2: #3d4a68;
+  --bt-text-3: #66708c;
+  --bt-text-4: #9aa3bc;
+  --bt-border: rgba(23, 32, 64, 0.09);
+  --bt-border-strong: rgba(23, 32, 64, 0.16);
+  --bt-bg-page: #edf1f9;
+  --bt-bg-card: rgba(255, 255, 255, 0.66);
+  --bt-bg-card-solid: #ffffff;
+  --bt-bg-subtle: rgba(244, 247, 253, 0.72);
+  --bt-bg-hover: rgba(255, 255, 255, 0.85);
+  --bt-bg-active: var(--bt-brand-50);
+  --bt-bg-input: rgba(255, 255, 255, 0.8);
 
-  /* ---------- 字阶（大网站信息密度：12-13px 为主） ---------- */
+  /* ---------- 玻璃高光与描边 ---------- */
+  --bt-glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --bt-glass-border: rgba(255, 255, 255, 0.65);
+
+  /* ---------- 字阶（展示数字加大，正文保持高信息密度） ---------- */
   --bt-font-xs: 11px;
   --bt-font-sm: 12px;
   --bt-font-md: 13px;
@@ -46,6 +59,7 @@
   --bt-font-xl: 18px;
   --bt-font-2xl: 22px;
   --bt-font-3xl: 28px;
+  --bt-font-hero: 34px;
   --bt-line-sm: 1.45;
   --bt-line-md: 1.55;
   --bt-weight-normal: 400;
@@ -62,38 +76,53 @@
   --bt-space-6: 24px;
   --bt-space-8: 32px;
 
-  /* ---------- 圆角（企业级偏小，沉稳） ---------- */
-  --bt-radius-xs: 4px;
-  --bt-radius-sm: 6px;
-  --bt-radius-md: 8px;
-  --bt-radius-lg: 12px;
+  /* ---------- 圆角（轻盈通透：比企业版更大一号） ---------- */
+  --bt-radius-xs: 6px;
+  --bt-radius-sm: 8px;
+  --bt-radius-md: 10px;
+  --bt-radius-lg: 16px;
+  --bt-radius-xl: 20px;
   --bt-radius-pill: 999px;
 
-  /* ---------- 阴影（克制：只给悬浮层与弹窗） ---------- */
-  --bt-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --bt-shadow-hover: 0 4px 14px rgba(16, 24, 40, 0.1);
-  --bt-shadow-dropdown: 0 8px 28px rgba(16, 24, 40, 0.14);
-  --bt-shadow-modal: 0 18px 60px rgba(16, 24, 40, 0.22);
+  /* ---------- 阴影（带蓝紫色调的柔和彩色投影） ---------- */
+  --bt-shadow-card:
+    0 1px 2px rgba(23, 32, 64, 0.05),
+    0 10px 28px -14px rgba(59, 73, 150, 0.18);
+  --bt-shadow-hover:
+    0 2px 6px rgba(23, 32, 64, 0.06),
+    0 20px 44px -14px rgba(59, 73, 150, 0.28);
+  --bt-shadow-dropdown:
+    0 4px 10px rgba(23, 32, 64, 0.06),
+    0 16px 48px -8px rgba(59, 73, 150, 0.25);
+  --bt-shadow-modal:
+    0 8px 24px rgba(23, 32, 64, 0.1),
+    0 32px 80px -16px rgba(59, 73, 150, 0.35);
+  --bt-shadow-glow-brand: 0 4px 18px -2px rgba(14, 165, 233, 0.45);
 
   /* ---------- 描边 ---------- */
   --bt-hairline: 1px solid var(--bt-border);
 
   /* ---------- 布局 ---------- */
-  --bt-side-w: 224px;
-  --bt-side-w-collapsed: 64px;
-  --bt-topbar-h: 56px;
-  --bt-page-max: 1440px;
-  --bt-table-row-h: 40px;
+  --bt-side-w: 240px;
+  --bt-topbar-h: 60px;
+  --bt-page-max: 1360px;
+  --bt-table-row-h: 44px;
 
-  /* ---------- 动效 ---------- */
+  /* ---------- 动效（灵动而有弹性：spring 为主，时长分四档） ---------- */
   --bt-ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --bt-duration-fast: 120ms;
-  --bt-duration-base: 200ms;
-  --bt-duration-slow: 320ms;
+  --bt-ease-spring: cubic-bezier(0.34, 1.45, 0.44, 1);
+  --bt-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --bt-duration-xs: 100ms;
+  --bt-duration-fast: 160ms;
+  --bt-duration-base: 260ms;
+  --bt-duration-slow: 420ms;
+  --bt-duration-slower: 680ms;
+  --bt-enter-step: 55ms;
 
   /* ---------- 层级 ---------- */
-  --bt-z-sticky: 10;
-  --bt-z-dropdown: 30;
+  --bt-z-background: 0;
+  --bt-z-sticky: 20;
+  --bt-z-dropdown: 40;
   --bt-z-modal-mask: 60;
   --bt-z-modal: 61;
   --bt-z-toast: 80;
@@ -109,23 +138,14 @@
     'Liberation Mono', monospace;
 }
 
-/* ---------- 深色预留（当前仅浅色主题生效，变量先占位） ---------- */
-[data-theme='dark'] {
-  --bt-text-1: #eef1f6;
-  --bt-text-2: #c3cad8;
-  --bt-text-3: #8f97a9;
-  --bt-bg-page: #14171f;
-  --bt-bg-card: #1c2130;
-  --bt-bg-subtle: #222839;
-  --bt-bg-hover: #262d42;
-  --bt-border: #2c3348;
-}
-
-/* ---------- 降低动态偏好：全局兜底 ---------- */
+/* ---------- 降低动态偏好：全局兜底（a11y 红线，禁止删除） ---------- */
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --bt-duration-xs: 0.01ms;
     --bt-duration-fast: 0.01ms;
     --bt-duration-base: 0.01ms;
     --bt-duration-slow: 0.01ms;
+    --bt-duration-slower: 0.01ms;
+    --bt-enter-step: 0.01ms;
   }
 }

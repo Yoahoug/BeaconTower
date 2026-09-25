@@ -1,9 +1,9 @@
-<!-- 登录页：独立居中布局（AppShell 之外渲染也可用，当前嵌套于骨架内） -->
+<!-- 登录页：极光背景上的玻璃卡 + 信标徽标呼吸光环 -->
 <script setup>
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import AppIcon from '../../components/AppIcon.vue'
-import { adminClient } from '../../api/admin'
+import { authClient } from '../../api/auth'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
 
@@ -21,10 +21,11 @@ async function submit() {
   error.value = ''
   busy.value = true
   try {
-    await adminClient.login({ username: username.value, password: password.value })
+    await authClient.login({ username: username.value, password: password.value })
     admin.markAuthed(username.value)
     ui.notify('登录成功')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/admin/servers'
+    const rawRedirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/admin/servers'
+    const redirect = rawRedirect.startsWith('/admin') ? rawRedirect : '/admin/servers'
     router.push(redirect)
   } catch (e) {
     error.value = e?.message || '登录失败'
@@ -36,9 +37,9 @@ async function submit() {
 
 <template>
   <div class="auth-wrap">
-    <div class="bt-card auth-card">
+    <div class="bt-card spot auth-card bt-enter" v-spotlight style="--i: 0">
       <div class="auth-brand">
-        <span class="auth-logo" aria-hidden="true"><AppIcon name="beacon" /></span>
+        <span class="auth-logo bt-beacon-glow" aria-hidden="true"><AppIcon name="beacon" /></span>
         <div>
           <h2>登录管理面板</h2>
           <p class="auth-sub">仅管理员可访问，此页面不设公开入口</p>
@@ -63,11 +64,14 @@ async function submit() {
           />
         </label>
 
-        <div v-if="error" class="bt-alert bt-alert--error" role="alert">
-          <AppIcon name="warn" aria-hidden="true" />{{ error }}
-        </div>
+        <Transition name="page-sub">
+          <div v-if="error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ error }}
+          </div>
+        </Transition>
 
         <button class="bt-btn bt-btn--primary bt-btn--block" type="submit" :disabled="busy">
+          <AppIcon v-if="busy" name="refresh" class="is-spin" aria-hidden="true" />
           {{ busy ? '请稍候…' : '登录' }}
         </button>
       </form>

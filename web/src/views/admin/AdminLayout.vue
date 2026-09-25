@@ -1,9 +1,10 @@
 <!-- ============================================================
-     管理端布局：页头 + 下划线标签导航（嵌套路由） + 子页出口。
-     鉴权由路由守卫保证，进入此时必已登录。
+     管理端布局：页头 + 药丸标签导航（嵌套路由） + 子页出口。
+     子页切换走 page-sub 轻转场；鉴权由路由守卫保证。
      ============================================================ -->
 <script setup>
 import { useRouter, RouterLink, RouterView, useRoute } from 'vue-router'
+import { resetAuthCache } from '../../api/auth'
 import AppIcon from '../../components/AppIcon.vue'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
@@ -25,9 +26,13 @@ function isActive(to) {
 }
 
 async function logout() {
-  await admin.logout()
-  ui.notify('已退出登录')
-  router.push('/')
+  try {
+    await admin.logout()
+  } finally {
+    resetAuthCache()
+    ui.notify('已退出登录')
+    router.push('/admin/login')
+  }
 }
 </script>
 
@@ -39,9 +44,11 @@ async function logout() {
         <p class="page-head__desc">SSH 凭据加密存储 · 公开页永不返回敏感字段 · 本原型数据保存在浏览器本地</p>
       </div>
       <div class="page-head__actions">
-        <span class="bt-tag bt-tag--outline">管理员 · {{ admin.username || '—' }}</span>
+        <span class="bt-tag bt-tag--info">
+          <AppIcon name="user" aria-hidden="true" />管理员 · {{ admin.username || '—' }}
+        </span>
         <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="logout">
-          <AppIcon name="key" aria-hidden="true" />退出登录
+          <AppIcon name="logout" aria-hidden="true" />退出登录
         </button>
       </div>
     </div>
@@ -60,6 +67,10 @@ async function logout() {
       </RouterLink>
     </nav>
 
-    <RouterView />
+    <RouterView v-slot="{ Component, route: r }">
+      <Transition name="page-sub" mode="out-in">
+        <component :is="Component" :key="r.path" />
+      </Transition>
+    </RouterView>
   </div>
 </template>

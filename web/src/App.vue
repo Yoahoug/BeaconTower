@@ -1,8 +1,10 @@
-<!-- 应用根：只做路由出口，骨架下沉到 layouts/AppShell.vue -->
+<!-- 应用根：极光背景层 + 路由出口 -->
 <script setup>
 import { RouterView } from 'vue-router'
+import AuroraBackground from './components/aurora/AuroraBackground.vue'
 </script>
 
 <template>
+  <AuroraBackground />
   <RouterView />
 </template>

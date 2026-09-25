@@ -29,6 +29,42 @@ function toApiError(e, url) {
   return new ApiError({ code: 'NETWORK', message: e?.message || `网络异常（${url}）`, retryable: true })
 }
 
+// 来源 doc/04 §2.4：登录成功后下发可读 Cookie `bt_csrf`，所有非 GET
+// 管理 API 必须带 `X-CSRF-Token` 头（双提交校验）。
+function getCsrfToken() {
+  try {
+    if (typeof document === 'undefined' || !document.cookie) return ''
+    const m = document.cookie.match(/(?:^|;\s*)bt_csrf=([^;]*)/)
+    return m ? decodeURIComponent(m[1]) : ''
+  } catch {
+    return ''
+  }
+}
+
+// 来源 doc/04 §2/§5/§6：后端响应统一包装为 {code,msg,data}，code===0 成功；
+// code!==0 按错误码表映射为 ApiError（HTTP 状态仍多为 200，故必须解包判断）。
+function envelopeError(code, msg, status) {
+  const text = typeof msg === 'string' && msg ? msg : ''
+  switch (code) {
+    case 1002:
+      return new ApiError({ code: 'UNAUTHORIZED', message: text || '登录已过期', status, retryable: false })
+    case 1003:
+      return new ApiError({ code: 'FORBIDDEN', message: text || 'CSRF 校验失败', status, retryable: false })
+    case 1004:
+      return new ApiError({ code: 'CONFLICT', message: text || '已初始化', status, retryable: false })
+    case 1005:
+      return new ApiError({ code: 'UNAUTHORIZED', message: text || '用户名或密码错误', status, retryable: false })
+    case 1006:
+    case 429:
+      return new ApiError({ code: 'RATE_LIMITED', message: text || '操作过于频繁，请稍后再试', status, retryable: true })
+    case 2001:
+    case 2002:
+      return new ApiError({ code: 'HTTP_ERROR', message: text || `请求失败（业务码 ${code}）`, status, retryable: false })
+    default:
+      return new ApiError({ code: 'HTTP_ERROR', message: text || `请求失败（业务码 ${code}）`, status, retryable: status >= 500 })
+  }
+}
+
 /**
  * 发起 JSON 请求。
  * @param {string} path 以 / 开头的路径，如 /public/summary
@@ -53,10 +89,16 @@ export async function request(path, options = {}) {
     }
 
     try {
+      const headers = { 'Content-Type': 'application/json' }
+      // 来源 doc/04 §2.4：非 GET 自动附 X-CSRF-Token（从 document.cookie 读取 bt_csrf）。
+      if (method.toUpperCase() !== 'GET') {
+        const csrf = getCsrfToken()
+        if (csrf) headers['X-CSRF-Token'] = csrf
+      }
       const res = await fetch(url, {
         method,
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: ctrl.signal,
       })
@@ -76,14 +118,25 @@ export async function request(path, options = {}) {
         let msg = `请求失败（HTTP ${res.status}）`
         try {
           const data = await res.json()
-          if (data?.message) msg = data.message
-        } catch {
+          if (data?.msg) msg = data.msg
+          else if (data?.message) msg = data.message
+          // 来源 doc/04 §5/§6：/api 未命中返回 JSON 404（{code,...}），此处统一按 code 解包。
+          if (typeof data?.code === 'number' && data.code !== 0) throw envelopeError(data.code, data.msg ?? data.message, res.status)
+        } catch (e) {
+          if (e instanceof ApiError) throw e
           /* 非 JSON 错误体，沿用默认文案 */
         }
         throw new ApiError({ code: 'HTTP_ERROR', message: msg, status: res.status, retryable: res.status >= 500 })
       }
       if (res.status === 204) return null
-      return await res.json()
+      const payload = await res.json()
+      // 来源 doc/04 §2：成功响应包 {code:0,msg,data} → 返回 data；
+      // 非包装 JSON（如直返对象）则原样返回，保证兼容。
+      if (payload && typeof payload === 'object' && 'code' in payload) {
+        if (payload.code !== 0) throw envelopeError(payload.code, payload.msg ?? payload.message, res.status)
+        return 'data' in payload ? payload.data : payload
+      }
+      return payload
     } catch (e) {
       clearTimeout(timer)
       if (signal) signal.removeEventListener('abort', onExternalAbort)

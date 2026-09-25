@@ -1,10 +1,11 @@
-<!-- 安全与账号：改密 + 安全机制说明 + 演示数据重置（确认弹窗替代原生 confirm） -->
+<!-- 安全与账号：改密 + 安全机制说明 + 演示数据重置（v2.0） -->
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '../../components/AppIcon.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
-import { adminClient, passwordStrength } from '../../api/admin'
+import { authClient, passwordStrength } from '../../api/auth'
+import { adminClient } from '../../api/admin'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
 
@@ -35,7 +36,7 @@ async function submit() {
   }
   busy.value = true
   try {
-    await adminClient.changePassword({ old_password: oldPw.value, new_password: newPw.value })
+    await authClient.changePassword({ old_password: oldPw.value, new_password: newPw.value })
     ok.value = true
     oldPw.value = newPw.value = confirmPw.value = ''
     ui.notify('密码已更新')
@@ -62,7 +63,7 @@ async function resetDemo() {
 
 <template>
   <div class="settings-stack">
-    <section class="bt-card" aria-labelledby="sec-pw">
+    <section class="bt-card bt-enter" style="--i: 0" aria-labelledby="sec-pw">
       <div class="bt-card__head"><div id="sec-pw" class="bt-card__title">修改管理员密码</div></div>
       <div class="bt-card__body">
         <form class="bt-form-grid" @submit.prevent="submit">
@@ -85,14 +86,19 @@ async function resetDemo() {
             <span class="bt-pw-rule" :class="{ 'is-ok': strength.digit }">数字</span>
             <span class="bt-pw-rule" :class="{ 'is-ok': strength.symbol }">符号</span>
           </div>
-          <div v-if="error" class="span-2 bt-alert bt-alert--error" role="alert">
-            <AppIcon name="warn" aria-hidden="true" />{{ error }}
-          </div>
-          <div v-if="ok" class="span-2 bt-alert bt-alert--success" role="status">
-            <AppIcon name="check" aria-hidden="true" />密码已更新
-          </div>
+          <Transition name="page-sub">
+            <div v-if="error" class="span-2 bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ error }}
+            </div>
+          </Transition>
+          <Transition name="page-sub">
+            <div v-if="ok" class="span-2 bt-alert bt-alert--success" role="status">
+              <AppIcon name="check" aria-hidden="true" />密码已更新
+            </div>
+          </Transition>
           <div class="span-2">
             <button class="bt-btn bt-btn--primary" type="submit" :disabled="busy">
+              <AppIcon v-if="busy" name="refresh" class="is-spin" aria-hidden="true" />
               {{ busy ? '提交中…' : '更新密码' }}
             </button>
           </div>
@@ -100,7 +106,7 @@ async function resetDemo() {
       </div>
     </section>
 
-    <section class="bt-card" aria-labelledby="sec-mech">
+    <section class="bt-card bt-enter" style="--i: 1" aria-labelledby="sec-mech">
       <div class="bt-card__head"><div id="sec-mech" class="bt-card__title">安全机制</div></div>
       <div class="bt-card__body">
         <ul class="bt-mech-list">
@@ -112,7 +118,7 @@ async function resetDemo() {
       </div>
     </section>
 
-    <section class="bt-card" aria-labelledby="sec-demo">
+    <section class="bt-card bt-enter" style="--i: 2" aria-labelledby="sec-demo">
       <div class="bt-card__head"><div id="sec-demo" class="bt-card__title">原型数据</div></div>
       <div class="bt-card__body">
         <p class="bt-text-muted" style="font-size: 13px; margin-bottom: 12px">
@@ -122,15 +128,17 @@ async function resetDemo() {
       </div>
     </section>
 
-    <ConfirmDialog
-      v-if="showReset"
-      title="重置演示数据"
-      message="将清空本浏览器中的演示数据（管理员账号、节点、设置与审计），并返回初始化向导。确定？"
-      confirm-text="确认重置"
-      :busy="resetting"
-      danger
-      @cancel="showReset = false"
-      @confirm="resetDemo"
-    />
+    <Transition name="modal">
+      <ConfirmDialog
+        v-if="showReset"
+        title="重置演示数据"
+        message="将清空本浏览器中的演示数据（管理员账号、节点、设置与审计），并返回初始化向导。确定？"
+        confirm-text="确认重置"
+        :busy="resetting"
+        danger
+        @cancel="showReset = false"
+        @confirm="resetDemo"
+      />
+    </Transition>
   </div>
 </template>

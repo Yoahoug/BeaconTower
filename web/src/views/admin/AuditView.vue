@@ -1,11 +1,11 @@
-<!-- 审计日志：筛选 + 表格（sticky 表头/横向滚动）+ 分页，a11y 补 caption/scope -->
+<!-- 审计日志：筛选 + 玻璃表格（sticky 表头/横向滚动）+ 分页 -->
 <script setup>
 import { computed, onMounted } from 'vue'
 import StateError from '../../components/ui/StateError.vue'
 import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import StateEmpty from '../../components/ui/StateEmpty.vue'
 import { useAdminStore } from '../../stores/admin'
-import { fmtTs } from '../../api/admin'
+import { fmtTs } from '../../api/auth'
 
 const admin = useAdminStore()
 
@@ -19,6 +19,7 @@ const ACTION_META = {
   server_update: { label: '编辑节点', cls: '' },
   server_delete: { label: '删除节点', cls: 'bt-tag--warning' },
   server_order: { label: '节点排序', cls: '' },
+  server_locate: { label: '重新定位', cls: 'bt-tag--info' },
   power_calibrate: { label: '功耗校准', cls: 'bt-tag--info' },
   settings: { label: '设置', cls: '' },
   install: { label: '安装', cls: '' },
@@ -57,31 +58,33 @@ onMounted(() => {
     <div v-else-if="!rows.length" class="bt-card">
       <StateEmpty title="没有匹配的记录" desc="尝试更换筛选关键词。" />
     </div>
-    <div v-else class="bt-table-wrap">
-      <table class="bt-table">
-        <caption>审计日志 · 第 {{ admin.auditPage }} / {{ admin.auditPages }} 页</caption>
-        <thead>
-          <tr>
-            <th scope="col">时间</th>
-            <th scope="col">操作</th>
-            <th scope="col">对象</th>
-            <th scope="col">详情</th>
-            <th scope="col">操作者</th>
-            <th scope="col">来源 IP</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="x in rows" :key="x.id">
-            <td class="mono tnum" style="white-space: nowrap">{{ fmtTs(x.ts) }}</td>
-            <td><span class="bt-tag" :class="ACTION_META[x.action]?.cls || ''">{{ ACTION_META[x.action]?.label || x.action }}</span></td>
-            <td class="mono" style="white-space: nowrap">{{ x.target }}</td>
-            <td style="min-width: 220px">{{ x.detail }}</td>
-            <td style="white-space: nowrap">{{ x.actor }}</td>
-            <td class="mono">{{ x.source_ip_hash || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <Transition v-else name="page-sub" appear>
+      <div class="bt-table-wrap">
+        <table class="bt-table">
+          <caption>审计日志 · 第 {{ admin.auditPage }} / {{ admin.auditPages }} 页</caption>
+          <thead>
+            <tr>
+              <th scope="col">时间</th>
+              <th scope="col">操作</th>
+              <th scope="col">对象</th>
+              <th scope="col">详情</th>
+              <th scope="col">操作者</th>
+              <th scope="col">来源 IP</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="x in rows" :key="x.id">
+              <td class="mono tnum" style="white-space: nowrap">{{ fmtTs(x.ts) }}</td>
+              <td><span class="bt-tag" :class="ACTION_META[x.action]?.cls || ''">{{ ACTION_META[x.action]?.label || x.action }}</span></td>
+              <td class="mono" style="white-space: nowrap">{{ x.target }}</td>
+              <td style="min-width: 220px">{{ x.detail }}</td>
+              <td style="white-space: nowrap">{{ x.actor }}</td>
+              <td class="mono">{{ x.source_ip_hash || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </Transition>
 
     <div v-if="admin.auditPages > 1" class="bt-pager">
       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="admin.auditPage <= 1" @click="go(admin.auditPage - 1)">上一页</button>

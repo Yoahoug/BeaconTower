@@ -1,0 +1,312 @@
+/* ============================================================
+   BeaconTower v2.0 · 动效层（motion）
+   全站动画的唯一定义处：keyframes、Vue Transition 类、入场分层、
+   状态脉冲、骨架微光。时长与缓动一律取 tokens 的 --bt-duration-*
+   与 --bt-ease-*，禁止在本文件外新造 keyframes。
+   ============================================================ */
+
+/* ================= 入场：分层上升（首屏 stagger） ================= */
+/* 调用方设置 --i（0~11），延迟 = --i × var(--bt-enter-step)。
+   只用于首屏/路由切换后的第一次呈现，数据轮询不重播。 */
+@keyframes bt-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.bt-enter {
+  animation: bt-rise-in var(--bt-duration-slow) var(--bt-ease-out) both;
+  animation-delay: calc(var(--i, 0) * var(--bt-enter-step));
+}
+
+/* ================= 页面转场（Vue Transition：name="page"） ================= */
+.page-enter-active {
+  transition:
+    opacity var(--bt-duration-base) var(--bt-ease-out),
+    transform var(--bt-duration-base) var(--bt-ease-out);
+}
+
+.page-leave-active {
+  transition:
+    opacity var(--bt-duration-fast) ease,
+    transform var(--bt-duration-fast) ease;
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* 管理端子页转场更轻（name="page-sub"） */
+.page-sub-enter-active {
+  transition:
+    opacity var(--bt-duration-base) var(--bt-ease-out),
+    transform var(--bt-duration-base) var(--bt-ease-out);
+}
+
+.page-sub-leave-active {
+  transition: opacity var(--bt-duration-xs) ease;
+}
+
+.page-sub-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.page-sub-leave-to {
+  opacity: 0;
+}
+
+/* ================= 弹窗（name="modal"）：spring 浮现 ================= */
+.modal-enter-active {
+  transition: opacity var(--bt-duration-base) ease;
+}
+
+.modal-leave-active {
+  transition: opacity var(--bt-duration-fast) ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-active .bt-modal {
+  transition:
+    transform var(--bt-duration-slow) var(--bt-ease-spring),
+    opacity var(--bt-duration-base) ease;
+}
+
+.modal-leave-active .bt-modal {
+  transition:
+    transform var(--bt-duration-fast) ease,
+    opacity var(--bt-duration-fast) ease;
+}
+
+.modal-enter-from .bt-modal {
+  opacity: 0;
+  transform: translateY(26px) scale(0.96);
+}
+
+.modal-leave-to .bt-modal {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+/* ================= 轻提示（name="toast"）：底部上滑 ================= */
+.toast-enter-active {
+  transition:
+    opacity var(--bt-duration-base) var(--bt-ease-out),
+    transform var(--bt-duration-base) var(--bt-ease-spring);
+}
+
+.toast-leave-active {
+  transition:
+    opacity var(--bt-duration-fast) ease,
+    transform var(--bt-duration-fast) ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 14px);
+}
+
+/* ================= 状态点：呼吸脉冲 ================= */
+/* 在线 = 绿点 + 扩散环；离线/暂停不呼吸（状态双通道：颜色 + 动效） */
+@keyframes bt-pulse-ring {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+
+  70%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.pulse-dot {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentcolor;
+  flex-shrink: 0;
+}
+
+.pulse-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentcolor;
+  animation: bt-pulse-ring 2s var(--bt-ease-out) infinite;
+}
+
+.pulse-dot--still::after {
+  animation: none;
+  opacity: 0;
+}
+
+/* ================= 骨架屏：微光扫过 ================= */
+@keyframes bt-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.bt-skeleton {
+  border-radius: var(--bt-radius-sm);
+  background: linear-gradient(
+    90deg,
+    rgba(120, 140, 190, 0.1) 25%,
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(120, 140, 190, 0.1) 75%
+  );
+  background-size: 200% 100%;
+  animation: bt-shimmer 1.6s linear infinite;
+}
+
+/* ================= 旋转（加载图标） ================= */
+@keyframes bt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.is-spin {
+  animation: bt-spin 0.9s linear infinite;
+}
+
+/* ================= 顶栏刷新光线 ================= */
+/* 数据静默刷新时点亮一次：一道青蓝光线从左扫到右 */
+@keyframes bt-live-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.bt-progress {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: transparent;
+}
+
+.bt-progress::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  border-radius: var(--bt-radius-pill);
+  background: linear-gradient(90deg, transparent, var(--bt-brand-400), var(--bt-accent-500), transparent);
+  opacity: 0;
+  transform: translateX(-100%);
+}
+
+.bt-progress.is-busy::before {
+  opacity: 1;
+  animation: bt-live-sweep 1.2s var(--bt-ease) infinite;
+}
+
+/* ================= 装饰性漂浮（登录页徽标 / 空态插画） ================= */
+@keyframes bt-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-9px);
+  }
+}
+
+.bt-float {
+  animation: bt-float 5s ease-in-out infinite;
+}
+
+/* ================= 品牌徽标光环（信标呼吸） ================= */
+@keyframes bt-beacon-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(56, 189, 248, 0.35),
+      var(--bt-shadow-glow-brand);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 7px rgba(56, 189, 248, 0),
+      var(--bt-shadow-glow-brand);
+  }
+}
+
+.bt-beacon-glow {
+  animation: bt-beacon-glow 3.2s var(--bt-ease) infinite;
+}
+
+/* ================= 徽标数字跳动（数据更新提示） ================= */
+@keyframes bt-tick-pop {
+  0% {
+    transform: scale(1);
+  }
+
+  35% {
+    transform: scale(1.12);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ================= 列表行增删（name="list"） ================= */
+.list-enter-active {
+  transition:
+    opacity var(--bt-duration-slow) var(--bt-ease-out),
+    transform var(--bt-duration-slow) var(--bt-ease-out);
+}
+
+.list-leave-active {
+  transition:
+    opacity var(--bt-duration-base) ease,
+    transform var(--bt-duration-base) ease;
+  position: absolute;
+  width: 100%;
+}
+
+.list-enter-from {
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+}
+
+.list-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.985);
+}
+
+.list-move {
+  transition: transform var(--bt-duration-slow) var(--bt-ease);
+}

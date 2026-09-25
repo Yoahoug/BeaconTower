@@ -1,9 +1,8 @@
 <!-- ============================================================
-     ECharts 趋势图（按需引入的最小封装）
-     约束：
-     - 只用 line + tooltip + grid + legend 所需模块，禁止全量 import 'echarts'
-     - 空数据 / 加载中由父组件处理，本组件只负责渲染有效序列
-     - 图表必须带 role="img" + aria-label（a11y），见下方 chartDom
+     ECharts 趋势图（按需引入的最小封装 · v2.0 亮色玻璃主题）
+     - 面积填色改为纵向渐变（顶部 22% 同色 → 底部透明）
+     - tooltip 白玻璃浮层；更新动画 500ms 平滑跟随 10s 轮询
+     - a11y：role=img + aria-label（含各序列最新值）
      ============================================================ -->
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
@@ -19,10 +18,9 @@ import { CanvasRenderer } from 'echarts/renderers'
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const props = defineProps({
-  // [{ name, color, data: number[], unit?: string }]
+  // [{ name, color: '#rrggbb', data: number[], fill?: boolean }]
   series: { type: Array, required: true },
   height: { type: Number, default: 240 },
-  // x 轴标签：默认按序列长度生成“近 N 分钟”刻度
   xLabels: { type: Array, default: null },
   yFormatter: { type: Function, default: null },
   label: { type: String, default: '趋势图' },
@@ -45,38 +43,48 @@ const labels = computed(() => {
   return Array.from({ length: n }, (_, i) => `-${n - 1 - i}m`)
 })
 
+// #rrggbb → rgba()，用于渐变面积与柔光（不依赖 echarts 内部模块）
+function hexA(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '')
+  if (!m) return hex
+  const n = parseInt(m[1], 16)
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
+}
+
 function render() {
   if (!chart) return
   chart.setOption(
     {
-      animationDuration: 300,
-      grid: { left: 8, right: 12, top: 34, bottom: 4, containLabel: true },
-      legend: {
-        top: 0,
-        right: 0,
-        icon: 'roundRect',
-        itemWidth: 14,
-        itemHeight: 3,
-        textStyle: { fontSize: 12, color: '#41495c' },
-      },
+      animationDuration: 600,
+      animationEasing: 'cubicOut',
+      animationDurationUpdate: 520,
+      animationEasingUpdate: 'cubicOut',
+      grid: { left: 8, right: 14, top: 12, bottom: 4, containLabel: true },
+      // 调用方自带图例（含实时数值），ECharts 内置图例默认隐藏避免重复
+      legend: { show: false },
       tooltip: {
         trigger: 'axis',
         confine: true,
+        backgroundColor: 'rgba(255, 255, 255, 0.92)',
+        borderColor: 'rgba(23, 32, 64, 0.08)',
+        textStyle: { color: '#101a2e', fontSize: 12 },
+        extraCssText:
+          'backdrop-filter: blur(14px); border-radius: 12px; box-shadow: 0 8px 28px -6px rgba(59,73,150,.28); padding: 8px 12px;',
         valueFormatter: (v) => (props.yFormatter ? props.yFormatter(v) : v),
       },
       xAxis: {
         type: 'category',
         boundaryGap: false,
         data: labels.value,
-        axisLine: { lineStyle: { color: '#e2e6ee' } },
+        axisLine: { lineStyle: { color: 'rgba(23, 32, 64, 0.12)' } },
         axisTick: { show: false },
-        axisLabel: { color: '#9aa1b2', fontSize: 11, hideOverlap: true },
+        axisLabel: { color: '#9aa3bc', fontSize: 11, hideOverlap: true },
       },
       yAxis: {
         type: 'value',
-        splitLine: { lineStyle: { color: '#eef1f6' } },
+        splitLine: { lineStyle: { color: 'rgba(23, 32, 64, 0.06)' } },
         axisLabel: {
-          color: '#9aa1b2',
+          color: '#9aa3bc',
           fontSize: 11,
           formatter: (v) => (props.yFormatter ? props.yFormatter(v) : v),
         },
@@ -86,11 +94,29 @@ function render() {
         type: 'line',
         data: s.data,
         showSymbol: false,
-        smooth: 0.25,
-        lineStyle: { width: 2, color: s.color },
+        smooth: 0.35,
+        lineStyle: {
+          width: 2.5,
+          color: s.color,
+          shadowColor: hexA(s.color, 0.35),
+          shadowBlur: 8,
+          shadowOffsetY: 4,
+        },
         itemStyle: { color: s.color },
         areaStyle: s.fill
-          ? { color: s.color, opacity: 0.08 }
+          ? {
+              color: {
+                type: 'linear',
+                x: 0,
+                y: 0,
+                x2: 0,
+                y2: 1,
+                colorStops: [
+                  { offset: 0, color: hexA(s.color, 0.22) },
+                  { offset: 1, color: hexA(s.color, 0.015) },
+                ],
+              },
+            }
           : undefined,
         emphasis: { focus: 'series' },
       })),

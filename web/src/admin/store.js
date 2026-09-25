@@ -364,6 +364,30 @@ export const adminApi = {
     return { ok: true }
   },
 
+  // 重新定位（对齐 doc/04 §3：POST /admin/servers/:id/locate）。
+  // localStorage 模拟：按 ssh.host 做简单地区映射后覆盖 region。
+  async relocate(id) {
+    await delay(300)
+    const list = read('servers', seedServers())
+    const s = list.find((x) => x.id === id)
+    if (!s) throw new Error('节点不存在')
+    const host = s.ssh?.host || ''
+    let region = s.region
+    let source = 'auto'
+    if (host.includes('203.0.113')) region = '香港'
+    else if (host.includes('198.51.100')) region = '东京'
+    else if (host.includes('192.0.2')) region = '新加坡'
+    else if (host.startsWith('127.') || host.startsWith('10.') || host.startsWith('192.168.') || host === 'localhost') {
+      region = '内网'
+      source = 'manual'
+    }
+    s.region = region
+    s.region_source = source
+    write('servers', list)
+    await audit('server_locate', `server:${id}`, `重新定位节点 ${s.name} → ${region}`)
+    return { ok: true, region, region_source: source }
+  },
+
   // ---- 设置 ----
   async getSettings() {
     await delay(100)
