@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -489,7 +490,18 @@ func DialAndCollect(ctx context.Context, cred *SSHCred, storedFP string, strict 
 	}
 	ech := make(chan execOut, 1)
 	go func() {
-		out, err := sess.Output("sh -c '" + collectScriptSingleQuoteSafe() + "'")
+		// 脚本经 stdin 喂给远端 sh（heredoc 经 SSH 通道同样有 shell 转义风险；
+		// stdin 方式避免一切引号拼装，转义问题由传输层而非 shell 解析承担）。
+		stdin, err := sess.StdinPipe()
+		if err != nil {
+			ech <- execOut{nil, err}
+			return
+		}
+		go func() {
+			defer stdin.Close()
+			_, _ = io.WriteString(stdin, collectScript)
+		}()
+		out, err := sess.Output("sh -s")
 		if len(out) > maxOutputLen {
 			out = out[:maxOutputLen]
 		}
@@ -517,13 +529,8 @@ func DialAndCollect(ctx context.Context, cred *SSHCred, storedFP string, strict 
 	return &DialResult{Raw: raw, HostKeyFP: fp, LatencyMs: time.Since(start).Milliseconds()}, nil
 }
 
-// collectScriptSingleQuoteSafe 脚本内无单引号（awk 程序均用双引号），可直接包入 sh -c '...'。
-func collectScriptSingleQuoteSafe() string {
-	if strings.Contains(collectScript, "'") {
-		panic("collectScript must not contain single quotes")
-	}
-	return collectScript
-}
+// collectScript 经 stdin 喂给远端 sh -s 执行，不再拼装 sh -c 引号，
+// 故脚本内允许单引号（grep/awk 的 '^cpu ' 等模式无需改写）。
 
 // classifyErr SSH 错误分类（doc/04 错误码 2001 的 msg 分类）。
 func classifyErr(err error) error {
