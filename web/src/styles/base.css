@@ -1,0 +1,164 @@
+/* ============================================================
+   BeaconTower · 基础层（base）
+   只放：盒模型 / body / 链接 / 选区 / 滚动条 / 焦点环 / 无障碍。
+   禁止放组件样式，组件样式归 components.css / views.css。
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--bt-font-family);
+  font-size: var(--bt-font-md);
+  line-height: var(--bt-line-md);
+  color: var(--bt-text-1);
+  background: var(--bt-bg-page);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------- 文排 ---------- */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: var(--bt-weight-semibold);
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--bt-brand-600);
+}
+
+::selection {
+  background: var(--bt-brand-100);
+}
+
+img,
+svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* 数字等宽，避免指标刷新时跳动 */
+.tnum,
+.tnum * {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 等宽文本（IP / 指纹 / 主机名） */
+.mono {
+  font-family: var(--bt-font-mono);
+  font-size: 0.93em;
+  word-break: break-all;
+}
+
+/* 强制单行省略 */
+.ellipsis {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 滚动条（细，克制） ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: var(--bt-radius-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  background-color: rgba(22, 27, 38, 0.22);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(22, 27, 38, 0.36);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- 焦点环（a11y 必备：键盘可见） ---------- */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--bt-brand-500);
+  outline-offset: 2px;
+  border-radius: var(--bt-radius-xs);
+}
+
+/* ---------- 跳过导航（a11y：键盘用户直达主内容） ---------- */
+.skip-link {
+  position: fixed;
+  top: -48px;
+  left: var(--bt-space-4);
+  z-index: 100;
+  padding: var(--bt-space-2) var(--bt-space-4);
+  border-radius: var(--bt-radius-sm);
+  background: var(--bt-brand-600);
+  color: #fff;
+  font-size: var(--bt-font-sm);
+  font-weight: var(--bt-weight-medium);
+  transition: top var(--bt-duration-fast) var(--bt-ease);
+}
+
+.skip-link:focus-visible {
+  top: var(--bt-space-3);
+  outline-color: #fff;
+}
+
+/* ---------- 降低动态：停掉装饰性动画 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- 打印：表格与审计页可用 ---------- */
+@media print {
+  .app-sidebar,
+  .app-topbar,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+  }
+}

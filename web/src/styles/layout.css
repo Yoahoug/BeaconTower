@@ -1,0 +1,448 @@
+/* ============================================================
+   BeaconTower · 应用骨架层（layout）
+   顶栏 / 侧栏 / 主内容 / 页脚 / 面包屑 / 响应式断点。
+   页面级样式归 views.css，这里只放骨架。
+   ============================================================ */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bt-bg-page);
+}
+
+/* ================= 侧边栏 ================= */
+.app-sidebar {
+  width: var(--bt-side-w);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bt-bg-card);
+  border-right: var(--bt-hairline);
+  z-index: var(--bt-z-sticky);
+}
+
+/* 品牌区 */
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--bt-topbar-h);
+  padding: 0 var(--bt-space-4);
+  border-bottom: var(--bt-hairline);
+  flex-shrink: 0;
+}
+
+.app-brand__logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #fff;
+  background: var(--bt-brand-gradient);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.app-brand__logo svg {
+  width: 17px;
+  height: 17px;
+}
+
+.app-brand__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  min-width: 0;
+}
+
+.app-brand__name {
+  font-size: var(--bt-font-md);
+  font-weight: var(--bt-weight-semibold);
+  white-space: nowrap;
+}
+
+.app-brand__sub {
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-3);
+  white-space: nowrap;
+}
+
+/* 导航 */
+.app-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--bt-space-3) var(--bt-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-nav__group {
+  padding: var(--bt-space-2) var(--bt-space-3) var(--bt-space-1);
+  font-size: var(--bt-font-xs);
+  font-weight: var(--bt-weight-semibold);
+  letter-spacing: 0.05em;
+  color: var(--bt-text-4);
+}
+
+.app-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px var(--bt-space-3);
+  border-radius: var(--bt-radius-sm);
+  font-size: var(--bt-font-md);
+  font-weight: var(--bt-weight-medium);
+  color: var(--bt-text-2);
+  transition: background var(--bt-duration-fast) var(--bt-ease);
+  position: relative;
+}
+
+.app-nav__item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.app-nav__item:hover {
+  background: var(--bt-bg-hover);
+  color: var(--bt-text-1);
+}
+
+/* 左侧 3px 强调条：企业后台常用选中表达 */
+.app-nav__item.is-active {
+  background: var(--bt-brand-50);
+  color: var(--bt-brand-600);
+  font-weight: var(--bt-weight-semibold);
+}
+
+.app-nav__item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--bt-brand-500);
+}
+
+.app-nav__item.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.app-nav__item.is-disabled:hover {
+  background: none;
+  color: var(--bt-text-2);
+}
+
+.app-nav__badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: var(--bt-weight-medium);
+  padding: 1px 7px;
+  border-radius: var(--bt-radius-pill);
+  background: var(--bt-bg-hover);
+  color: var(--bt-text-3);
+  white-space: nowrap;
+}
+
+/* 底部状态 */
+.app-side-foot {
+  flex-shrink: 0;
+  border-top: var(--bt-hairline);
+  padding: var(--bt-space-3) var(--bt-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bt-space-1);
+}
+
+.app-side-status {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px var(--bt-space-3);
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-3);
+}
+
+.app-side-status strong {
+  text-align: right;
+  font-weight: var(--bt-weight-semibold);
+  color: var(--bt-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-side-status strong.ok {
+  color: var(--bt-success-600);
+}
+
+.app-side-ver {
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-4);
+}
+
+/* ================= 右侧主列 ================= */
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ---------- 顶栏 ---------- */
+.app-topbar {
+  height: var(--bt-topbar-h);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: var(--bt-z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--bt-space-3);
+  padding: 0 var(--bt-space-6);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: var(--bt-hairline);
+}
+
+.app-topbar__menu-btn {
+  display: none;
+}
+
+.app-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--bt-space-2);
+  font-size: var(--bt-font-md);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-breadcrumb li {
+  display: flex;
+  align-items: center;
+  gap: var(--bt-space-2);
+  white-space: nowrap;
+}
+
+.app-breadcrumb li + li::before {
+  content: '/';
+  color: var(--bt-text-4);
+}
+
+.app-breadcrumb a:hover {
+  color: var(--bt-brand-600);
+}
+
+.app-breadcrumb [aria-current='page'] {
+  color: var(--bt-text-1);
+  font-weight: var(--bt-weight-medium);
+}
+
+.app-topbar__spacer {
+  flex: 1;
+}
+
+.app-topbar__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--bt-space-2);
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-3);
+  white-space: nowrap;
+}
+
+.app-topbar__user {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px 4px 4px;
+  border-radius: var(--bt-radius-pill);
+  border: var(--bt-hairline);
+  background: var(--bt-bg-card);
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-2);
+  cursor: pointer;
+}
+
+.app-topbar__user:hover {
+  background: var(--bt-bg-hover);
+}
+
+.app-topbar__avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bt-brand-100);
+  color: var(--bt-brand-600);
+  font-size: 11px;
+  font-weight: var(--bt-weight-semibold);
+}
+
+/* ---------- 主内容 ---------- */
+.app-content {
+  flex: 1;
+  width: 100%;
+  max-width: var(--bt-page-max);
+  margin: 0 auto;
+  padding: var(--bt-space-5) var(--bt-space-6) var(--bt-space-6);
+  min-width: 0;
+}
+
+/* 页面头：标题 + 描述 + 右侧操作 */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--bt-space-4);
+  margin-bottom: var(--bt-space-5);
+  flex-wrap: wrap;
+}
+
+.page-head h1 {
+  font-size: var(--bt-font-xl);
+  font-weight: var(--bt-weight-semibold);
+}
+
+.page-head__desc {
+  margin-top: 4px;
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-3);
+}
+
+.page-head__actions {
+  display: flex;
+  gap: var(--bt-space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* ---------- 页脚 ---------- */
+.app-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bt-space-3);
+  padding: 10px var(--bt-space-6);
+  border-top: var(--bt-hairline);
+  background: var(--bt-bg-card);
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-4);
+  flex-wrap: wrap;
+}
+
+/* ================= 移动抽屉 ================= */
+.app-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(16, 24, 40, 0.42);
+}
+
+/* ================= 响应式 ================= */
+@media (max-width: 1080px) {
+  :root {
+    --bt-side-w: var(--bt-side-w-collapsed);
+  }
+
+  .app-brand__text,
+  .app-nav__group,
+  .app-nav__item span:not(.app-nav__badge),
+  .app-side-foot {
+    display: none;
+  }
+
+  .app-brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .app-nav__item {
+    justify-content: center;
+    padding: 9px;
+  }
+
+  .app-nav__badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    padding: 0 5px;
+  }
+
+  .app-nav__item.is-active::before {
+    left: 4px;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-topbar {
+    padding: 0 var(--bt-space-4);
+  }
+
+  .app-topbar__menu-btn {
+    display: inline-flex;
+  }
+
+  .app-content {
+    padding: var(--bt-space-4) var(--bt-space-4) var(--bt-space-5);
+  }
+
+  /* 移动端：侧栏变抽屉 */
+  .app-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 240px;
+    transform: translateX(-105%);
+    transition: transform var(--bt-duration-base) var(--bt-ease);
+    box-shadow: var(--bt-shadow-modal);
+  }
+
+  .app-sidebar.is-open {
+    transform: none;
+  }
+
+  .app-sidebar .app-brand__text,
+  .app-sidebar .app-nav__group,
+  .app-sidebar .app-nav__item span:not(.app-nav__badge),
+  .app-sidebar .app-side-foot {
+    display: flex;
+  }
+
+  .app-sidebar .app-nav__item span:not(.app-nav__badge) {
+    display: inline;
+  }
+
+  .app-sidebar .app-brand {
+    justify-content: flex-start;
+    padding: 0 var(--bt-space-4);
+  }
+
+  .app-sidebar .app-nav__item {
+    justify-content: flex-start;
+  }
+
+  .app-breadcrumb {
+    font-size: var(--bt-font-sm);
+  }
+
+  .app-topbar__meta .hide-sm {
+    display: none;
+  }
+
+  .app-footer {
+    padding: 10px var(--bt-space-4);
+  }
+}

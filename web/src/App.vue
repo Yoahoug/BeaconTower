@@ -1,17 +1,8 @@
+<!-- 应用根：只做路由出口，骨架下沉到 layouts/AppShell.vue -->
 <script setup>
-import { RouterLink, RouterView } from 'vue-router'
-import SideBar from './components/SideBar.vue'
+import { RouterView } from 'vue-router'
 </script>
 
 <template>
-  <div class="app-shell">
-    <SideBar />
-    <div class="main-area">
-      <RouterView />
-      <footer class="site-footer">
-        <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span>v0.1</span>
-      </footer>
-    </div>
-  </div>
+  <RouterView />
 </template>

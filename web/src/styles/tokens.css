@@ -1,0 +1,131 @@
+/* ============================================================
+   BeaconTower · 企业级设计令牌（Design Tokens）
+   唯一真相源：所有颜色 / 字阶 / 间距 / 圆角 / 阴影 / 层级
+   必须从这里引用，禁止在组件样式里写死色值与魔法数字。
+   ============================================================ */
+
+:root {
+  /* ---------- 品牌 ---------- */
+  --bt-brand-600: #0057d2;
+  --bt-brand-500: #0a64e0;
+  --bt-brand-100: #e3eefe;
+  --bt-brand-50: #f0f5fe;
+  --bt-brand-gradient: linear-gradient(180deg, #2e86f2 0%, #0a64e0 100%);
+
+  /* ---------- 语义色 ---------- */
+  --bt-success-600: #157f3d;
+  --bt-success-500: #1d9d4e;
+  --bt-success-100: #e1f3e7;
+  --bt-warning-600: #a85f00;
+  --bt-warning-500: #d97a06;
+  --bt-warning-100: #fdf0dc;
+  --bt-danger-600: #c02622;
+  --bt-danger-500: #e5484d;
+  --bt-danger-100: #fdecec;
+  --bt-info-600: #0057d2;
+  --bt-info-100: #e3eefe;
+
+  /* ---------- 中性色（文本 / 边框 / 背景） ---------- */
+  --bt-text-1: #161b26;
+  --bt-text-2: #41495c;
+  --bt-text-3: #6e7689;
+  --bt-text-4: #9aa1b2;
+  --bt-border: #e2e6ee;
+  --bt-border-strong: #cbd2df;
+  --bt-bg-page: #f3f5f9;
+  --bt-bg-card: #ffffff;
+  --bt-bg-subtle: #f7f9fc;
+  --bt-bg-hover: #eef2f8;
+  --bt-bg-active: #e3e9f4;
+
+  /* ---------- 字阶（大网站信息密度：12-13px 为主） ---------- */
+  --bt-font-xs: 11px;
+  --bt-font-sm: 12px;
+  --bt-font-md: 13px;
+  --bt-font-lg: 15px;
+  --bt-font-xl: 18px;
+  --bt-font-2xl: 22px;
+  --bt-font-3xl: 28px;
+  --bt-line-sm: 1.45;
+  --bt-line-md: 1.55;
+  --bt-weight-normal: 400;
+  --bt-weight-medium: 500;
+  --bt-weight-semibold: 600;
+  --bt-weight-bold: 700;
+
+  /* ---------- 间距（4pt 网格） ---------- */
+  --bt-space-1: 4px;
+  --bt-space-2: 8px;
+  --bt-space-3: 12px;
+  --bt-space-4: 16px;
+  --bt-space-5: 20px;
+  --bt-space-6: 24px;
+  --bt-space-8: 32px;
+
+  /* ---------- 圆角（企业级偏小，沉稳） ---------- */
+  --bt-radius-xs: 4px;
+  --bt-radius-sm: 6px;
+  --bt-radius-md: 8px;
+  --bt-radius-lg: 12px;
+  --bt-radius-pill: 999px;
+
+  /* ---------- 阴影（克制：只给悬浮层与弹窗） ---------- */
+  --bt-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --bt-shadow-hover: 0 4px 14px rgba(16, 24, 40, 0.1);
+  --bt-shadow-dropdown: 0 8px 28px rgba(16, 24, 40, 0.14);
+  --bt-shadow-modal: 0 18px 60px rgba(16, 24, 40, 0.22);
+
+  /* ---------- 描边 ---------- */
+  --bt-hairline: 1px solid var(--bt-border);
+
+  /* ---------- 布局 ---------- */
+  --bt-side-w: 224px;
+  --bt-side-w-collapsed: 64px;
+  --bt-topbar-h: 56px;
+  --bt-page-max: 1440px;
+  --bt-table-row-h: 40px;
+
+  /* ---------- 动效 ---------- */
+  --bt-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --bt-duration-fast: 120ms;
+  --bt-duration-base: 200ms;
+  --bt-duration-slow: 320ms;
+
+  /* ---------- 层级 ---------- */
+  --bt-z-sticky: 10;
+  --bt-z-dropdown: 30;
+  --bt-z-modal-mask: 60;
+  --bt-z-modal: 61;
+  --bt-z-toast: 80;
+  --bt-z-tooltip: 90;
+
+  /* ---------- 字体 ---------- */
+  --bt-font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI', Inter, Roboto, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --bt-font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
+    'Liberation Mono', monospace;
+}
+
+/* ---------- 深色预留（当前仅浅色主题生效，变量先占位） ---------- */
+[data-theme='dark'] {
+  --bt-text-1: #eef1f6;
+  --bt-text-2: #c3cad8;
+  --bt-text-3: #8f97a9;
+  --bt-bg-page: #14171f;
+  --bt-bg-card: #1c2130;
+  --bt-bg-subtle: #222839;
+  --bt-bg-hover: #262d42;
+  --bt-border: #2c3348;
+}
+
+/* ---------- 降低动态偏好：全局兜底 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bt-duration-fast: 0.01ms;
+    --bt-duration-base: 0.01ms;
+    --bt-duration-slow: 0.01ms;
+  }
+}

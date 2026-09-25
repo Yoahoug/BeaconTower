@@ -103,6 +103,20 @@
     <template v-else-if="name === 'arrow-left'">
       <path d="M13 8H3.4M7 3.8 3 8l4 4.2" />
     </template>
+    <!-- 菜单（移动端抽屉） -->
+    <template v-else-if="name === 'menu'">
+      <path d="M2.4 4.2h11.2M2.4 8h11.2M2.4 11.8h11.2" />
+    </template>
+    <!-- 搜索 -->
+    <template v-else-if="name === 'search'">
+      <circle cx="7.2" cy="7.2" r="4.7" />
+      <path d="m10.8 10.8 3.4 3.4" />
+    </template>
+    <!-- 空态：服务器 -->
+    <template v-else-if="name === 'empty'">
+      <rect x="2" y="3" width="12" height="10" rx="1.6" />
+      <path d="M2 6.4h12M5 4.7h.01M6.8 4.7h.01M5 11.2h6" />
+    </template>
     <!-- 下载 / 导出 -->
     <template v-else-if="name === 'download'">
       <path d="M8 2.4v7.4M4.8 6.8 8 10l3.2-3.2M2.8 13.2h10.4" />
