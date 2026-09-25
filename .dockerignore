@@ -1,0 +1,16 @@
+# 构建上下文保持最小：node_modules、构建产物、运行时数据与密钥永不进镜像
+node_modules/
+web/node_modules/
+web/dist/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.key
+.env
+.env.*
+*.log
+.git/
+.idea/
+.vscode/
+.DS_Store

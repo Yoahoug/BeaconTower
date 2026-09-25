@@ -14,7 +14,7 @@ COPY web/ ./
 RUN npm run build            # 产出 /src/web/dist
 
 # ---------- 阶段 2：构建后端（纯 Go，无 CGO） ----------
-FROM golang:1.23-alpine AS backend
+FROM golang:1.26-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

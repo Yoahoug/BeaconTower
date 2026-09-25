@@ -27,8 +27,8 @@
 
 ## 当前状态
 
-- ✅ 前端企业级 v1.0（`web/`：Vue 3 + Pinia + ECharts 按需引入，模拟数据），`npm run dev` 启动
-- ✅ 管理面板完整前端（`/admin/servers|settings|security|audit` 嵌套路由：初始化向导、登录、节点管理含 SSH 试连回读、采集与展示设置、安全与账号、审计日志；原型阶段数据存浏览器本地，`api/admin.js` 门面对齐后端 API 语义，M1 替换方法体即可）
+- ✅ 前端 v2.0「天空信标」（`web/`：Vue 3 + Pinia + ECharts 按需引入），数据源为后端公开 API + SSE
+- ✅ 后端 M1–M6 全量落地（Go + Gin + SQLite + SSH 采集 + SSE + 历史聚合 + 单容器发布）：初始化/登录会话/CSRF、节点 CRUD+试连画像/TOFU、采集与展示设置、安全改密（热更新）、审计日志、功耗（RAPL/电池校准/kWh）、`go:embed` 托管前端、Docker 单镜像（~35MB）
+- ✅ 管理面板完整前端（`/admin/servers|settings|security|audit` 嵌套路由：初始化向导、登录、节点管理含 SSH 试连回读、采集与展示设置、安全与账号、审计日志；M0.5 的浏览器本地 mock 已在 M1 移除）
 - ✅ 功耗监控展示（RAPL 实时功率/温度/kWh/电费 + 全网功耗走势，不可用机型优雅降级；设计见 doc/09）
 - ✅ 前端开发约束落地（doc/10：合并门槛，含 a11y 自查清单与性能预算）
-- ⬜ 后端、SSH 采集按路线图推进

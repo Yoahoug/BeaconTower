@@ -1,0 +1,17 @@
+services:
+  beacontower:
+    image: beacontower:latest        # 或 ghcr.io/<you>/beacontower
+    container_name: beacontower
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"        # 只绑本机回环，走反代对外
+    environment:
+      - BEACON_MASTER_KEY=${BEACON_MASTER_KEY}   # 32字节hex: openssl rand -hex 32
+      - TZ=Asia/Shanghai
+      # - BEACON_SETUP_TOKEN=...      # 可选：防初始化接口被抢注（值见容器日志）
+    volumes:
+      - ./data:/app/data             # SQLite 库 + master.key（如未显式提供主密钥）
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    # read_only: true                # 可选加固：仅 /app/data 可写

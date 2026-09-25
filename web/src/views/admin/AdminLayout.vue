@@ -41,7 +41,7 @@ async function logout() {
     <div class="page-head">
       <div>
         <h1>管理面板</h1>
-        <p class="page-head__desc">SSH 凭据加密存储 · 公开页永不返回敏感字段 · 本原型数据保存在浏览器本地</p>
+        <p class="page-head__desc">SSH 凭据加密存储 · 公开页永不返回敏感字段</p>
       </div>
       <div class="page-head__actions">
         <span class="bt-tag bt-tag--info">
