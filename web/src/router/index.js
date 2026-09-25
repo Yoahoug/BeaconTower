@@ -8,8 +8,8 @@ const router = createRouter({
     {
       path: '/admin',
       name: 'admin',
-      // 管理后台为占位页，完整方案见 doc/04、doc/06
-      component: () => import('../views/AdminStubView.vue'),
+      // 管理面板：初始化向导 → 登录 → 节点/设置/安全/审计（隐藏后台，无公开入口）
+      component: () => import('../views/AdminPanelView.vue'),
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

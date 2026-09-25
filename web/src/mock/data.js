@@ -3,14 +3,28 @@
 // 字段结构即后续后端公开 API 的目标形态（不含 IP、主机名等敏感字段）。
 // region 由后端按公网 IP 自动定位填充（regionSource: 'auto'），
 // 面板宿主机为手动指定示例（'manual'）；IP 本身不出现在公开接口中。
+//
+// 功耗字段对齐参考实现 power-monitor（RAPL 功率计方案）：
+// - watts: 各域功率（W）；rapl 表示该节点是否暴露 RAPL 接口（部分 AMD/虚拟机没有）
+// - powerSource: 'ac' | 'battery'（放电时电池功率即整机真实功耗）
+// - baseLoadW / baseLoadSource: 平台基础功耗（电池自动校准或人工设定）
+// - energy: kWh 统计（今日/本周/本月，梯形积分）与电费估算
+// - tempC / freqMhz: 温度与平均 CPU 频率（RAPL 机型通常可读）
 
 const initialHistory = (base) =>
   Array.from({ length: 40 }, () =>
     Math.min(98, Math.max(2, base + (Math.random() * 18 - 9)))
   )
 
+// 功率走势窗口（与 cpuHistory 同步推进，40 点 ≈ 近 2 分钟）
+const initialPowerHistory = (base) =>
+  Array.from({ length: 40 }, () =>
+    Math.max(0.5, base + (Math.random() * 2 - 1) * (base * 0.25))
+  )
+
 const mk = (s) => ({
   cpuHistory: initialHistory(s.metrics.cpu),
+  powerHistory: s.power?.enabled ? initialPowerHistory(s.power.watts.total) : [],
   ...s,
 })
 
@@ -33,6 +47,17 @@ export const mockServers = [
       uptimeDays: 210,
       processes: 142,
     },
+    power: {
+      enabled: true,
+      rapl: true,
+      powerSource: 'ac',
+      watts: { total: 8.2, cpu: 2.6, core: 0.9, uncore: 0.0, dram: 0.5, psys: 1.5 },
+      baseLoadW: 5.6,
+      baseLoadSource: 'calibration',
+      tempC: 46.5,
+      freqMhz: 1700,
+      energy: { todayKwh: 0.014, weekKwh: 1.416, monthKwh: 6.062, avgWatts: 16.33, estCostToday: 0.01, estCostMonth: 3.64, pricePerKwh: 0.6 },
+    },
   }),
   mk({
     id: 2,
@@ -52,6 +77,15 @@ export const mockServers = [
       uptimeDays: 96,
       processes: 187,
     },
+    power: {
+      enabled: true,
+      rapl: false, // KVM 虚拟机不暴露 RAPL，功耗不可得（卡片上显示"不可用"）
+      powerSource: 'ac',
+      watts: { total: 0, cpu: 0 },
+      tempC: null,
+      freqMhz: 2400,
+      energy: null,
+    },
   }),
   mk({
     id: 3,
@@ -70,6 +104,15 @@ export const mockServers = [
       load: [0, 0, 0],
       uptimeDays: 0,
       processes: 0,
+    },
+    power: {
+      enabled: true,
+      rapl: true,
+      powerSource: 'ac',
+      watts: { total: 0, cpu: 0 },
+      tempC: null,
+      freqMhz: 0,
+      energy: null,
     },
     offlineSince: '2 小时前',
   }),

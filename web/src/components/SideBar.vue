@@ -2,15 +2,14 @@
 import { RouterLink, useRoute } from 'vue-router'
 import AppIcon from './AppIcon.vue'
 import { useLiveServers } from '../composables/useLiveServers'
-import { fmtBps } from '../utils/format'
+import { fmtBps, fmtWatts } from '../utils/format'
 
 const route = useRoute()
 const { summary } = useLiveServers()
 
 // 规划中的入口先以禁用态占位，落地后替换为 RouterLink
 const soonItems = [
-  { icon: 'server', label: '服务器' },
-  { icon: 'pulse', label: '历史' },
+  { icon: 'clock', label: '历史' },
 ]
 </script>
 
@@ -29,6 +28,10 @@ const soonItems = [
       <RouterLink to="/" class="side-item" :class="{ active: route.path === '/' }">
         <AppIcon name="dashboard" class="side-ico" />
         <span>总览</span>
+      </RouterLink>
+      <RouterLink to="/admin" class="side-item" :class="{ active: route.path.startsWith('/admin') }">
+        <AppIcon name="sliders" class="side-ico" />
+        <span>管理面板</span>
       </RouterLink>
 
       <div v-for="item in soonItems" :key="item.label" class="side-item soon" :title="'规划中，后续版本提供'">
@@ -52,8 +55,12 @@ const soonItems = [
           <span></span>
           <span class="status-val">↓{{ fmtBps(summary.downBps) }}</span>
         </div>
+        <div class="status-row">
+          <span>实时功耗</span>
+          <span class="status-val power">{{ summary.measuredCount ? fmtWatts(summary.watts) : '—' }}</span>
+        </div>
       </div>
-      <div class="side-version">v0.1 · 原型演示</div>
+      <div class="side-version">v0.2 · 原型演示</div>
     </div>
   </aside>
 </template>

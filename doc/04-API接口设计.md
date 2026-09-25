@@ -41,10 +41,16 @@
                  "net_in_bps": 1842000, "net_out_bps": 128400,
                  "tcp_conns": 214, "udp_conns": 37,
                  "load1": 0.42, "load5": 0.38, "load15": 0.35,
-                 "uptime_s": 8294400, "processes": 168 }
+                 "uptime_s": 8294400, "processes": 168 },
+    "power": { "total_w": 8.2, "cpu_w": 2.6, "dram_w": 0.5, "temp_c": 46.5,
+               "freq_mhz": 1700, "power_source": "ac",
+               "today_kwh": 0.014, "month_kwh": 6.062, "est_cost_month": 3.64 }
   }]
 }
 ```
+
+> `power` 字段说明见 [09-功耗监控设计](./09-功耗监控设计.md)第 5 节：RAPL 不可用的节点输出 `null`（前端显示"不可用"）；
+> 站点设置 `show_power_public=false` 时整个字段省略，`show_cost_public=false` 时省略 `est_cost_month`（电价本身永不公开）。
 
 ### 1.3 历史曲线
 
@@ -105,6 +111,7 @@ POST /api/v1/admin/logout   → 清除会话
 | PUT | `/admin/servers/:id` | 编辑；凭据字段留空 = 保留原值 |
 | DELETE | `/admin/servers/:id` | 删除（级联删除凭据/画像/指标） |
 | PUT | `/admin/servers/:id/order` | 排序 `{"sort_order": n}` |
+| PUT | `/admin/servers/:id/power-calibration` | 功耗校准：`{"base_load_w": 5.6}` 手动设定基础功耗（`base_load_source=manual`；RAPL 不可用节点返回 1001），见 doc/09 |
 | POST | `/admin/servers/test` | **试连**：用提交的连接参数立即试连，成功则回读系统画像预览返回；失败返回 SSH 错误原因 |
 | GET | `/admin/servers/:id/profile` | 强制刷新画像 |
 | POST | `/admin/servers/:id/locate` | 强制重新执行公网 IP 定位（自动定位仅在 `region_source=auto` 时覆盖 region；返回 geo 结果，仅管理端） |
@@ -129,7 +136,7 @@ POST /api/v1/admin/logout   → 清除会话
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/PUT | `/admin/settings` | 站点标题、采集间隔(≥5s)、历史保留天数、7d 历史是否对访客开放 |
+| GET/PUT | `/admin/settings` | 站点标题、采集间隔(≥5s)、历史保留天数、7d 历史是否对访客开放、公开功耗/电费开关、电价（doc/09）、Host Key 严格校验 |
 | GET | `/admin/audit?page=` | 审计日志（`source_ip_hash` 仅展示哈希） |
 | POST | `/admin/password` | 修改密码（需验证旧密码） |
 

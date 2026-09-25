@@ -2,9 +2,9 @@
 import ServerCard from '../components/ServerCard.vue'
 import NetGraph from '../components/NetGraph.vue'
 import { useLiveServers } from '../composables/useLiveServers'
-import { fmtBps, agoText } from '../utils/format'
+import { fmtBps, fmtWatts, fmtKwh, fmtCost, agoText } from '../utils/format'
 
-const { servers, summary, lastUpdated, netHistory } = useLiveServers()
+const { servers, summary, lastUpdated, netHistory, powerHistory } = useLiveServers()
 </script>
 
 <template>
@@ -13,7 +13,7 @@ const { servers, summary, lastUpdated, netHistory } = useLiveServers()
       <h1>服务器状态总览</h1>
     </div>
 
-    <!-- 英雄面板：全网概况 + 吞吐走势 -->
+    <!-- 英雄面板：全网概况 + 吞吐/功耗走势 -->
     <section v-tilt class="hero-card" aria-label="全网概况">
       <div class="hero-stats">
         <div class="hero-cell">
@@ -37,11 +37,25 @@ const { servers, summary, lastUpdated, netHistory } = useLiveServers()
           <div class="hero-value">{{ fmtBps(summary.downBps) }}</div>
           <div class="hero-label">全网下行</div>
         </div>
+        <div class="hero-cell">
+          <div class="hero-value">
+            {{ summary.measuredCount ? fmtWatts(summary.watts) : '—' }}
+            <span v-if="summary.measuredCount" class="hero-dim hero-watts-dim">· {{ summary.measuredCount }} 台可测</span>
+          </div>
+          <div class="hero-label">实时功耗</div>
+        </div>
+        <div class="hero-cell">
+          <div class="hero-value">{{ summary.measuredCount ? fmtKwh(summary.monthKwh) : '—' }}</div>
+          <div class="hero-label">
+            本月用电
+            <span v-if="summary.measuredCount" class="hero-cost">≈ {{ fmtCost(summary.estCostMonth) }}</span>
+          </div>
+        </div>
         <div class="hero-cell hero-cell-right">
           <div class="hero-updated">更新于 {{ agoText(lastUpdated.seconds) }}</div>
         </div>
       </div>
-      <NetGraph :up="netHistory.up" :down="netHistory.down" />
+      <NetGraph :up="netHistory.up" :down="netHistory.down" :watts="powerHistory.watts" />
     </section>
 
     <!-- 大卡片：单列（窄屏两列） -->

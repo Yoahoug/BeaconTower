@@ -37,3 +37,30 @@ export function agoText(seconds) {
   if (seconds < 60) return `${Math.round(seconds / 5) * 5} 秒前`
   return `${Math.floor(seconds / 60)} 分钟前`
 }
+
+// ================= 功耗 =================
+
+// 功率：8.2 W / 16.3 W / 1.24 kW
+export function fmtWatts(w) {
+  if (!w || w <= 0) return '0 W'
+  if (w >= 1000) return `${(w / 1000).toFixed(2)} kW`
+  return `${w >= 100 ? Math.round(w) : w.toFixed(1)} W`
+}
+
+// 电量：0.014 / 1.42 / 6.06 kWh（与参考站口径一致）
+export function fmtKwh(kwh) {
+  if (kwh == null || kwh < 0) return '—'
+  if (kwh >= 100) return `${Math.round(kwh)} kWh`
+  if (kwh >= 10) return `${kwh.toFixed(1)} kWh`
+  return `${kwh.toFixed(kwh >= 1 ? 2 : 3)} kWh`
+}
+
+export function fmtCost(cny) {
+  return `¥${(cny ?? 0).toFixed(2)}`
+}
+
+// CPU 频率：1700 MHz → 1.70 GHz
+export function fmtGhz(mhz) {
+  if (!mhz || mhz <= 0) return '—'
+  return `${(mhz / 1000).toFixed(2)} GHz`
+}
