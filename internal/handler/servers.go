@@ -33,10 +33,10 @@ func (a *App) ListServers(c *gin.Context) {
 			"region_source": s.RegionSource, "tags": s.Tags,
 			"note_public": s.NotePublic, "note_private": s.NotePrivate,
 			"sort_order": s.SortOrder, "hidden": s.Hidden, "enabled": s.Enabled,
-			"created_at": s.CreatedAt,
-			"ssh":        sshView(cred),
-			"profile":    profileView(prof),
-			"power":      powerAdminView(prof, cred),
+			"is_self": s.IsSelf, "created_at": s.CreatedAt,
+			"ssh":     sshView(cred),
+			"profile": profileView(prof),
+			"power":   powerAdminView(prof, cred),
 		}
 		if cred != nil {
 			item["last_success_at"] = nullableInt(cred.LastSuccessAt)
@@ -49,7 +49,8 @@ func (a *App) ListServers(c *gin.Context) {
 // sshView 凭据不回显：只返回 has_password/has_key 标记。
 func sshView(cred *store.Credential) any {
 	if cred == nil {
-		return nil
+		// 本机节点无凭据：采集走本地进程
+		return map[string]any{"local": true}
 	}
 	return map[string]any{
 		"host": cred.Host, "port": cred.Port, "username": cred.Username,
@@ -266,6 +267,13 @@ func (a *App) UpdateServer(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
 		return
 	}
+	// 本机节点：名称/备注等基本信息可改，SSH 凭据不可改（采集走本地进程）
+	if srv.IsSelf {
+		if _, ok := in["ssh"]; ok {
+			middleware.Fail(c, 1001, "本机节点通过本地进程采集，无需 SSH 凭据")
+			return
+		}
+	}
 	if v, ok := in["name"]; ok {
 		if s := strings.TrimSpace(toStr(v)); s != "" {
 			if len(s) > 64 {
@@ -372,6 +380,10 @@ func (a *App) DeleteServer(c *gin.Context) {
 	srv, _ := a.DB.GetServer(id)
 	if srv == nil {
 		middleware.Fail(c, 2002, "节点不存在")
+		return
+	}
+	if srv.IsSelf {
+		middleware.Fail(c, 1001, "本机节点不可删除（面板自身数据源）")
 		return
 	}
 	if err := a.DB.DeleteServer(id); err != nil {

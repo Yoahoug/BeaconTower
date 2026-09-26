@@ -60,6 +60,13 @@ func main() {
 	// 离线 IP 库（可选）：缺失则降级在线回显 + 静态映射
 	geoip.Init(cfg.DataDir)
 
+	// 本机节点：面板自身作为第一个节点（免 SSH，本地进程采集）
+	if id, err := db.EnsureSelfServer(time.Now().Unix()); err != nil {
+		log.Printf("[beacontower] 创建本机节点失败: %v", err)
+	} else {
+		log.Printf("[beacontower] 本机节点就绪 (id=%d)", id)
+	}
+
 	// 后台任务 + 采集器
 	taskStop := make(chan struct{})
 	tasks.Start(db, taskStop)

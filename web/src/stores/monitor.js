@@ -52,6 +52,7 @@ function adaptServer(raw, prev) {
   return {
     id: raw.id,
     name: str(raw.name, `节点 ${raw.id}`),
+    isSelf: !!raw.is_self,
     region: str(raw.region, '未定位'),
     regionSource: str(raw.region_source, 'auto'),
     tags: arr(raw.tags),

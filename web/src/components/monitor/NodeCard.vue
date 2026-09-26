@@ -80,7 +80,7 @@ const powerHistory = computed(() =>
           :aria-label="`${server.name} · 查看详情`"
           :to="`/server/${server.id}`"
         >{{ server.name }}</RouterLink>
-        <div v-else class="node-card__name" :title="server.name">{{ server.name }}</div>
+        <div v-else class="node-card__name" :title="server.name">{{ server.name }}<span v-if="server.isSelf" class="bt-tag bt-tag--info" style="margin-left: 6px">本机</span></div>
         <div class="node-card__meta">
           <AppIcon v-if="server.regionSource === 'auto'" name="pin" aria-hidden="true" />
           <span class="ellipsis">{{ server.region }} · {{ server.profile.os }} · {{ server.profile.arch }}</span>

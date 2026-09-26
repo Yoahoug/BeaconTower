@@ -31,7 +31,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 3
+const schemaVersion = 4
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -206,6 +206,11 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 	case 3: // energy 累计（月度 kWh/电费由聚合推算，此处补 kwh 累计列）
 		return exec(
 			`ALTER TABLE server_profile ADD COLUMN month_kwh REAL DEFAULT 0`,
+		)
+	case 4: // 本机节点：is_self 标记（0/1），面板自身默认占首位
+		return exec(
+			`ALTER TABLE server ADD COLUMN is_self INTEGER DEFAULT 0`,
+			`CREATE INDEX IF NOT EXISTS idx_server_self ON server(is_self)`,
 		)
 	}
 	return fmt.Errorf("unknown migration %d", v)

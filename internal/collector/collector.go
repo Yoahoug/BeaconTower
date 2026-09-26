@@ -173,6 +173,11 @@ func (c *Collector) credFor(serverID int64) (*store.Credential, *SSHCred, error)
 }
 
 func (c *Collector) collectOne(srv *store.Server, now int64) {
+	// 本机节点：免 SSH，直接本地执行同一采集脚本
+	if srv.IsSelf {
+		c.collectSelf(srv, now)
+		return
+	}
 	cred, sshCred, err := c.credFor(srv.ID)
 	if err != nil || sshCred == nil {
 		c.markFail(srv.ID, "凭据解密失败", now)
@@ -197,11 +202,29 @@ func (c *Collector) collectOne(srv *store.Server, now int64) {
 	c.applySample(srv, cred, res, now)
 }
 
-func (c *Collector) markFail(serverID int64, reason string, now int64) {
-	_ = c.db.SetCollectResult(serverID, "", reason, nil)
+// selfNode 该节点是否为本机节点（is_self）：CPU/网速等来自窗口快照而非累计计数器。
+func (c *Collector) selfNode(serverID int64) bool {
+	s, err := c.db.GetServer(serverID)
+	return err == nil && s != nil && s.IsSelf
+}
+
+func (c *Collector) markFail(serverID int64, reason string, now int64) {	_ = c.db.SetCollectResult(serverID, "", reason, nil)
 	m := &store.Metric{ServerID: serverID, Ts: now, Status: "offline"}
 	_ = c.db.UpsertLatest(m)
 	// offline 不写 sample（曲线自然断点，前端显示离线）
+}
+
+// collectSelf 本机采集：本地 sh -s 执行采集脚本，产物走与 SSH 节点完全相同的
+// 解析/差分/画像/落库链路（仅无凭据与 host key 环节）。
+func (c *Collector) collectSelf(srv *store.Server, now int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	raw, err := RunCollectScript(ctx)
+	if err != nil {
+		c.markFail(srv.ID, err.Error(), now)
+		return
+	}
+	c.applySample(srv, nil, &DialResult{Raw: raw}, now)
 }
 
 // applySample 差分计算（CPU/网速/RAPL 功率）+ 落库 + kWh 积分。
@@ -214,13 +237,16 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 	}
 	m := &store.Metric{ServerID: srv.ID, Ts: now, Status: "online"}
 
-	// CPU：两次 /proc/stat 差值
+	// CPU：两次 /proc/stat 差值；darwin 本机路径 CpuIdle 即窗口 idle%（无累计计数器）
 	if p.ts > 0 && raw.CpuTotal > p.cpuTotal {
 		dTotal := float64(raw.CpuTotal - p.cpuTotal)
 		dIdle := float64(raw.CpuIdle - p.cpuIdle)
 		if dTotal > 0 {
 			m.CpuPct = clampPct((1 - dIdle/dTotal) * 100)
 		}
+	} else if p.ts > 0 && raw.CpuTotal > 0 && raw.CpuTotal == p.cpuTotal && c.selfNode(srv.ID) {
+		// 本机节点（darwin）：CpuTotal 恒为 1000，CpuIdle 直接是窗口 idle%
+		m.CpuPct = clampPct(100 - float64(raw.CpuIdle)/10)
 	}
 	// 网速：字节差 ÷ 实际间隔
 	dt := float64(now - p.ts)

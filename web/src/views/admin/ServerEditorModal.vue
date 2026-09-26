@@ -2,9 +2,11 @@
      节点编辑器（新增/编辑共用，大弹窗）· v2.0 玻璃弹窗
      a11y：role=dialog + labelledby + ESC 关闭 + 初始聚焦首个输入。
      凭据不回显：编辑时留空 = 保留原值。
+     新增模式带草稿：误关弹窗自动暂存 sessionStorage（仅当前标签页），
+     重开自动恢复；保存成功或手动"清空重填"后失效。
      ============================================================ -->
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import AppIcon from '../../components/AppIcon.vue'
 import { adminClient } from '../../api/admin'
 import { fmtWatts } from '../../utils/format'
@@ -15,28 +17,75 @@ const props = defineProps({
 const emit = defineEmits(['close', 'saved'])
 
 const isEdit = computed(() => !!props.server)
+const isSelf = computed(() => !!props.server?.is_self)
 
-const form = ref({
-  name: props.server?.name || '',
-  region: props.server?.region || '',
-  tagsText: (props.server?.tags || []).join(', '),
-  note_public: props.server?.note_public || '',
-  note_private: props.server?.note_private || '',
-  hidden: props.server?.hidden || false,
-  host: props.server?.ssh?.host || '',
-  port: props.server?.ssh?.port || 22,
-  sshUsername: props.server?.ssh?.username || '',
-  authType: props.server?.ssh?.auth_type || 'password',
-  password: '',
-  privateKey: '',
-  passphrase: '',
-  baseLoadW: props.server?.power?.base_load_w || 0,
-})
+// ---- 新增模式草稿缓存（sessionStorage：关标签页才清，误关弹窗可恢复）----
+const DRAFT_KEY = 'bt-server-draft'
+const restoredFromDraft = ref(false)
+
+function readDraft() {
+  try {
+    return JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null')
+  } catch {
+    return null
+  }
+}
+
+function writeDraft() {
+  if (isEdit.value) return
+  try {
+    const { password: _pw, privateKey: _pk, passphrase: _pp, ...safe } = form.value
+    sessionStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ form: safe, probe: probe.value }),
+    )
+  } catch {
+    /* 存储不可用时静默降级为无缓存 */
+  }
+}
+
+function clearDraft() {
+  try {
+    sessionStorage.removeItem(DRAFT_KEY)
+  } catch {
+    /* ignore */
+  }
+  restoredFromDraft.value = false
+}
+
+function draftForm() {
+  return {
+    name: props.server?.name || '',
+    region: props.server?.region || '',
+    tagsText: (props.server?.tags || []).join(', '),
+    note_public: props.server?.note_public || '',
+    note_private: props.server?.note_private || '',
+    hidden: props.server?.hidden || false,
+    host: props.server?.ssh?.host || '',
+    port: props.server?.ssh?.port || 22,
+    sshUsername: props.server?.ssh?.username || '',
+    authType: props.server?.ssh?.auth_type || 'password',
+    password: '',
+    privateKey: '',
+    passphrase: '',
+    baseLoadW: props.server?.power?.base_load_w || 0,
+  }
+}
+
+const form = ref(draftForm())
+
+// 新增模式下恢复草稿（sessionStorage 仅本标签页可见）
+const draft = !isEdit.value ? readDraft() : null
+if (draft?.form && (draft.form.host || draft.form.name)) {
+  Object.assign(form.value, draft.form)
+  restoredFromDraft.value = true
+}
 
 const probing = ref(false)
 const probe = ref(
-  props.server?.profile
-    ? {
+  (() => {
+    if (props.server?.profile) {
+      return {
         ok: true,
         latency_ms: null,
         profile: props.server.profile,
@@ -48,7 +97,13 @@ const probe = ref(
         host_key_fp: props.server.ssh.host_key_fp,
         cached: true,
       }
-    : null,
+    }
+    // 新增模式：恢复草稿里最近一次试连结果（凭据已丢弃，仅画像/指纹）
+    if (draft?.probe?.profile && !draft.probe.cached && (draft.form?.host || draft.form?.name)) {
+      return { ...draft.probe, cached: false }
+    }
+    return null
+  })(),
 )
 const connChanged = computed(() => {
   if (!props.server?.ssh) return false
@@ -63,6 +118,13 @@ const saving = ref(false)
 const saveError = ref('')
 const firstInput = ref(null)
 
+// 任何字段变化都自动续存草稿（新增模式）
+watch(
+  form,
+  writeDraft,
+  { deep: true },
+)
+
 async function runProbe() {
   probeError.value = ''
   probing.value = true
@@ -76,6 +138,7 @@ async function runProbe() {
       private_key: form.value.privateKey || undefined,
       passphrase: form.value.passphrase || undefined,
     })
+    writeDraft()
   } catch (e) {
     probe.value = null
     probeError.value = e?.message || '试连失败'
@@ -87,12 +150,14 @@ async function runProbe() {
 async function save() {
   saveError.value = ''
   if (!form.value.name) return (saveError.value = '请填写节点名称')
-  if (!form.value.host || !form.value.sshUsername) return (saveError.value = '请填写 SSH 地址与用户名')
-  if (!isEdit.value && form.value.authType === 'password' && !form.value.password) {
-    return (saveError.value = '请填写 SSH 密码')
-  }
-  if (!isEdit.value && form.value.authType === 'key' && !form.value.privateKey) {
-    return (saveError.value = '请粘贴 SSH 私钥')
+  if (!isSelf.value) {
+    if (!form.value.host || !form.value.sshUsername) return (saveError.value = '请填写 SSH 地址与用户名')
+    if (!isEdit.value && form.value.authType === 'password' && !form.value.password) {
+      return (saveError.value = '请填写 SSH 密码')
+    }
+    if (!isEdit.value && form.value.authType === 'key' && !form.value.privateKey) {
+      return (saveError.value = '请粘贴 SSH 私钥')
+    }
   }
   saving.value = true
   try {
@@ -103,7 +168,9 @@ async function save() {
       note_public: form.value.note_public,
       note_private: form.value.note_private,
       hidden: form.value.hidden,
-      ssh: {
+    }
+    if (!isSelf.value) {
+      payload.ssh = {
         host: form.value.host,
         port: Number(form.value.port) || 22,
         username: form.value.sshUsername,
@@ -111,8 +178,8 @@ async function save() {
         password: form.value.password || undefined,
         private_key: form.value.privateKey || undefined,
         passphrase: form.value.passphrase || undefined,
-      },
-      probe: probe.value && !probe.value.cached ? probe.value : null,
+      }
+      payload.probe = probe.value && !probe.value.cached ? probe.value : null
     }
     if (isEdit.value) {
       await adminClient.updateServer(props.server.id, payload)
@@ -125,6 +192,7 @@ async function save() {
         await adminClient.recalibratePower(id, Number(form.value.baseLoadW))
       }
     }
+    clearDraft()
     emit('saved')
   } catch (e) {
     saveError.value = e?.message || '保存失败'
@@ -135,6 +203,15 @@ async function save() {
 
 function onKey(e) {
   if (e.key === 'Escape') emit('close')
+}
+
+function resetForm() {
+  const keep = form.value.authType
+  form.value = { ...draftForm(), authType: keep }
+  probe.value = null
+  probeError.value = ''
+  saveError.value = ''
+  clearDraft()
 }
 
 onMounted(() => {
@@ -163,6 +240,18 @@ onUnmounted(() => {
       </div>
 
       <div class="bt-modal__body">
+        <div v-if="isSelf" class="bt-alert bt-alert--info" style="margin-bottom: 16px" role="note">
+          <AppIcon name="check" aria-hidden="true" />
+          本机节点：面板所在服务器，通过本地进程自动采集，无需 SSH 凭据，不可删除。
+        </div>
+        <Transition name="page-sub">
+          <div v-if="restoredFromDraft" class="bt-alert bt-alert--info" style="margin-bottom: 16px" role="status">
+            <AppIcon name="check" aria-hidden="true" />
+            <span style="flex: 1">已恢复上次未保存的填写内容（密码/私钥出于安全不予缓存，需重新输入）</span>
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="resetForm">清空重填</button>
+          </div>
+        </Transition>
+
         <section style="margin-bottom: 20px">
           <h4 class="bt-card__title" style="margin-bottom: 12px">基本信息</h4>
           <div class="bt-form-grid">
@@ -193,7 +282,7 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section style="margin-bottom: 20px">
+        <section v-if="!isSelf" style="margin-bottom: 20px">
           <h4 class="bt-card__title" style="margin-bottom: 4px">SSH 连接</h4>
           <p class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
             凭据加密存储，读取接口永不回显；编辑时留空 = 保留原值

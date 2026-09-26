@@ -25,6 +25,7 @@ type Server struct {
 	SortOrder    int      `json:"sort_order"`
 	Hidden       bool     `json:"hidden"`
 	Enabled      bool     `json:"enabled"`
+	IsSelf       bool     `json:"is_self"`
 	CreatedAt    int64    `json:"created_at"`
 }
 
@@ -277,9 +278,27 @@ func scanServer(s *Server, tags string, hidden, enabled int, row interface {
 		&s.NotePublic, &s.NotePrivate, &s.SortOrder, &hidden, &enabled, &s.CreatedAt)
 }
 
+const serverCols = `id, name, region, region_source, tags, note_public, note_private,
+		sort_order, hidden, enabled, is_self, created_at`
+
+func scanServerFull(s *Server, row interface {
+	Scan(dest ...any) error
+}) error {
+	var tags string
+	var hidden, enabled, isSelf int
+	if err := row.Scan(&s.ID, &s.Name, &s.Region, &s.RegionSource, &tags,
+		&s.NotePublic, &s.NotePrivate, &s.SortOrder, &hidden, &enabled, &isSelf, &s.CreatedAt); err != nil {
+		return err
+	}
+	s.Tags = decodeTags(tags)
+	s.Hidden = hidden == 1
+	s.Enabled = enabled == 1
+	s.IsSelf = isSelf == 1
+	return nil
+}
+
 func (db *DB) ListServers() ([]*Server, error) {
-	rows, err := db.SQL.Query(`SELECT id, name, region, region_source, tags, note_public, note_private,
-		sort_order, hidden, enabled, created_at FROM server ORDER BY sort_order, id`)
+	rows, err := db.SQL.Query(`SELECT ` + serverCols + ` FROM server ORDER BY sort_order, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -287,15 +306,9 @@ func (db *DB) ListServers() ([]*Server, error) {
 	var out []*Server
 	for rows.Next() {
 		s := &Server{}
-		var tags string
-		var hidden, enabled int
-		if err := rows.Scan(&s.ID, &s.Name, &s.Region, &s.RegionSource, &tags,
-			&s.NotePublic, &s.NotePrivate, &s.SortOrder, &hidden, &enabled, &s.CreatedAt); err != nil {
+		if err := scanServerFull(s, rows); err != nil {
 			return nil, err
 		}
-		s.Tags = decodeTags(tags)
-		s.Hidden = hidden == 1
-		s.Enabled = enabled == 1
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -303,22 +316,56 @@ func (db *DB) ListServers() ([]*Server, error) {
 
 func (db *DB) GetServer(id int64) (*Server, error) {
 	s := &Server{}
-	var tags string
-	var hidden, enabled int
-	err := db.SQL.QueryRow(`SELECT id, name, region, region_source, tags, note_public, note_private,
-		sort_order, hidden, enabled, created_at FROM server WHERE id = ?`, id).
-		Scan(&s.ID, &s.Name, &s.Region, &s.RegionSource, &tags,
-			&s.NotePublic, &s.NotePrivate, &s.SortOrder, &hidden, &enabled, &s.CreatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	row := db.SQL.QueryRow(`SELECT `+serverCols+` FROM server WHERE id = ?`, id)
+	if err := scanServerFull(s, row); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
-	s.Tags = decodeTags(tags)
-	s.Hidden = hidden == 1
-	s.Enabled = enabled == 1
 	return s, nil
+}
+
+// GetSelfServer 返回本机节点（is_self=1），无则返回 nil。
+func (db *DB) GetSelfServer() (*Server, error) {
+	s := &Server{}
+	row := db.SQL.QueryRow(`SELECT ` + serverCols + ` FROM server WHERE is_self = 1`)
+	if err := scanServerFull(s, row); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return s, nil
+}
+
+// EnsureSelfServer 启动时保证存在本机节点：缺失则创建（sort_order=-1 恒排首位）。
+// 同时保证占位凭据行存在：本机采集不走凭据，但错误/最近采集时间复用该行落盘。
+func (db *DB) EnsureSelfServer(now int64) (int64, error) {
+	if s, err := db.GetSelfServer(); err != nil || s != nil {
+		if s != nil {
+			db.ensureSelfCredential(s.ID)
+			return s.ID, nil
+		}
+		return 0, err
+	}
+	res, err := db.SQL.Exec(`INSERT INTO server
+		(name, region, region_source, tags, note_public, note_private, sort_order, hidden, enabled, is_self, created_at)
+		VALUES (?, ?, 'auto', '[]', '', '', -1, 0, 1, 1, ?)`,
+		"本机", "本机", now)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err == nil {
+		db.ensureSelfCredential(id)
+	}
+	return id, err
+}
+
+func (db *DB) ensureSelfCredential(id int64) {
+	_, _ = db.SQL.Exec(`INSERT OR IGNORE INTO server_credential
+		(server_id, host, port, username, auth_type) VALUES (?, 'local', 0, 'local', 'password')`, id)
 }
 
 func decodeTags(raw string) []string {
@@ -349,10 +396,10 @@ func boolInt(b bool) int {
 
 func (db *DB) CreateServer(s *Server) (int64, error) {
 	res, err := db.SQL.Exec(`INSERT INTO server
-		(name, region, region_source, tags, note_public, note_private, sort_order, hidden, enabled, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, region, region_source, tags, note_public, note_private, sort_order, hidden, enabled, is_self, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.Name, s.Region, s.RegionSource, encodeTags(s.Tags), s.NotePublic, s.NotePrivate,
-		s.SortOrder, boolInt(s.Hidden), boolInt(s.Enabled), s.CreatedAt)
+		s.SortOrder, boolInt(s.Hidden), boolInt(s.Enabled), boolInt(s.IsSelf), s.CreatedAt)
 	if err != nil {
 		return 0, err
 	}

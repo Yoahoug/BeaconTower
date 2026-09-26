@@ -1,12 +1,15 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -336,6 +339,185 @@ func parseInt(v string) int64 {
 	return n
 }
 
+// parseOutputLoose 与 parseOutput 同一白名单，但不做 mem/cpu 完整性校验
+//（darwin 本机采集的 mem/cpu 由 Go 侧原生补齐）。
+func parseOutputLoose(out []byte) (*RawSample, error) {
+	if len(out) > maxOutputLen {
+		return nil, fmt.Errorf("采集输出过大（%d bytes），疑似异常", len(out))
+	}
+	s := &RawSample{Rapl: map[string]uint64{}, RaplMax: map[string]uint64{}, Thermal: map[string]int64{}}
+	scan := func(line string) {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || len(line) > maxLineLen {
+			return
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			return
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if k == "" {
+			return
+		}
+		switch {
+		case k == "bt_up_s":
+			// boottime 秒 → uptime
+			if boot := parseInt(v); boot > 0 {
+				s.UptimeS = clampInt(time.Now().Unix()-boot, 0, 1<<40)
+			}
+		case k == "bt_load":
+			f := strings.Fields(v)
+			if len(f) >= 3 {
+				s.Load1, s.Load5, s.Load15 = clampF(parseF(f[0]), 0, 1e6), clampF(parseF(f[1]), 0, 1e6), clampF(parseF(f[2]), 0, 1e6)
+			}
+		case k == "bt_cpu_n":
+			s.CpuCores = int(clampInt(parseInt(v), 0, 4096))
+		case k == "bt_proc":
+			s.Processes = int(clampInt(parseInt(v), 0, 1<<30))
+		case k == "bt_hostname":
+			s.Hostname = cleanStr(v, 64)
+		case k == "bt_os_name":
+			s.OsName = cleanStr(v, 64)
+		case k == "bt_os_id":
+			s.OsID = cleanStr(v, 32)
+		case k == "bt_os_ver":
+			s.OsVer = cleanStr(v, 32)
+		case k == "bt_kernel":
+			s.Kernel = cleanStr(v, 64)
+		case k == "bt_arch":
+			s.Arch = cleanStr(v, 16)
+		case k == "bt_virt":
+			s.Virt = cleanStr(v, 32)
+		}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		scan(line)
+	}
+	return s, nil
+}
+
+// ---------- darwin 本机原生采集（仅本地执行，非 SSH 路径） ----------
+
+func darwinSysctlInt(name string) int64 {
+	out, err := exec.Command("sysctl", "-n", name).Output()
+	if err != nil {
+		return 0
+	}
+	return parseInt(strings.TrimSpace(string(out)))
+}
+
+func darwinMem() (total, used int64, ok bool) {
+	pageSize := darwinSysctlInt("hw.pagesize")
+	if pageSize <= 0 {
+		return 0, 0, false
+	}
+	out, err := exec.Command("vm_stat").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	var active, wired, compressed int64
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok2 := strings.Cut(line, ":")
+		if !ok2 {
+			continue
+		}
+		// vm_stat 数值带尾点（"307651."），单位可能是 " pages." 或 " page."
+		v = strings.TrimSpace(v)
+		v = strings.TrimSuffix(v, " pages.")
+		v = strings.TrimSuffix(v, " page.")
+		v = strings.TrimSuffix(v, ".")
+		v = strings.TrimSpace(v)
+		n := parseInt(v)
+		switch {
+		case strings.HasPrefix(k, "Pages active"):
+			active = n
+		case strings.HasPrefix(k, "Pages wired"):
+			wired = n
+		case strings.HasPrefix(k, "Pages compressed"):
+			compressed = n
+		}
+	}
+	used = (active + wired + compressed) * pageSize // purgeable 计入 used 偏保守，此处忽略
+	total = darwinSysctlInt("hw.memsize")
+	if total <= 0 || used <= 0 {
+		return 0, 0, false
+	}
+	if used > total {
+		used = total
+	}
+	return total, used, true
+}
+
+func darwinCpuTicks() (total, idle uint64) {
+	// top -l 1 每次调用即给出最近窗口的 CPU 占用率；直接取 busy% = 100 - idle
+	// 归一为千分比伪 tick（CpuTotal=1000 恒定，CpuIdle 随窗口浮动），差分即得占用率。
+	out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
+	if err != nil {
+		return 0, 0
+	}
+	var idN float64
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "CPU usage: ") {
+			continue
+		}
+		f := strings.Fields(line)
+		// CPU usage: 8.20% user, 2.90% sys, 88.88% idle
+		if len(f) < 7 {
+			continue
+		}
+		id, e := strconv.ParseFloat(strings.TrimSuffix(f[6], "%"), 64)
+		if e != nil {
+			continue
+		}
+		idN = id
+	}
+	if idN == 0 {
+		return 0, 0
+	}
+	idle = uint64(idN * 10) // 百分比 → 千分比
+	return 1000, idle
+}
+
+func darwinDisk(mount string) (total, used int64) {
+	out, err := exec.Command("df", "-k", mount).Output()
+	if err != nil {
+		return 0, 0
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return 0, 0
+	}
+	f := strings.Fields(lines[len(lines)-1])
+	if len(f) < 3 {
+		return 0, 0
+	}
+	total = clampInt(parseInt(f[1]), 0, 1<<60) * 1024
+	avail := clampInt(parseInt(f[3]), 0, 1<<60) * 1024
+	used = total - avail
+	if used < 0 {
+		used = 0
+	}
+	return total, used
+}
+
+func darwinNetTotals() (rx, tx uint64) {
+	out, err := exec.Command("netstat", "-ibn").Output()
+	if err != nil {
+		return 0, 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		// Link 行固定 11 列：<name> <mtu> <Link#n> <mac> Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+		// 只聚合 Link 行（每接口仅一条，避免同接口多地址行重复累计），排除回环
+		if len(f) != 11 || f[0] == "lo0" || !strings.HasPrefix(f[2], "<Link") {
+			continue
+		}
+		rx += uint64(clampInt(parseInt(f[6]), 0, 1<<60))
+		tx += uint64(clampInt(parseInt(f[9]), 0, 1<<60))
+	}
+	return rx, tx
+}
+
 func parseU(v string) uint64 {
 	n, _ := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
 	return n
@@ -531,6 +713,94 @@ func DialAndCollect(ctx context.Context, cred *SSHCred, storedFP string, strict 
 
 // collectScript 经 stdin 喂给远端 sh -s 执行，不再拼装 sh -c 引号，
 // 故脚本内允许单引号（grep/awk 的 '^cpu ' 等模式无需改写）。
+
+// RunCollectScript 本地执行采集脚本（本机节点免 SSH：进程内直接 sh -s，
+// 与远端节点完全同一脚本/解析/差分链路）。
+func RunCollectScript(ctx context.Context) (*RawSample, error) {
+	type execOut struct {
+		out []byte
+		err error
+	}
+	ech := make(chan execOut, 1)
+	cmd := exec.CommandContext(ctx, "sh", "-s")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdout = &bytes.Buffer{}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() {
+		defer stdin.Close()
+		script := collectScript
+		if runtime.GOOS == "darwin" {
+			script = collectScriptLocalDarwin
+		}
+		_, _ = io.WriteString(stdin, script)
+	}()
+	go func() {
+		err := cmd.Wait()
+		out := cmd.Stdout.(*bytes.Buffer).Bytes()
+		if len(out) > maxOutputLen {
+			out = out[:maxOutputLen]
+		}
+		ech <- execOut{out, err}
+	}()
+	var out []byte
+	select {
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("本机采集超时")
+	case o := <-ech:
+		if o.err != nil && len(o.out) == 0 {
+			return nil, fmt.Errorf("本机采集执行失败：%v", o.err)
+		}
+		out = o.out
+	}
+	if runtime.GOOS == "darwin" {
+		return parseOutputDarwin(out)
+	}
+	return parseOutput(out)
+}
+
+// parseOutputDarwin 解析 darwin 本机采集输出：mem/cpu/net 等由 Go 侧原生读取
+//（脚本只负责 uptime/load/画像），因此不走 Linux 的 mem/cpu 完整性校验。
+func parseOutputDarwin(out []byte) (*RawSample, error) {
+	s, err := parseOutputLoose(out)
+	if err != nil {
+		return nil, err
+	}
+	// CPU/内存/网络：darwin 原生 sysctl/hoststat 补齐
+	if total, used, ok := darwinMem(); ok {
+		s.MemTotal, s.MemUsed = total, used
+		s.setMemAvail(total - used)
+		s.memAvailSet = true
+	}
+	s.CpuTotal, s.CpuIdle = darwinCpuTicks()
+	s.CpuCores = int(darwinSysctlInt("hw.ncpu"))
+	s.DiskTotal, s.DiskUsed = darwinDisk("/")
+	s.NetRx, s.NetTx = darwinNetTotals()
+	if s.CpuTotal == 0 || s.MemTotal == 0 {
+		return nil, fmt.Errorf("本机采集不完整（darwin sysctl 缺失）")
+	}
+	return s, nil
+}
+
+// collectScriptLocalDarwin darwin 本机采集脚本：macOS 无 /proc，
+// 采集 system_profiler/vm_stat/sysctl 等本机等价接口。
+const collectScriptLocalDarwin = `echo bt_begin=1
+echo bt_up_s=$(sysctl -n kern.boottime 2>/dev/null | grep -oE 'sec = [0-9]+' | grep -oE '[0-9]+' | head -1)
+echo bt_load=$(uptime 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | tail -3 | tr '\n' ' ')
+echo bt_cpu_n=$(sysctl -n hw.ncpu 2>/dev/null)
+echo bt_hostname=$(hostname 2>/dev/null)
+echo bt_os_name="macOS"
+echo bt_os_ver=$(sw_vers -productVersion 2>/dev/null)
+echo bt_kernel=$(uname -r 2>/dev/null)
+echo bt_arch=$(uname -m 2>/dev/null)
+echo bt_virt=物理机
+echo bt_proc=$(ps -axo pid= 2>/dev/null | wc -l | tr -d ' ')
+echo bt_end=1`
 
 // classifyErr SSH 错误分类（doc/04 错误码 2001 的 msg 分类）。
 func classifyErr(err error) error {
