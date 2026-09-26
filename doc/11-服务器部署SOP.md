@@ -46,7 +46,7 @@ services:
     container_name: beacontower
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8091:8080"     # 8080 被 sub2api 占用 → 宿主用 8091，只绑回环走反代
+      - "10.66.66.66:8091:8080"   # 绑组网地址（组网内设备可直接访问）；走公网反代则改 127.0.0.1
     environment:
       - BEACON_MASTER_KEY=${BEACON_MASTER_KEY}   # .env 提供，32 字节 hex
       - TZ=Asia/Shanghai
@@ -67,6 +67,6 @@ services:
 
 ## 相关入口
 
-- 面板（本机）：http://10.66.66.66:8091（绑回环，需经反代或 SSH 隧道访问）
+- 面板（组网）：http://10.66.66.66:8091（绑定组网地址，组网内设备可直接访问）
 - GHCR 镜像：`ghcr.io/yoahoug/beacontower:latest`（另含 `${sha}` tag 可回滚）
 - 构建日志：GitHub 仓库 → Actions → "Docker image (GHCR)"
