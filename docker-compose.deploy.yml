@@ -1,0 +1,17 @@
+services:
+  beacontower:
+    image: ghcr.io/yoahoug/beacontower:latest
+    container_name: beacontower
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8091:8080"   # 8080 被 sub2api 占用 → 宿主用 8091，只绑回环走反代
+    environment:
+      - BEACON_MASTER_KEY=${BEACON_MASTER_KEY}   # .env 提供（openssl rand -hex 32）
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data        # SQLite 库 + master.key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

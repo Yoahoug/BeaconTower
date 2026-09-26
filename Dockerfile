@@ -19,7 +19,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/beacontower .
 # ---------- 阶段 3：运行镜像 ----------
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
-    && adduser -D -u 10001 beacon
+    && adduser -D -u 10001 beacon \
+    && mkdir -p /app/data && chown beacon:beacon /app/data
 USER beacon
 WORKDIR /app
 COPY --from=backend /out/beacontower /app/beacontower
