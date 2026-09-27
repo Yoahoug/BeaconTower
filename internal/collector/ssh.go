@@ -66,9 +66,15 @@ echo bt_virt=$(systemd-detect-virt 2>/dev/null || echo unknown)
 echo bt_pub_ip=$(curl -sS -m 5 -4 https://ip.sb 2>/dev/null || curl -sS -m 5 -4 'http://ip-api.com/json/?fields=query' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 # RAPL：优先标准 sysfs 路径；容器内 Docker 默认 mask 了
 # /sys/devices/virtual/powercap（class 符号链接失效），故兜底挂载点 /powercap-ro
+# （compose 挂宿主 /sys/devices/virtual/powercap → 容器 /powercap-ro，
+#   域目录可能直接在其下、也可能深一层 intel-rapl/，两层都探测）
 rapl_base=""
 [ -e /sys/class/powercap/intel-rapl:0/energy_uj ] && rapl_base=/sys/class/powercap
-[ -z "$rapl_base" ] && [ -d /powercap-ro/intel-rapl ] && rapl_base=/powercap-ro
+if [ -z "$rapl_base" ]; then
+  for c in /powercap-ro /powercap-ro/intel-rapl; do
+    [ -e "$c/intel-rapl:0/energy_uj" ] && rapl_base=$c && break
+  done
+fi
 if [ -n "$rapl_base" ]; then
   for d in $rapl_base/intel-rapl:*; do
     case $d in *mmio*) continue ;; esac
