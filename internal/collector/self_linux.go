@@ -71,17 +71,7 @@ func collectSelfLinux(ctx context.Context) (*RawSample, error) {
 	// mem / swap
 	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
 		total, avail, free, swapT, swapF := meminfoParse(b)
-		s.MemTotal = total * 1024
-		if avail > 0 {
-			s.setMemAvail((total - avail) * 1024)
-		} else {
-			s.setMemFree(free * 1024)
-		}
-		s.SwapTotal = swapT * 1024
-		s.SwapUsed = (swapT - swapF) * 1024
-		if s.SwapUsed < 0 {
-			s.SwapUsed = 0
-		}
+		applyMemWiring(s, total, avail, free, swapT, swapF)
 	}
 	// 磁盘：/ 挂载点 statfs（df -kP / 等价）
 	var st syscall.Statfs_t

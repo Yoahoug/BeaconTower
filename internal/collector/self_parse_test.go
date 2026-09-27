@@ -17,6 +17,29 @@ HugePages_Total:       0
 	}
 }
 
+func TestApplyMemWiring(t *testing.T) {
+	// 服务器实况量级：total 12G、avail 8.2G → used 应为 ~3.3G（28%），而非 8.2G
+	s := &RawSample{}
+	applyMemWiring(s, 12154788, 8635676, 4567890, 2097148, 2097148)
+	if s.MemTotal != 12154788*1024 {
+		t.Fatalf("total=%d", s.MemTotal)
+	}
+	wantUsed := int64(12154788-8635676) * 1024
+	if s.MemUsed != wantUsed {
+		t.Fatalf("used=%d want %d", s.MemUsed, wantUsed)
+	}
+	if s.SwapUsed != 0 {
+		t.Fatalf("swapUsed=%d", s.SwapUsed)
+	}
+	// 无 MemAvailable 时回落 MemFree（fixMem 在采集尾部统一结算，此处等价验证）
+	s2 := &RawSample{}
+	applyMemWiring(s2, 1000, 0, 400, 0, 0)
+	s2.fixMem()
+	if s2.MemUsed != 600*1024 {
+		t.Fatalf("fallback used=%d", s2.MemUsed)
+	}
+}
+
 func TestNetDevSum(t *testing.T) {
 	data := []byte(`Inter-|   Receive                                                |  Transmit
  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed

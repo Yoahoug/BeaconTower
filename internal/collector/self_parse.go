@@ -32,6 +32,22 @@ func meminfoParse(data []byte) (total, avail, free, swapT, swapF int64) {
 	return
 }
 
+// applyMemWiring 依据 meminfo 字段装配内存指标（原生路径与脚本 bt_mem_* 同语义）：
+// MemUsed = MemTotal - MemAvailable（无 MemAvailable 时回落 MemFree）。
+func applyMemWiring(s *RawSample, total, avail, free, swapT, swapF int64) {
+	s.MemTotal = total * 1024
+	if avail > 0 {
+		s.setMemAvail(avail * 1024)
+	} else {
+		s.setMemFree(free * 1024)
+	}
+	s.SwapTotal = swapT * 1024
+	s.SwapUsed = (swapT - swapF) * 1024
+	if s.SwapUsed < 0 {
+		s.SwapUsed = 0
+	}
+}
+
 // netDevSum 聚合 /proc/net/dev 的 rx/tx 字节（排除 lo，跳过头部两行）。
 func netDevSum(data []byte) (rx, tx uint64) {
 	for _, line := range strings.Split(string(data), "\n") {
