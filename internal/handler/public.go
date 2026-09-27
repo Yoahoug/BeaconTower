@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
-	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,6 +23,7 @@ func (a *App) PublicSummary(c *gin.Context) {
 		"up_bps": sum["up_bps"], "down_bps": sum["down_bps"],
 		"watts": sum["watts"], "measured_count": sum["measured_count"],
 		"month_kwh": sum["month_kwh"], "est_cost_month": sum["est_cost_month"],
+		"day_in_total": sum["day_in_total"], "day_out_total": sum["day_out_total"],
 	})
 }
 
@@ -86,14 +86,38 @@ func (a *App) PublicHistory(c *gin.Context) {
 		middleware.OK(c, gin.H{"range": rng, "points": rows})
 		return
 	}
-	// 短期走原始采样（降采样到 ≤240 点）
-	samples, err := a.DB.SamplesInRange(id, from, now, 2000)
+	// 短期走原始采样。窗口聚合（等宽分桶取均值）而非 LIMIT 截断：
+	// 6h/24h 在 10s 采样下有 2k/8k 点，截断会让曲线只画到半程。
+	// 分桶数按范围定：1h→60 点，6h→120，24h→144（每点 10/3/10 分钟）。
+	buckets := 60
+	if rng == "6h" {
+		buckets = 120
+	} else if rng == "24h" {
+		buckets = 144
+	}
+	rows, err := a.DB.SampleWindows(id, from, now, buckets)
 	if err != nil {
 		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
 		return
 	}
-	middleware.OK(c, gin.H{"range": rng, "points": downsampleMetrics(samples, 240, showPowerPublic(settings))})
+	middleware.OK(c, gin.H{"range": rng, "points": windowPoints(rows, showPowerPublic(settings))})
 	return
+}
+
+// windowPoints SQL 分桶聚合行 → 曲线点（字段白名单同 downsampleMetrics）。
+func windowPoints(rows []map[string]any, showPower bool) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		p := map[string]any{
+			"ts": r["ts"], "cpu_pct": r["cpu"], "mem_used": r["mem"],
+			"disk_used": r["disk"], "net_in_bps": r["net_in"], "net_out_bps": r["net_out"],
+		}
+		if showPower {
+			p["power_w"] = r["power"]
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // GET /api/v1/public/stream（SSE：首帧 snapshot + 每轮 update + 15s ping）
@@ -106,8 +130,7 @@ func (a *App) PublicStream(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-	snap := a.Coll.SnapshotNow()
-	writeSSE(c, "snapshot", snap.Servers)
+	writeSSE(c, "snapshot", a.Coll.SSEFrame())
 	c.Writer.Flush()
 
 	ch, unsub := a.Coll.Subscribe()
@@ -121,11 +144,11 @@ func (a *App) PublicStream(c *gin.Context) {
 			return
 		case <-c.Request.Context().Done():
 			return
-		case s, ok := <-ch:
+		case _, ok := <-ch:
 			if !ok {
 				return
 			}
-			writeSSE(c, "update", s.Servers)
+			writeSSE(c, "update", a.Coll.SSEFrame())
 			c.Writer.Flush()
 		case <-ping.C:
 			_, _ = c.Writer.WriteString(": ping\n\n")
@@ -134,10 +157,10 @@ func (a *App) PublicStream(c *gin.Context) {
 	}
 }
 
-func writeSSE(c *gin.Context, event string, v any) {
-	b, _ := jsonMarshal(v)
+// writeSSE data 载荷传预序列化字节（本轮所有 SSE 连接共用同一份 Marshal 结果）。
+func writeSSE(c *gin.Context, event string, data []byte) {
 	_, _ = c.Writer.WriteString("event: " + event + "\n")
-	for _, line := range strings.Split(string(b), "\n") {
+	for _, line := range strings.Split(string(data), "\n") {
 		_, _ = c.Writer.WriteString("data: " + line + "\n")
 	}
 	_, _ = c.Writer.WriteString("\n")
@@ -161,42 +184,6 @@ func hourFloor(ts int64) int64 { return ts - ts%3600 }
 
 func showPowerPublic(settings map[string]string) bool {
 	return settings["show_power_public"] != "false"
-}
-
-// downsampleMetrics 降采样到 ≤n 点（等距抽稀，保证首尾；公开字段白名单）。
-func downsampleMetrics(samples []*store.Metric, n int, showPower bool) []map[string]any {
-	if len(samples) == 0 {
-		return []map[string]any{}
-	}
-	step := 1
-	if len(samples) > n {
-		step = (len(samples) + n - 1) / n
-	}
-	out := []map[string]any{}
-	for i := 0; i < len(samples); i += step {
-		m := samples[i]
-		p := map[string]any{
-			"ts": m.Ts, "cpu_pct": m.CpuPct, "mem_used": m.MemUsed,
-			"disk_used": m.DiskUsed, "net_in_bps": m.NetInBps, "net_out_bps": m.NetOutBps,
-		}
-		if showPower && m.PowerW.Valid {
-			p["power_w"] = m.PowerW.Float64
-		}
-		out = append(out, p)
-	}
-	// 保证尾点
-	last := samples[len(samples)-1]
-	if len(out) == 0 || out[len(out)-1]["ts"] != last.Ts {
-		p := map[string]any{
-			"ts": last.Ts, "cpu_pct": last.CpuPct, "mem_used": last.MemUsed,
-			"disk_used": last.DiskUsed, "net_in_bps": last.NetInBps, "net_out_bps": last.NetOutBps,
-		}
-		if showPower && last.PowerW.Valid {
-			p["power_w"] = last.PowerW.Float64
-		}
-		out = append(out, p)
-	}
-	return out
 }
 
 var _ = time.Now

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"log"
 	"math"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/config"
@@ -19,6 +21,10 @@ type Snapshot struct {
 	Servers []map[string]any `json:"servers"`
 	Summary map[string]any   `json:"summary"`
 	Ts      int64            `json:"ts"`
+
+	// sseFrame Servers 的序列化缓存（rebuildSnapshot 填充）：
+	// SSE 每轮逐连接重复 json.Marshal 同一份数据纯属浪费，只做一次。
+	sseFrame []byte
 }
 
 // Collector 采集器：每节点 goroutine + Ticker + jitter（doc/02 §4.3）。
@@ -30,9 +36,11 @@ type Collector struct {
 	snap    *Snapshot
 	subs    map[chan *Snapshot]struct{}
 	subsMu  sync.Mutex
-	prev    map[int64]*prevState // 面板侧差分基线（cpu/net/rapl）
+	prevMu  sync.Mutex
+	prev    map[int64]*prevState // 面板侧差分基线（cpu/net/rapl）；节点 goroutine 并发读写，须持 prevMu
 	stop    chan struct{}
 	stopped chan struct{}
+	interval atomic.Int64 // 采集间隔秒；SaveSettings 热更新，loop 每轮重读
 }
 
 type prevState struct {
@@ -49,11 +57,22 @@ type prevState struct {
 }
 
 func New(cfg *config.Config, db *store.DB, master []byte) *Collector {
-	return &Collector{
+	c := &Collector{
 		cfg: cfg, db: db, master: master,
 		subs: map[chan *Snapshot]struct{}{},
 		prev: map[int64]*prevState{},
 		stop: make(chan struct{}), stopped: make(chan struct{}),
+	}
+	if cfg != nil {
+		c.interval.Store(int64(cfg.CollectInterval))
+	}
+	return c
+}
+
+// SetInterval 热更新采集间隔（秒），由设置保存接口调用；loop 每轮重读。
+func (c *Collector) SetInterval(sec int64) {
+	if sec >= 5 {
+		c.interval.Store(sec)
 	}
 }
 
@@ -65,6 +84,16 @@ func (c *Collector) SnapshotNow() *Snapshot {
 		return &Snapshot{Servers: []map[string]any{}, Summary: map[string]any{}, Ts: time.Now().Unix()}
 	}
 	return c.snap
+}
+
+// SSEFrame 返回当前快照 Servers 的预序列化字节（SSE 推流复用，避免逐连接重复 Marshal）。
+func (c *Collector) SSEFrame() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.snap == nil || len(c.snap.sseFrame) == 0 {
+		return []byte("[]")
+	}
+	return c.snap.sseFrame
 }
 
 // Subscribe 订阅快照广播（SSE 用，带缓冲防慢消费者阻塞采集）。
@@ -104,16 +133,13 @@ func (c *Collector) Stop() {
 
 func (c *Collector) loop() {
 	defer close(c.stopped)
-	interval := time.Duration(c.cfg.CollectInterval) * time.Second
-	// 首轮立即执行一次（冷启动有数据），之后按间隔
+	// 首轮立即执行一次（冷启动有数据），之后按间隔；间隔每轮重读以支持热更新
 	c.tick()
-	t := time.NewTicker(interval)
-	defer t.Stop()
 	for {
 		select {
 		case <-c.stop:
 			return
-		case <-t.C:
+		case <-time.After(time.Duration(c.interval.Load()) * time.Second):
 			c.tick()
 		}
 	}
@@ -203,12 +229,6 @@ func (c *Collector) collectOne(srv *store.Server, now int64, settings map[string
 	c.applySample(srv, cred, res, now)
 }
 
-// selfNode 该节点是否为本机节点（is_self）：CPU/网速等来自窗口快照而非累计计数器。
-func (c *Collector) selfNode(serverID int64) bool {
-	s, err := c.db.GetServer(serverID)
-	return err == nil && s != nil && s.IsSelf
-}
-
 func (c *Collector) markFail(serverID int64, reason string, now int64) {	_ = c.db.QueueCollectResult(serverID, "", reason, nil)
 	m := &store.Metric{ServerID: serverID, Ts: now, Status: "offline"}
 	_ = c.db.QueueLatest(m)
@@ -241,10 +261,14 @@ func (c *Collector) collectSelf(srv *store.Server, now int64) {
 }
 
 // applySample 差分计算（CPU/网速/RAPL 功率）+ 落库 + kWh 积分。
+// prevMu 护住 c.prev map 与 p 的差分状态（多节点 goroutine 并发进入）；
+// 差分计算依赖 p 字段的原子性，故画像查询与 powerFor 都在锁内完成。
+// 锁外代码只读 p.lastW/lastWAt——该节点的 prevState 仅本轮 goroutine 写。
 func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *DialResult, now int64) {
 	raw := res.Raw
-	p := c.prev[srv.ID]
-	if p == nil {
+	c.prevMu.Lock()
+	p, ok := c.prev[srv.ID]
+	if !ok {
 		p = &prevState{rapl: map[string]uint64{}}
 		c.prev[srv.ID] = p
 	}
@@ -257,7 +281,7 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		if dTotal > 0 {
 			m.CpuPct = clampPct((1 - dIdle/dTotal) * 100)
 		}
-	} else if p.ts > 0 && raw.CpuTotal > 0 && raw.CpuTotal == p.cpuTotal && c.selfNode(srv.ID) {
+	} else if p.ts > 0 && raw.CpuTotal > 0 && raw.CpuTotal == p.cpuTotal && srv.IsSelf {
 		// 本机节点（darwin）：CpuTotal 恒为 1000，CpuIdle 直接是窗口 idle%
 		m.CpuPct = clampPct(100 - float64(raw.CpuIdle)/10)
 	}
@@ -267,20 +291,11 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		m.NetInBps = float64(raw.NetRx-p.netRx) * 8 / dt
 		m.NetOutBps = float64(raw.NetTx-p.netTx) * 8 / dt
 	}
-	p.cpuTotal, p.cpuIdle, p.ts = raw.CpuTotal, raw.CpuIdle, now
-	p.netRx, p.netTx = raw.NetRx, raw.NetTx
-
-	m.MemUsed, m.MemTotal = raw.MemUsed, raw.MemTotal
-	m.SwapUsed, m.SwapTotal = raw.SwapUsed, raw.SwapTotal
-	m.DiskUsed, m.DiskTotal = raw.DiskUsed, raw.DiskTotal
-	m.NetInTotal, m.NetOutTotal = int64(raw.NetRx), int64(raw.NetTx)
-	m.TcpConns, m.UdpConns = raw.TcpConns, raw.UdpConns
-	m.Load1, m.Load5, m.Load15 = raw.Load1, raw.Load5, raw.Load15
-	m.UptimeS = raw.UptimeS
-	m.Processes = raw.Processes
-
 	// 画像（低频字段）：每次采集都写回画像（开销小，保证画像新鲜；region 自动定位仅 auto 时覆盖）
-	prof, _ := c.db.GetProfile(srv.ID)
+	var prof *store.Profile
+	if c.db != nil {
+		prof, _ = c.db.GetProfile(srv.ID)
+	}
 	if prof == nil {
 		prof = &store.Profile{ServerID: srv.ID, BaseLoadSource: "default"}
 	}
@@ -292,7 +307,7 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 	prof.Virt = normalizeVirt(raw.Virt)
 	if raw.PubIP != "" && raw.PubIP != prof.PublicIP {
 		prof.PublicIP = raw.PubIP
-		if r := geoip.Lookup(raw.PubIP); r != nil && srv.RegionSource == "auto" {
+		if r := geoip.Lookup(raw.PubIP); r != nil && srv.RegionSource == "auto" && c.db != nil {
 			_ = c.db.UpdateRegion(srv.ID, geoip.RegionText(r), "auto")
 		}
 		prof.GeoCountry, prof.GeoCity = geoCountryCity(raw.PubIP)
@@ -301,9 +316,18 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 	if prof.BaseLoadSource == "" {
 		prof.BaseLoadSource = "default"
 	}
-
-	// 功耗（doc/09 §3）：RAPL 差分 + 回绕 + 异常过滤 + EMA + kWh 梯形积分
 	powerW, cpuW, dramW := c.powerFor(srv.ID, prof, raw, now, p)
+	c.prevMu.Unlock()
+
+	m.MemUsed, m.MemTotal = raw.MemUsed, raw.MemTotal
+	m.SwapUsed, m.SwapTotal = raw.SwapUsed, raw.SwapTotal
+	m.DiskUsed, m.DiskTotal = raw.DiskUsed, raw.DiskTotal
+	m.NetInTotal, m.NetOutTotal = int64(raw.NetRx), int64(raw.NetTx)
+	m.TcpConns, m.UdpConns = raw.TcpConns, raw.UdpConns
+	m.Load1, m.Load5, m.Load15 = raw.Load1, raw.Load5, raw.Load15
+	m.UptimeS = raw.UptimeS
+	m.Processes = raw.Processes
+
 	if raw.HasRapl {
 		m.PowerW = sqlFloat(powerW)
 		m.CpuW = sqlFloat(cpuW)
@@ -318,19 +342,22 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		// kWh 梯形积分进月累计
 		if p.lastW > 0 && p.lastWAt > 0 && now > p.lastWAt && now-p.lastWAt < 300 {
 			kwh := (p.lastW + powerW) / 2 * float64(now-p.lastWAt) / 3.6e6
-			if kwh > 0 && kwh < 1 {
+			if kwh > 0 && kwh < 1 && c.db != nil {
 				_ = c.db.QueueMonthKwh(srv.ID, kwh)
 			}
 		}
 		p.lastW, p.lastWAt = powerW, now
 	}
-	_ = c.db.QueueProfile(prof, now)
-	_ = c.db.QueueLatest(m)
-	_ = c.db.QueueSample(m)
-	_ = c.db.QueueCollectResult(srv.ID, "", "", now)
+	if c.db != nil {
+		_ = c.db.QueueProfile(prof, now)
+		_ = c.db.QueueLatest(m)
+		_ = c.db.QueueSample(m)
+		_ = c.db.QueueCollectResult(srv.ID, "", "", now)
+	}
 }
 
 // powerFor RAPL 功率计算：package+core+uncore 取 package 域；dram 独立；整机 = package + base。
+// 调用方须持 prevMu（读写 p.rapl/p.smoothW/p.batCalib）。
 func (c *Collector) powerFor(serverID int64, prof *store.Profile, raw *RawSample, now int64, p *prevState) (total, cpu, dram float64) {
 	if !raw.HasRapl || len(p.rapl) == 0 {
 		// 首轮无基线：记录基线，不产出功率
@@ -460,8 +487,14 @@ func pickTemp(zones map[string]int64) (float64, bool) {
 			}
 		}
 	}
-	for _, t := range zones {
-		return float64(t) / 1000, true
+	// 兜底：map 迭代序随机会令温度在不同传感器间跳变；按名取最小保证稳定
+	names := make([]string, 0, len(zones))
+	for typ := range zones {
+		names = append(names, typ)
+	}
+	sort.Strings(names)
+	if len(names) > 0 {
+		return float64(zones[names[0]]) / 1000, true
 	}
 	return 0, false
 }

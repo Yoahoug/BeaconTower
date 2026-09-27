@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/collector"
@@ -40,6 +41,13 @@ func main() {
 		log.Fatalf("打开数据库失败: %v", err)
 	}
 	defer db.Close()
+
+	// 采集间隔以设置表为准（管理端保存后重启仍生效；环境变量仅首次默认值）
+	if s, err := db.GetSettings(); err == nil {
+		if n, e := strconv.Atoi(s["interval_s"]); e == nil && n >= 5 && n <= 3600 {
+			cfg.CollectInterval = n
+		}
+	}
 
 	coll := collector.New(cfg, db, master)
 	app := &handler.App{

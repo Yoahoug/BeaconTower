@@ -579,7 +579,8 @@ func (a *App) TestConnection(c *gin.Context) {
 	})
 }
 
-// applyProbe 保存试连画像（新建/编辑时 probe 透传）。
+// applyProbe 保存试连画像（新建/编辑时 probe 透传）。UpsertProfile 传 0 表示
+// 试连路径：month_kwh 采用探针携带值（无采集轮参与，无覆盖风险）。
 func (a *App) applyProbe(serverID int64, pb *probeInput, regionSource string) {
 	p := &store.Profile{
 		ServerID: serverID, Hostname: pb.Profile.Hostname,
@@ -602,7 +603,7 @@ func (a *App) applyProbe(serverID int64, pb *probeInput, regionSource string) {
 			p.BaseLoadSource = pb.Profile.Power.BaseLoadSource
 		}
 	}
-	_ = a.DB.UpsertProfile(p, nowUnix())
+	_ = a.DB.UpsertProfile(p, 0)
 	_ = a.DB.SetCollectResult(serverID, pb.HostKeyFP, "", nowUnix())
 }
 
@@ -646,7 +647,8 @@ func (a *App) SaveSettings(c *gin.Context) {
 			return
 		}
 		next["interval_s"] = itoa(int64(n))
-		a.Cfg.CollectInterval = n
+		// 热更新采集间隔（loop 每轮重读 atomic 值）；重启后由启动逻辑从设置表恢复
+		a.Coll.SetInterval(int64(n))
 	}
 	if v, ok := get("retention_days"); ok {
 		n := toInt(v)

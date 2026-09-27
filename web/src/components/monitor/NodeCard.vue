@@ -176,7 +176,7 @@ const powerHistory = computed(() =>
     </div>
 
     <div class="node-card__foot">
-      <span class="tnum">TCP {{ server.metrics.tcp }} · UDP {{ server.metrics.udp }} · 进程 {{ server.metrics.processes }}</span>
+      <span class="tnum" title="连接数统计含 TIME_WAIT/CLOSE_WAIT 等全部套接字表项，数值偏大于活跃连接">TCP {{ server.metrics.tcp }} · UDP {{ server.metrics.udp }} · 进程 {{ server.metrics.processes }}</span>
       <span>{{ server.profile.virt }} · {{ server.profile.cores }}核</span>
     </div>
     <div class="node-card__foot" style="border-top: none; padding-top: 0">

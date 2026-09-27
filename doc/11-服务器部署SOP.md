@@ -53,6 +53,9 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data          # SQLite 库 + master.key
+      # 宿主 /proc 只读挂载：本机节点网络/进程数与 CPU/内存同口径（容器 netns 只见
+      # 面板容器自身流量/进程，与宿主 CPU/内存口径冲突）
+      - /proc:/host/proc:ro
       # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
       # 只读挂到 /powercap-ro 兜底，采集脚本自动探测两种布局：
       - /sys/devices/virtual/powercap:/powercap-ro:ro
@@ -70,6 +73,7 @@ services:
 | `打开数据库失败: unable to open database file (14)` 循环重启 | 宿主 `data/` 为 root 属主，容器内 beacon(uid 10001) 不可写 | `chown -R 10001:10001 data/`；新镜像已在构建期 `mkdir + chown /app/data`，匿名卷首挂载继承镜像属主，全新部署不再需要手工 chown |
 | 容器内读不到 RAPL（`/sys/class/powercap/intel-rapl:0` 符号链接失效） | Docker 默认 MaskedPaths 掩了 `/sys/devices/virtual/powercap` | compose 只读挂载宿主该目录到 `/powercap-ro`；采集脚本（v6503c8a+）自动探测标准路径与兜底路径两种布局 |
 | `/powercap-ro` 能看到目录但 `cat energy_uj` Permission denied | 宿主 energy_uj 权限 0400 root，非 root 容器不可读 | compose 加 `user: root`（i5-6300HQ 实测 total_w/cpu_w/temp/freq 全部出数） |
+| 本机节点网络速率/进程数明显偏小（与宿主对不上） | 容器 netns/pidns 隔离：`/proc/net/dev`、`/proc` 目录只见面板容器自身 | compose 只读挂宿主 `/proc` 到 `/host/proc`（v2026-09-27+ 采集自动优先读取），未挂载时回落容器视图（口径降级） |
 
 ## 相关入口
 

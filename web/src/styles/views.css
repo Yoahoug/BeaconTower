@@ -319,6 +319,7 @@
   gap: var(--bt-space-2);
 }
 
+
 .node-net__cell {
   display: flex;
   align-items: center;

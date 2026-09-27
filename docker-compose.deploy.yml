@@ -3,6 +3,7 @@ services:
     image: ghcr.io/yoahoug/beacontower:latest
     container_name: beacontower
     restart: unless-stopped
+    user: root                      # RAPL energy_uj 宿主上仅 root 可读(0400)，非 root 容器读不到
     ports:
       - "10.66.66.66:8091:8080"   # 绑组网地址（组网内设备可直接访问）；走公网反代则改 127.0.0.1
     environment:
@@ -10,6 +11,12 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data        # SQLite 库 + master.key
+      # 宿主 /proc 只读挂载：本机节点的网络/进程数与 CPU/内存同口径（否则容器 netns
+      # 里只统计到面板容器自身的流量与进程，与宿主 CPU/内存口径冲突）
+      - /proc:/host/proc:ro
+      # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
+      # 只读挂到 /powercap-ro 兜底，采集逻辑自动探测两种布局
+      - /sys/devices/virtual/powercap:/powercap-ro:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 60s

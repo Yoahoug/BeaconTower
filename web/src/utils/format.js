@@ -23,6 +23,7 @@ export function fmtSizeShort(gb) {
   return `${Math.round(gb)}G`
 }
 
+
 export function fmtUptime(days) {
   if (days <= 0) return '—'
   if (days < 1) return '不足 1 天'

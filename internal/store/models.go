@@ -542,8 +542,13 @@ const profileUpsertSQL = `INSERT INTO server_profile
 		virt=excluded.virt, public_ip=excluded.public_ip, geo_country=excluded.geo_country,
 		geo_city=excluded.geo_city, power_rapl=excluded.power_rapl, power_battery=excluded.power_battery,
 		base_load_w=excluded.base_load_w, base_load_source=excluded.base_load_source,
+		month_kwh=CASE WHEN excluded.collected_at > 0 THEN server_profile.month_kwh
+			ELSE excluded.month_kwh END,
 		collected_at=excluded.collected_at`
 
+// upsertProfileExec 画像全字段 upsert。collected_at>0 表示采集链路写入：
+// month_kwh 保留库内现值（同轮 QueueMonthKwh 增量与画像 upsert 混排，
+// 若用内存画像的旧值覆盖会把本帧累计清掉）；试连画像（collected_at=0）显式覆盖。
 func upsertProfileExec(e execer, p *Profile, now int64) error {
 	_, err := e.Exec(profileUpsertSQL,
 		p.ServerID, p.Hostname, p.OsName, p.OsVersion, p.Kernel, p.Arch, p.CpuModel, p.CpuCores,
@@ -577,6 +582,12 @@ func (db *DB) QueueMonthKwh(serverID int64, delta float64) error {
 func addMonthKwhExec(e execer, serverID int64, delta float64) error {
 	_, err := e.Exec(`UPDATE server_profile SET month_kwh = COALESCE(month_kwh,0) + ?
 		WHERE server_id = ?`, delta, serverID)
+	return err
+}
+
+// ResetAllMonthKwh 月初清零全节点月累计（后台任务按月翻转触发）。
+func (db *DB) ResetAllMonthKwh() error {
+	_, err := db.SQL.Exec(`UPDATE server_profile SET month_kwh = 0 WHERE COALESCE(month_kwh,0) != 0`)
 	return err
 }
 
@@ -642,59 +653,196 @@ func nullStr(n sql.NullString) any {
 	return nil
 }
 
-// LatestWithServer 快照联查：server + credential(画像外键除外) + profile + latest_metric。
+// LatestWithServer 快照联查：server + profile + latest_metric 单查询。
+// 不查 credential：快照链路用不到凭据，原实现每节点多一次查询还拉三个密文 BLOB。
 type SnapshotRow struct {
 	Srv  *Server
 	Prof *Profile
 	M    *Metric // 可能为 nil（从未采集）
-	Cred *Credential
 }
 
+const snapshotJoinSQL = `SELECT s.id, s.name, s.region, s.region_source, s.tags,
+		s.note_public, s.note_private, s.sort_order, s.hidden, s.enabled, s.is_self, s.created_at,
+		COALESCE(p.hostname,''), COALESCE(p.os_name,''), COALESCE(p.os_version,''),
+		COALESCE(p.kernel,''), COALESCE(p.arch,''), COALESCE(p.cpu_model,''), COALESCE(p.cpu_cores,0),
+		COALESCE(p.mem_total,0), COALESCE(p.swap_total,0), COALESCE(p.disk_total,0), COALESCE(p.disks_json,''),
+		COALESCE(p.virt,''), COALESCE(p.public_ip,''), COALESCE(p.geo_country,''), COALESCE(p.geo_city,''),
+		COALESCE(p.power_rapl,0), COALESCE(p.power_battery,0), COALESCE(p.base_load_w,0),
+		COALESCE(p.base_load_source,'default'), COALESCE(p.month_kwh,0),
+		l.server_id, l.ts, l.status, COALESCE(l.cpu_pct,0),
+		COALESCE(l.mem_used,0), COALESCE(l.mem_total,0), COALESCE(l.swap_used,0), COALESCE(l.swap_total,0),
+		COALESCE(l.disk_used,0), COALESCE(l.disk_total,0),
+		COALESCE(l.net_in_bps,0), COALESCE(l.net_out_bps,0),
+		COALESCE(l.net_in_total,0), COALESCE(l.net_out_total,0),
+		COALESCE(l.tcp_conns,0), COALESCE(l.udp_conns,0),
+		COALESCE(l.load1,0), COALESCE(l.load5,0), COALESCE(l.load15,0),
+		COALESCE(l.uptime_s,0), COALESCE(l.processes,0),
+		l.power_w, l.cpu_w, l.dram_w, l.temp_c, l.freq_mhz, l.power_src
+	FROM server s
+	LEFT JOIN server_profile p ON p.server_id = s.id
+	LEFT JOIN latest_metric l ON l.server_id = s.id
+	ORDER BY s.sort_order, s.id`
+
 func (db *DB) SnapshotRows() ([]*SnapshotRow, error) {
-	servers, err := db.ListServers()
+	rows, err := db.SQL.Query(snapshotJoinSQL)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var out []*SnapshotRow
-	for _, s := range servers {
-		row := &SnapshotRow{Srv: s}
-		if p, err := db.GetProfile(s.ID); err != nil {
-			return nil, err
-		} else {
-			row.Prof = p
-		}
-		if c, err := db.GetCredential(s.ID); err != nil {
-			return nil, err
-		} else {
-			row.Cred = c
-		}
+	for rows.Next() {
+		var tags string
+		var hidden, enabled, isSelf int
+		s := &Server{}
+		p := &Profile{}
 		m := &Metric{}
-		err := db.SQL.QueryRow(`SELECT server_id, ts, status, COALESCE(cpu_pct,0),
-			COALESCE(mem_used,0), COALESCE(mem_total,0), COALESCE(swap_used,0), COALESCE(swap_total,0),
-			COALESCE(disk_used,0), COALESCE(disk_total,0),
-			COALESCE(net_in_bps,0), COALESCE(net_out_bps,0),
-			COALESCE(net_in_total,0), COALESCE(net_out_total,0),
-			COALESCE(tcp_conns,0), COALESCE(udp_conns,0),
-			COALESCE(load1,0), COALESCE(load5,0), COALESCE(load15,0),
-			COALESCE(uptime_s,0), COALESCE(processes,0),
-			power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src
-			FROM latest_metric WHERE server_id = ?`, s.ID).
-			Scan(&m.ServerID, &m.Ts, &m.Status, &m.CpuPct, &m.MemUsed, &m.MemTotal,
-				&m.SwapUsed, &m.SwapTotal, &m.DiskUsed, &m.DiskTotal,
-				&m.NetInBps, &m.NetOutBps, &m.NetInTotal, &m.NetOutTotal,
-				&m.TcpConns, &m.UdpConns, &m.Load1, &m.Load5, &m.Load15,
-				&m.UptimeS, &m.Processes,
-				&m.PowerW, &m.CpuW, &m.DramW, &m.TempC, &m.FreqMhz, &m.PowerSrc)
-		if err == sql.ErrNoRows {
-			row.M = nil
-		} else if err != nil {
+		var mServerID sql.NullInt64
+		if err := rows.Scan(&s.ID, &s.Name, &s.Region, &s.RegionSource, &tags,
+			&s.NotePublic, &s.NotePrivate, &s.SortOrder, &hidden, &enabled, &isSelf, &s.CreatedAt,
+			&p.Hostname, &p.OsName, &p.OsVersion,
+			&p.Kernel, &p.Arch, &p.CpuModel, &p.CpuCores,
+			&p.MemTotal, &p.SwapTotal, &p.DiskTotal, &p.DisksJSON,
+			&p.Virt, &p.PublicIP, &p.GeoCountry, &p.GeoCity,
+			&p.PowerRapL, &p.PowerBattery, &p.BaseLoadW,
+			&p.BaseLoadSource, &p.MonthKwh,
+			&mServerID, &m.Ts, &m.Status, &m.CpuPct,
+			&m.MemUsed, &m.MemTotal, &m.SwapUsed, &m.SwapTotal,
+			&m.DiskUsed, &m.DiskTotal,
+			&m.NetInBps, &m.NetOutBps,
+			&m.NetInTotal, &m.NetOutTotal,
+			&m.TcpConns, &m.UdpConns,
+			&m.Load1, &m.Load5, &m.Load15,
+			&m.UptimeS, &m.Processes,
+			&m.PowerW, &m.CpuW, &m.DramW, &m.TempC, &m.FreqMhz, &m.PowerSrc); err != nil {
 			return nil, err
-		} else {
+		}
+		s.Tags = decodeTags(tags)
+		s.Hidden, s.Enabled, s.IsSelf = hidden == 1, enabled == 1, isSelf == 1
+		p.ServerID = s.ID
+		row := &SnapshotRow{Srv: s, Prof: p}
+		if mServerID.Valid {
+			m.ServerID = mServerID.Int64
 			row.M = m
 		}
 		out = append(out, row)
 	}
-	return out, nil
+	return out, rows.Err()
+}
+
+// SampleWindows 时间窗分桶聚合：把 [from,to] 等分为 n 桶，每桶返回桶内均值与桶起始 ts。
+// 曲线点数可控且全程覆盖（替代 LIMIT 截断——截断会让 6h/24h 曲线只画到半程）。
+func (db *DB) SampleWindows(serverID int64, from, to int64, n int) ([]map[string]any, error) {
+	if n <= 0 {
+		n = 60
+	}
+	span := (to - from) / int64(n)
+	if span < 1 {
+		span = 1
+	}
+	rows, err := db.SQL.Query(`SELECT (? + (ts - ?)/?) AS bucket_ts, AVG(COALESCE(cpu_pct,0)),
+		AVG(COALESCE(mem_used,0)), AVG(COALESCE(disk_used,0)),
+		AVG(COALESCE(net_in_bps,0)), AVG(COALESCE(net_out_bps,0)),
+		AVG(CASE WHEN power_w IS NOT NULL THEN power_w END)
+		FROM metric_sample
+		WHERE server_id = ? AND ts >= ? AND ts <= ?
+		GROUP BY bucket_ts ORDER BY bucket_ts`,
+		from, from, span, serverID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var ts int64
+		var cpu, mem, disk, netIn, netOut float64
+		var power sql.NullFloat64
+		if err := rows.Scan(&ts, &cpu, &mem, &disk, &netIn, &netOut, &power); err != nil {
+			return nil, err
+		}
+		row := map[string]any{
+			"ts": ts, "cpu": roundF1(cpu), "mem": mem, "disk": disk,
+			"net_in": netIn, "net_out": netOut,
+		}
+		if power.Valid {
+			row["power"] = power.Float64
+		} else {
+			row["power"] = nil
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func roundF1(v float64) float64 { return float64(int(v*10+0.5)) / 10 }
+
+// ---------- daily traffic（按日流量记录） ----------
+
+// UpsertDailyTraffic 幂等写某日流量（聚合任务重复跑安全）。
+func (db *DB) UpsertDailyTraffic(serverID, dayTs int64, inTotal, outTotal int64, now int64) error {
+	_, err := db.SQL.Exec(`INSERT INTO metric_daily (server_id, day_ts, in_total, out_total, updated_at)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(server_id, day_ts) DO UPDATE SET in_total=excluded.in_total,
+			out_total=excluded.out_total, updated_at=excluded.updated_at`,
+		serverID, dayTs, inTotal, outTotal, now)
+	return err
+}
+
+// DailyTrafficRange 按日流量（dayTs 升序，含首尾）。
+func (db *DB) DailyTrafficRange(serverID int64, fromDay, toDay int64) ([]map[string]any, error) {
+	rows, err := db.SQL.Query(`SELECT day_ts, COALESCE(in_total,0), COALESCE(out_total,0)
+		FROM metric_daily WHERE server_id = ? AND day_ts >= ? AND day_ts <= ? ORDER BY day_ts`,
+		serverID, fromDay, toDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var ts, inT, outT int64
+		if err := rows.Scan(&ts, &inT, &outT); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"ts": ts, "in_total": inT, "out_total": outT})
+	}
+	if out == nil {
+		out = []map[string]any{}
+	}
+	return out, rows.Err()
+}
+
+// DailyTrafficSumAll 全节点某日收发字节合计，按 server_id 分组（快照一次取全）。
+func (db *DB) DailyTrafficSumAll(dayTs int64) (map[int64][2]int64, error) {
+	rows, err := db.SQL.Query(`SELECT server_id, COALESCE(in_total,0), COALESCE(out_total,0)
+		FROM metric_daily WHERE day_ts = ?`, dayTs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][2]int64{}
+	for rows.Next() {
+		var id, inT, outT int64
+		if err := rows.Scan(&id, &inT, &outT); err != nil {
+			return nil, err
+		}
+		out[id] = [2]int64{inT, outT}
+	}
+	return out, rows.Err()
+}
+
+// DailyTrafficSum 全节点某日收发字节合计（公开 summary 用）。
+func (db *DB) DailyTrafficSum(dayTs int64) (inTotal, outTotal int64, err error) {
+	err = db.SQL.QueryRow(`SELECT COALESCE(SUM(in_total),0), COALESCE(SUM(out_total),0)
+		FROM metric_daily WHERE day_ts = ?`, dayTs).Scan(&inTotal, &outTotal)
+	return
+}
+
+// DeleteDailyBefore 清理过期日流量行（retention 与小时聚合同参）。
+func (db *DB) DeleteDailyBefore(dayTs int64) (int64, error) {
+	res, err := db.SQL.Exec(`DELETE FROM metric_daily WHERE day_ts < ?`, dayTs)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // InsertSample 原始采样落库（试连等单发路径立即执行）。
@@ -710,30 +858,39 @@ func (db *DB) QueueSample(m *Metric) error {
 
 const sampleInsertSQL = `INSERT INTO metric_sample
 	(server_id, ts, cpu_pct, mem_used, swap_used, disk_used, net_in_bps, net_out_bps,
+	 net_in_total, net_out_total,
 	 tcp_conns, udp_conns, load1, load5, load15, uptime_s, processes,
 	 power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 func insertSampleExec(e execer, m *Metric) error {
 	_, err := e.Exec(sampleInsertSQL,
 		m.ServerID, m.Ts, m.CpuPct, m.MemUsed, m.SwapUsed, m.DiskUsed,
-		m.NetInBps, m.NetOutBps, m.TcpConns, m.UdpConns,
+		m.NetInBps, m.NetOutBps, m.NetInTotal, m.NetOutTotal,
+		m.TcpConns, m.UdpConns,
 		m.Load1, m.Load5, m.Load15, m.UptimeS, m.Processes,
 		nullFloat(m.PowerW), nullFloat(m.CpuW), nullFloat(m.DramW),
 		nullFloat(m.TempC), nullInt64(m.FreqMhz), nullStr(m.PowerSrc))
 	return err
 }
 
-// SamplesInRange 原始采样（访客短期曲线 / 登录全范围）。
+// SamplesInRange 原始采样（访客短期曲线 / 登录全范围 / 小时与日聚合输入）。
+// limit<=0 表示不限制（聚合任务需要完整小时样本做首尾差）。
 func (db *DB) SamplesInRange(serverID int64, from, to int64, limit int) ([]*Metric, error) {
-	rows, err := db.SQL.Query(`SELECT ts, COALESCE(cpu_pct,0), COALESCE(mem_used,0), COALESCE(swap_used,0),
+	q := `SELECT ts, COALESCE(cpu_pct,0), COALESCE(mem_used,0), COALESCE(swap_used,0),
 		COALESCE(disk_used,0), COALESCE(net_in_bps,0), COALESCE(net_out_bps,0),
+		COALESCE(net_in_total,0), COALESCE(net_out_total,0),
 		COALESCE(tcp_conns,0), COALESCE(udp_conns,0),
 		COALESCE(load1,0), COALESCE(load5,0), COALESCE(load15,0),
 		COALESCE(uptime_s,0), COALESCE(processes,0),
 		power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src
-		FROM metric_sample WHERE server_id = ? AND ts >= ? AND ts <= ? ORDER BY ts LIMIT ?`,
-		serverID, from, to, limit)
+		FROM metric_sample WHERE server_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`
+	args := []any{serverID, from, to}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.SQL.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -742,7 +899,8 @@ func (db *DB) SamplesInRange(serverID int64, from, to int64, limit int) ([]*Metr
 	for rows.Next() {
 		m := &Metric{ServerID: serverID}
 		if err := rows.Scan(&m.Ts, &m.CpuPct, &m.MemUsed, &m.SwapUsed, &m.DiskUsed,
-			&m.NetInBps, &m.NetOutBps, &m.TcpConns, &m.UdpConns,
+			&m.NetInBps, &m.NetOutBps, &m.NetInTotal, &m.NetOutTotal,
+			&m.TcpConns, &m.UdpConns,
 			&m.Load1, &m.Load5, &m.Load15, &m.UptimeS, &m.Processes,
 			&m.PowerW, &m.CpuW, &m.DramW, &m.TempC, &m.FreqMhz, &m.PowerSrc); err != nil {
 			return nil, err

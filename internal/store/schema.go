@@ -77,7 +77,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 4
+const schemaVersion = 5
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -257,6 +257,12 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 		return exec(
 			`ALTER TABLE server ADD COLUMN is_self INTEGER DEFAULT 0`,
 			`CREATE INDEX IF NOT EXISTS idx_server_self ON server(is_self)`,
+		)
+	case 5: // 采样表补流量累计计数（小时聚合/日流量的首尾差基线）+ 清理任务可走索引
+		return exec(
+			`ALTER TABLE metric_sample ADD COLUMN net_in_total INTEGER`,
+			`ALTER TABLE metric_sample ADD COLUMN net_out_total INTEGER`,
+			`CREATE INDEX IF NOT EXISTS idx_sample_ts ON metric_sample(ts)`,
 		)
 	}
 	return fmt.Errorf("unknown migration %d", v)

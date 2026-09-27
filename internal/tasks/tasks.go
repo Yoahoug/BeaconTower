@@ -8,7 +8,8 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/store"
 )
 
-// Start 后台任务：采样清理（10min）+ 小时聚合（整点+5min 时触发检查）+ 会话清理（每小时）。
+// Start 后台任务：采样清理（10min）+ 小时聚合（整点+5min 时触发检查）+ 会话清理（每小时）
+// + 月累计 kWh 月初清零（10min 检查一次，月份翻转即归零）。
 // retention 天数从 setting 表读取（doc/03 §3）。
 func Start(db *store.DB, stop <-chan struct{}) {
 	go func() {
@@ -18,6 +19,7 @@ func Start(db *store.DB, stop <-chan struct{}) {
 		defer aggTick.Stop()
 		sessTick := time.NewTicker(time.Hour)
 		defer sessTick.Stop()
+		curMonth := time.Now().Format("2006-01")
 		for {
 			select {
 			case <-stop:
@@ -28,6 +30,15 @@ func Start(db *store.DB, stop <-chan struct{}) {
 				aggregate(db)
 			case <-sessTick.C:
 				_ = db.CleanExpiredSessions(time.Now().Unix())
+			}
+			// 月翻转检查放在所有 case 之后统一做（ticker 周期远小于月份粒度）
+			if m := time.Now().Format("2006-01"); m != curMonth {
+				curMonth = m
+				if err := db.ResetAllMonthKwh(); err != nil {
+					log.Printf("[tasks] reset month kwh: %v", err)
+				} else {
+					log.Printf("[tasks] month rolled over to %s, month_kwh reset", m)
+				}
 			}
 		}
 	}()
@@ -63,7 +74,8 @@ func cleanup(db *store.DB) {
 	}
 }
 
-// aggregate 上一完整小时聚合：cpu avg/max、mem avg/max、net 均值+累计、power avg + kWh 梯形积分。
+// aggregate 上一完整小时聚合：cpu avg/max、mem avg/max、net 均值、
+// 小时累计流量（首尾累计计数器差，回绕/重启归零时跳过）、power avg + kWh 梯形积分。
 func aggregate(db *store.DB) {
 	now := time.Now().Unix()
 	hourEnd := now - now%3600
@@ -78,7 +90,8 @@ func aggregate(db *store.DB) {
 		return
 	}
 	for _, s := range servers {
-		samples, err := db.SamplesInRange(s.ID, hourStart, hourEnd-1, 10000)
+		// 不限条数：首尾累计差需要完整小时样本
+		samples, err := db.SamplesInRange(s.ID, hourStart, hourEnd-1, 0)
 		if err != nil || len(samples) == 0 {
 			continue
 		}
@@ -86,11 +99,10 @@ func aggregate(db *store.DB) {
 		var memSum int64
 		var memMax int64
 		var inSum, outSum float64
-		var inTot, outTot int64
 		var pSum float64
 		var pN int
 		var kwh float64
-		var lastW, lastT float64
+		var lastW float64
 		var lastTs int64
 		for i, m := range samples {
 			cpuSum += m.CpuPct
@@ -109,15 +121,19 @@ func aggregate(db *store.DB) {
 				if i > 0 && lastTs > 0 && m.Ts > lastTs && m.Ts-lastTs < 300 {
 					kwh += (lastW + m.PowerW.Float64) / 2 * float64(m.Ts-lastTs) / 3.6e6
 				}
-				lastW, lastT, lastTs = m.PowerW.Float64, m.PowerW.Float64, m.Ts
-				_ = lastT
+				lastW, lastTs = m.PowerW.Float64, m.Ts
 			}
 		}
 		n := float64(len(samples))
-		// 小时累计流量：用首尾累计计数器差（回绕/重启归零则取末值）
+		// 小时累计流量：首尾累计计数器差（非负；回绕/重启归零则该小时置 0）
 		first, last := samples[0], samples[len(samples)-1]
-		_ = first
-		_ = last
+		var inTot, outTot int64
+		if first.NetInTotal > 0 && last.NetInTotal >= first.NetInTotal {
+			inTot = last.NetInTotal - first.NetInTotal
+		}
+		if first.NetOutTotal > 0 && last.NetOutTotal >= first.NetOutTotal {
+			outTot = last.NetOutTotal - first.NetOutTotal
+		}
 		var pAvg, kwhV sql.NullFloat64
 		if pN > 0 {
 			pAvg = sql.NullFloat64{Float64: pSum / float64(pN), Valid: true}

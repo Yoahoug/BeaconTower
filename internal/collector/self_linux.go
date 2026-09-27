@@ -102,23 +102,14 @@ func collectSelfLinux(ctx context.Context) (*RawSample, error) {
 			s.DisksRaw = s.DisksRaw[:2048]
 		}
 	}
-	// 网络
-	if b, err := os.ReadFile("/proc/net/dev"); err == nil {
-		s.NetRx, s.NetTx = netDevSum(b)
-	}
-	// tcp/udp 连接数
-	s.TcpConns = connFileCount("/proc/net/tcp") + connFileCount("/proc/net/tcp6")
-	s.UdpConns = connFileCount("/proc/net/udp") + connFileCount("/proc/net/udp6")
-	// 进程数
-	if ents, err := os.ReadDir("/proc"); err == nil {
-		n := 0
-		for _, e := range ents {
-			if isPidName(e.Name()) {
-				n++
-			}
-		}
-		s.Processes = n
-	}
+	// 网络 / tcp-udp / 进程数：容器部署时 /proc 的 netns/pidns 是面板容器自己的，
+	// 与「本机=宿主机」的 CPU/内存口径冲突。挂载了宿主 /proc（/host/proc）则优先，
+	// 保证本机节点全字段同口径（compose 需加 /proc:/host/proc:ro）。
+	hostProc := hostProcRoot()
+	s.NetRx, s.NetTx = netDevSumFile(filepath.Join(hostProc, "net/dev"))
+	s.TcpConns = connFileCount(filepath.Join(hostProc, "net/tcp")) + connFileCount(filepath.Join(hostProc, "net/tcp6"))
+	s.UdpConns = connFileCount(filepath.Join(hostProc, "net/udp")) + connFileCount(filepath.Join(hostProc, "net/udp6"))
+	s.Processes = pidCount(hostProc)
 	// 主机名 / os-release / 内核 / 架构
 	if h, err := os.Hostname(); err == nil {
 		s.Hostname = cleanTrim(h, 64)
@@ -228,6 +219,39 @@ func connFileCount(path string) int {
 		return 0
 	}
 	return procConnCount(b)
+}
+
+// netDevSumFile 读指定路径的 net/dev 并聚合（宿主 proc 优先时路径非 /proc/net/dev）。
+func netDevSumFile(path string) (rx, tx uint64) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0
+	}
+	return netDevSum(b)
+}
+
+// hostProcRoot 宿主 /proc 挂载点：/host/proc 存在（compose 只读挂 /proc）则用之，
+// 否则用本命名空间 /proc（非容器或未挂载场景）。
+func hostProcRoot() string {
+	if _, err := os.Stat("/host/proc/net/dev"); err == nil {
+		return "/host/proc"
+	}
+	return "/proc"
+}
+
+// pidCount 统计指定 proc 根下的 PID 目录数。
+func pidCount(procRoot string) int {
+	ents, err := os.ReadDir(procRoot)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range ents {
+		if isPidName(e.Name()) {
+			n++
+		}
+	}
+	return n
 }
 
 func readFileStr(path string) string {

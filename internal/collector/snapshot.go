@@ -2,6 +2,7 @@ package collector
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/store"
@@ -24,6 +25,7 @@ func (c *Collector) rebuildSnapshot() {
 	online, measured := 0, 0
 	var monthKwh, estCost float64
 
+	// 今日流量（按日记录）：一次取全节点，避免快照循环内逐节点查询
 	for _, r := range rows {
 		s := r.Srv
 		if s.Hidden {
@@ -71,6 +73,7 @@ func (c *Collector) rebuildSnapshot() {
 			"id": s.ID, "name": s.Name, "region": s.Region,
 			"region_source": s.RegionSource, "tags": s.Tags,
 			"note_public": s.NotePublic, "status": status,
+			"is_self": s.IsSelf,
 			"profile": profile, "metrics": m,
 		}
 		// 功耗（受站点开关控制；RAPL 不可用输出 null）
@@ -100,7 +103,11 @@ func (c *Collector) rebuildSnapshot() {
 		"month_kwh": monthKwh, "est_cost_month": estCost,
 	}
 	c.mu.Lock()
-	c.snap = &Snapshot{Servers: servers, Summary: summary, Ts: now}
+	b, err := json.Marshal(servers)
+	if err != nil {
+		b = []byte("[]")
+	}
+	c.snap = &Snapshot{Servers: servers, Summary: summary, Ts: now, sseFrame: b}
 	c.mu.Unlock()
 }
 

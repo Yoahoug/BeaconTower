@@ -89,7 +89,7 @@ const powerSeries = computed(() => [
           <div class="kpi-card__sub">实时入口带宽</div>
         </div>
 
-        <div class="kpi-card kpi-card--warn spot bt-enter" style="--i: 4" v-spotlight>
+        <div class="kpi-card kpi-card--warn spot bt-enter" style="--i: 5" v-spotlight>
           <div class="kpi-card__label"><AppIcon name="sparkles" aria-hidden="true" />实时功耗</div>
           <div class="kpi-card__value">
             <TweenNumber
