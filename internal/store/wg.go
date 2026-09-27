@@ -441,3 +441,119 @@ func (db *DB) SetCredentialFP(serverID int64, fp string) error {
 	_, err := db.SQL.Exec(`UPDATE server_credential SET host_key_fp = ? WHERE server_id = ?`, fp, serverID)
 	return err
 }
+
+// ---------- 资产（doc/12 §8） ----------
+
+// WGAsset 资产条目：多源 URL（含镜像/自有仓库），面板缓存后经 SSH 推送节点。
+type WGAsset struct {
+	ID        int64
+	Name      string
+	Version   string
+	Arch      string
+	SHA256    string
+	Sources   []string // 原始 URL（GitHub 链接会在测速时自动生成镜像变体）
+	Path      string   // 面板本地缓存路径
+	Size      int64
+	Note      string
+	UpdatedAt int64
+}
+
+func (db *DB) ListWGAssets() ([]*WGAsset, error) {
+	rows, err := db.SQL.Query(`SELECT id, name, COALESCE(version,''), COALESCE(arch,'x86_64'),
+		COALESCE(sha256,''), sources, COALESCE(path,''), COALESCE(size,0), COALESCE(note,''),
+		COALESCE(updated_at,0) FROM wg_asset ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*WGAsset
+	for rows.Next() {
+		a := &WGAsset{}
+		var sources string
+		if err := rows.Scan(&a.ID, &a.Name, &a.Version, &a.Arch, &a.SHA256, &sources,
+			&a.Path, &a.Size, &a.Note, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		a.Sources = decodeJSONStrings(sources)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func decodeJSONStrings(raw string) []string {
+	if raw == "" {
+		return []string{}
+	}
+	var t []string
+	if err := json.Unmarshal([]byte(raw), &t); err != nil {
+		return []string{}
+	}
+	return t
+}
+
+func encodeJSONStrings(t []string) string {
+	b, _ := json.Marshal(t)
+	return string(b)
+}
+
+func (db *DB) GetWGAsset(id int64) (*WGAsset, error) {
+	a := &WGAsset{}
+	var sources string
+	err := db.SQL.QueryRow(`SELECT id, name, COALESCE(version,''), COALESCE(arch,'x86_64'),
+		COALESCE(sha256,''), sources, COALESCE(path,''), COALESCE(size,0), COALESCE(note,''),
+		COALESCE(updated_at,0) FROM wg_asset WHERE id = ?`, id).
+		Scan(&a.ID, &a.Name, &a.Version, &a.Arch, &a.SHA256, &sources, &a.Path, &a.Size, &a.Note, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Sources = decodeJSONStrings(sources)
+	return a, nil
+}
+
+func (db *DB) UpsertWGAsset(a *WGAsset) (int64, error) {
+	res, err := db.SQL.Exec(`INSERT INTO wg_asset
+		(name, version, arch, sha256, sources, path, size, note, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(name) DO UPDATE SET version=excluded.version, arch=excluded.arch,
+			sha256=excluded.sha256, sources=excluded.sources, path=excluded.path,
+			size=excluded.size, note=excluded.note, updated_at=excluded.updated_at`,
+		a.Name, a.Version, a.Arch, a.SHA256, encodeJSONStrings(a.Sources),
+		a.Path, a.Size, a.Note, a.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	if id, err := res.LastInsertId(); err == nil && id > 0 {
+		return id, nil
+	}
+	// ON CONFLICT 更新时拿不到 rowid：按 name 回查
+	row, err := db.GetWGAssetByName(a.Name)
+	if err != nil || row == nil {
+		return 0, err
+	}
+	return row.ID, nil
+}
+
+func (db *DB) GetWGAssetByName(name string) (*WGAsset, error) {
+	a := &WGAsset{}
+	var sources string
+	err := db.SQL.QueryRow(`SELECT id, name, COALESCE(version,''), COALESCE(arch,'x86_64'),
+		COALESCE(sha256,''), sources, COALESCE(path,''), COALESCE(size,0), COALESCE(note,''),
+		COALESCE(updated_at,0) FROM wg_asset WHERE name = ?`, name).
+		Scan(&a.ID, &a.Name, &a.Version, &a.Arch, &a.SHA256, &sources, &a.Path, &a.Size, &a.Note, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Sources = decodeJSONStrings(sources)
+	return a, nil
+}
+
+func (db *DB) DeleteWGAsset(id int64) error {
+	_, err := db.SQL.Exec(`DELETE FROM wg_asset WHERE id = ?`, id)
+	return err
+}

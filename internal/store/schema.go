@@ -77,7 +77,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 7
+const schemaVersion = 8
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -350,6 +350,22 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 				tx INTEGER DEFAULT 0,
 				updated_at INTEGER,
 				PRIMARY KEY (hub_server_id, day_ts)
+			)`,
+		)
+	case 8: // 资产中转（doc/12 §8）：国内难以直连 GitHub 的二进制/脚本
+		// 由面板测速镜像后缓存，再经 SSH 推送到节点
+		return exec(
+			`CREATE TABLE IF NOT EXISTS wg_asset (
+				id INTEGER PRIMARY KEY,
+				name TEXT NOT NULL UNIQUE,
+				version TEXT DEFAULT '',
+				arch TEXT DEFAULT 'x86_64',
+				sha256 TEXT DEFAULT '',
+				sources TEXT NOT NULL DEFAULT '[]',
+				path TEXT DEFAULT '',
+				size INTEGER DEFAULT 0,
+				note TEXT DEFAULT '',
+				updated_at INTEGER
 			)`,
 		)
 	}

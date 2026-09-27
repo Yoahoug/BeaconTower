@@ -41,6 +41,10 @@ export const useAdminStore = defineStore('admin', {
     wgOverview: null,
     wgLoading: false,
     wgError: '',
+
+    // 资产中转
+    assets: [],
+    assetsLoading: false,
   }),
 
   getters: {
@@ -205,6 +209,41 @@ export const useAdminStore = defineStore('admin', {
       const r = await adminClient.wgPeerDelete(id)
       await this.loadWg()
       return r
+    },
+
+    async loadAssets() {
+      this.assetsLoading = true
+      try {
+        this.assets = (await adminClient.wgAssets()).assets
+      } finally {
+        this.assetsLoading = false
+      }
+    },
+
+    async upsertAsset(payload) {
+      const r = await adminClient.wgAssetUpsert(payload)
+      await this.loadAssets()
+      return r
+    },
+
+    async deleteAsset(id) {
+      const r = await adminClient.wgAssetDelete(id)
+      await this.loadAssets()
+      return r
+    },
+
+    async probeAsset(id) {
+      return adminClient.wgAssetProbe(id)
+    },
+
+    async fetchAsset(id) {
+      const r = await adminClient.wgAssetFetch(id)
+      await this.loadAssets()
+      return r
+    },
+
+    async pushAsset(id, serverId) {
+      return adminClient.wgAssetPush(id, serverId)
     },
   },
 })

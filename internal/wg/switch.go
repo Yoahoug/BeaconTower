@@ -191,20 +191,20 @@ func (r *Runner) flipSpoke(ctx context.Context, network *store.WGNetwork, peer *
 		return err
 	}
 	defer closer()
-	// 面板持有私钥（managed）→ 直接全量重渲染；否则读原 conf 就地改 [Peer] 段
+	// 优先就地改写原 conf 的 [Peer] 段（保留节点 PostUp/MTU/DNS 等个性化配置）；
+	// 节点无 conf 且面板持有私钥时才全量重渲染。
 	var conf string
-	if peer.Managed && len(peer.PrivateKeyEnc) > 0 {
+	if orig, ferr := FetchConf(ctx2, conn, network.Iface); ferr == nil && strings.TrimSpace(orig) != "" {
+		conf, err = r.rewritePeerSection(ctx2, conn, network, target.PublicKey, endpoint, psk)
+	} else if peer.Managed && len(peer.PrivateKeyEnc) > 0 {
 		priv, _ := r.DecryptBlob(peer.PrivateKeyEnc)
 		conf, err = SpokeConfFile(priv, peer.WgIP+"/"+bits2(bits), target.PublicKey,
 			endpoint, network.Subnet, psk, network.Keepalive, network.MTU)
-		if err != nil {
-			return err
-		}
 	} else {
-		conf, err = r.rewritePeerSection(ctx2, conn, network, target.PublicKey, endpoint, psk)
-		if err != nil {
-			return err
-		}
+		return errors.New("节点无现有 conf 且面板未持有其私钥，无法切换")
+	}
+	if err != nil {
+		return err
 	}
 	if err := BackupConf(ctx2, conn, network.Iface); err != nil {
 		return err

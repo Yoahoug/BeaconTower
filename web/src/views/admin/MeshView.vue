@@ -396,6 +396,110 @@ async function patrol() {
   }
 }
 
+// ---------- 资产中转 ----------
+const assetModal = ref(null)
+// { list, form:{name,version,sha256,sources_text,note}, probe:{id, results}, busy, error }
+const assetServerId = ref(0)
+
+async function openAssets() {
+  assetModal.value = { form: null, probe: null, busy: false, error: '' }
+  await admin.loadAssets()
+  if (serverPeers.value.length && !assetServerId.value) {
+    assetServerId.value = serverPeers.value[0].server_id
+  }
+}
+
+function assetRegisterForm() {
+  assetModal.value.form = { name: '', version: '', sha256: '', sources_text: '', note: '' }
+}
+
+async function saveAsset() {
+  const f = assetModal.value.form
+  const sources = (f.sources_text || '').split('\n').map((x) => x.trim()).filter(Boolean)
+  if (!f.name || !sources.length) {
+    assetModal.value.error = '需要资产名与至少一个下载源'
+    return
+  }
+  assetModal.value.busy = true
+  assetModal.value.error = ''
+  try {
+    await admin.upsertAsset({ name: f.name, version: f.version, sha256: f.sha256, sources, note: f.note })
+    assetModal.value.form = null
+    ui.notify('资产已保存')
+  } catch (e) {
+    assetModal.value.error = e?.message || '保存失败'
+  } finally {
+    assetModal.value.busy = false
+  }
+}
+
+async function probeAsset(id) {
+  assetModal.value.busy = true
+  assetModal.value.error = ''
+  try {
+    const r = await admin.probeAsset(id)
+    assetModal.value.probe = { id, results: r.results }
+  } catch (e) {
+    assetModal.value.error = e?.message || '测速失败'
+  } finally {
+    assetModal.value.busy = false
+  }
+}
+
+async function fetchAsset(id) {
+  assetModal.value.busy = true
+  assetModal.value.error = ''
+  try {
+    const r = await admin.fetchAsset(id)
+    ui.notify(`下载完成（${fmtBytes(r.size)}，经 ${r.via}）`)
+  } catch (e) {
+    assetModal.value.error = e?.message || '下载失败'
+  } finally {
+    assetModal.value.busy = false
+  }
+}
+
+async function pushAsset(id) {
+  if (!assetServerId.value) {
+    assetModal.value.error = '请选择目标节点'
+    return
+  }
+  assetModal.value.busy = true
+  assetModal.value.error = ''
+  try {
+    await admin.pushAsset(id, assetServerId.value)
+    ui.notify('已推送到节点 /usr/local/bin/')
+  } catch (e) {
+    assetModal.value.error = e?.message || '推送失败'
+  } finally {
+    assetModal.value.busy = false
+  }
+}
+
+async function removeAsset(id) {
+  assetModal.value.busy = true
+  try {
+    await admin.deleteAsset(id)
+  } finally {
+    assetModal.value.busy = false
+  }
+}
+
+function shortUrl(u) {
+  try {
+    const x = new URL(u)
+    return x.host.replace(/^www\./, '') + (x.pathname.length > 24 ? x.pathname.slice(0, 24) + '…' : x.pathname)
+  } catch {
+    return u.slice(0, 32)
+  }
+}
+
+function probeTag(r) {
+  if (!r.status) return { text: '不可用', cls: 'bt-tag--danger' }
+  if (r.status === 200 || r.status === 206) return { text: `${r.latency_ms}ms`, cls: 'bt-tag--success' }
+  return { text: `HTTP ${r.status}`, cls: 'bt-tag--warning' }
+}
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   await admin.loadWg()
@@ -417,6 +521,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
       <div class="page-head__actions">
         <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="admin.wgLoading || runningTask" @click="patrol">
           <AppIcon name="refresh" aria-hidden="true" />手动巡检
+        </button>
+        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openAssets">
+          <AppIcon name="download" aria-hidden="true" />资产中转
         </button>
         <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openImport">
           <AppIcon name="download" aria-hidden="true" />导入现有网络
@@ -780,6 +887,75 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
       </div>
     </div>
 
+    <!-- 资产中转 -->
+    <div v-if="assetModal" class="bt-modal-mask" @click.self="assetModal.busy ? null : (assetModal = null)">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="资产中转">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">资产中转（GitHub 加速测速 · 面板缓存 · SSH 推送）</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <p class="mesh-hint">
+            国内节点难以直连 GitHub 时，在此登记资产（官方直链 / 加速镜像 / 自有仓库 release），
+            面板测速择优下载校验后缓存，再经 SSH 推送到节点（节点零外网依赖）。
+          </p>
+          <div v-if="assetModal.error" class="bt-text-danger mesh-hint" role="alert">{{ assetModal.error }}</div>
+          <div class="mesh-asset-head">
+            <select v-model="assetServerId" class="bt-select" style="max-width: 220px">
+              <option v-for="p in serverPeers" :key="p.server_id" :value="p.server_id">推送目标：{{ p.name }}</option>
+            </select>
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetRegisterForm">
+              <AppIcon name="plus" aria-hidden="true" />登记资产
+            </button>
+          </div>
+          <!-- 登记表单 -->
+          <div v-if="assetModal.form" class="mesh-asset-form">
+            <label class="bt-field"><span class="bt-field__label">名称（将作为节点上的可执行名）</span>
+              <input v-model="assetModal.form.name" class="bt-input" type="text" placeholder="wireguard-go" /></label>
+            <label class="bt-field"><span class="bt-field__label">版本</span>
+              <input v-model="assetModal.form.version" class="bt-input" type="text" placeholder="0.0.20230223" /></label>
+            <label class="bt-field"><span class="bt-field__label">sha256（可选，下载校验）</span>
+              <input v-model="assetModal.form.sha256" class="bt-input mono" type="text" /></label>
+            <label class="bt-field"><span class="bt-field__label">下载源（每行一个，GitHub 链接自动测镜像）</span>
+              <textarea v-model="assetModal.form.sources_text" class="bt-textarea mono" rows="3"
+                placeholder="https://github.com/owner/repo/releases/download/v1/xxx" /></label>
+            <div class="mesh-modal-foot" style="padding: 0">
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal.form = null">取消</button>
+              <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="assetModal.busy" @click="saveAsset">保存</button>
+            </div>
+          </div>
+          <!-- 资产列表 -->
+          <div v-for="as in admin.assets" :key="as.id" class="mesh-asset-row">
+            <div class="mesh-asset-main">
+              <b>{{ as.name }}</b>
+              <span class="mono">{{ as.version }}</span>
+              <span class="bt-tag" :class="as.cached ? 'bt-tag--success' : 'bt-tag--warning'">
+                {{ as.cached ? `已缓存 ${fmtBytes(as.size)}` : '未缓存' }}
+              </span>
+              <span v-if="as.note" class="bt-text-muted">{{ as.note }}</span>
+            </div>
+            <div v-if="assetModal.probe && assetModal.probe.id === as.id" class="mesh-probe-results">
+              <span v-for="(r, idx) in assetModal.probe.results.slice(0, 6)" :key="idx"
+                class="bt-tag" :class="probeTag(r).cls" :title="r.url">
+                {{ shortUrl(r.url) }} · {{ probeTag(r).text }}{{ r.err ? ' · ' + r.err : '' }}
+              </span>
+            </div>
+            <div class="mesh-asset-actions">
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="assetModal.busy" @click="probeAsset(as.id)">测速</button>
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="assetModal.busy" @click="fetchAsset(as.id)">
+                {{ as.cached ? '重新下载' : '下载缓存' }}
+              </button>
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="assetModal.busy || !as.cached" @click="pushAsset(as.id)">推送节点</button>
+              <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="removeAsset(as.id)">
+                <AppIcon name="trash" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+          <p v-if="!admin.assets.length && !assetModal.form" class="mesh-hint" style="text-align:center">暂无资产，点「登记资产」添加（如 wireguard-go 二进制、静态 wg 工具）</p>
+        </div>
+      </div>
+    </div>
+
     <!-- 移出确认 -->
     <ConfirmDialog
       v-if="confirmDelete"
@@ -957,5 +1133,44 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 }
 .bt-text-muted {
   opacity: 0.6;
+}
+.mesh-asset-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0;
+}
+.mesh-asset-form {
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 8px;
+}
+.mesh-asset-row {
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.mesh-asset-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.mesh-asset-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mesh-probe-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 </style>

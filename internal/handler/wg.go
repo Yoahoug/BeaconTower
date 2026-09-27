@@ -2,16 +2,22 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Yoahoug/BeaconTower/internal/assets"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/Yoahoug/BeaconTower/internal/wg"
@@ -980,4 +986,210 @@ func (a *App) WGPatrol(c *gin.Context) {
 		return
 	}
 	middleware.OK(c, gin.H{"ok": true})
+}
+
+// ---------- 资产中转（doc/12 §8） ----------
+
+type wgAssetInput struct {
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	Arch    string   `json:"arch"`
+	SHA256  string   `json:"sha256"`
+	Sources []string `json:"sources"`
+	Note    string   `json:"note"`
+}
+
+// WGAssetList 资产列表。
+func (a *App) WGAssetList(c *gin.Context) {
+	list, err := a.DB.ListWGAssets()
+	if err != nil {
+		middleware.Fail(c, 5000, err.Error())
+		return
+	}
+	out := []gin.H{}
+	for _, as := range list {
+		out = append(out, gin.H{
+			"id": as.ID, "name": as.Name, "version": as.Version, "arch": as.Arch,
+			"sha256": as.SHA256, "sources": as.Sources, "cached": as.Path != "",
+			"size": as.Size, "note": as.Note, "updated_at": as.UpdatedAt,
+		})
+	}
+	middleware.OK(c, gin.H{"assets": out})
+}
+
+// WGAssetUpsert 注册/更新资产（sources 支持官方直链、镜像、自有仓库 release）。
+func (a *App) WGAssetUpsert(c *gin.Context) {
+	var in wgAssetInput
+	if err := c.ShouldBindJSON(&in); err != nil || strings.TrimSpace(in.Name) == "" || len(in.Sources) == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 name 与至少一个 source")
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if len(name) > 64 || strings.ContainsAny(name, "/\\. ") {
+		middleware.Fail(c, 1001, "资产名仅允许字母数字与下划线/短横线")
+		return
+	}
+	for _, s := range in.Sources {
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+			middleware.Fail(c, 1001, "source 须为 http(s) URL: "+s)
+			return
+		}
+	}
+	now := time.Now().Unix()
+	id, err := a.DB.UpsertWGAsset(&store.WGAsset{
+		Name: name, Version: strings.TrimSpace(in.Version), Arch: strings.TrimSpace(in.Arch),
+		SHA256: strings.TrimSpace(in.SHA256), Sources: in.Sources,
+		Note: strings.TrimSpace(in.Note), UpdatedAt: now,
+	})
+	if err != nil {
+		middleware.Fail(c, 5000, err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_asset_upsert", name, "", ipOf(c))
+	middleware.OK(c, gin.H{"id": id})
+}
+
+// WGAssetDelete 删除资产（缓存文件一并清理）。
+func (a *App) WGAssetDelete(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		middleware.Fail(c, 1001, "ID 无效")
+		return
+	}
+	as, _ := a.DB.GetWGAsset(id)
+	if as == nil {
+		middleware.Fail(c, 2002, "资产不存在")
+		return
+	}
+	if as.Path != "" {
+		_ = os.Remove(as.Path)
+	}
+	if err := a.DB.DeleteWGAsset(id); err != nil {
+		middleware.Fail(c, 5000, err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_asset_delete", as.Name, "", ipOf(c))
+	middleware.OK(c, gin.H{"ok": true})
+}
+
+// WGAssetProbe 并发测速全部源的镜像变体（GitHub 链接自动生成加速候选）。
+func (a *App) WGAssetProbe(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		middleware.Fail(c, 1001, "ID 无效")
+		return
+	}
+	as, _ := a.DB.GetWGAsset(id)
+	if as == nil {
+		middleware.Fail(c, 2002, "资产不存在")
+		return
+	}
+	var urls []string
+	for _, s := range as.Sources {
+		urls = append(urls, assets.BuildVariants(s)...)
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	results := assets.Probe(ctx, urls, 10*time.Second)
+	middleware.OK(c, gin.H{"results": results})
+}
+
+// WGAssetFetch 按测速序下载并校验，缓存到 data/assets/。
+func (a *App) WGAssetFetch(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		middleware.Fail(c, 1001, "ID 无效")
+		return
+	}
+	as, _ := a.DB.GetWGAsset(id)
+	if as == nil {
+		middleware.Fail(c, 2002, "资产不存在")
+		return
+	}
+	var urls []string
+	for _, s := range as.Sources {
+		urls = append(urls, assets.BuildVariants(s)...)
+	}
+	pctx, pcancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	results := assets.Probe(pctx, urls, 10*time.Second)
+	pcancel()
+	dest := filepath.Join(a.Cfg.DataDir, "assets", as.Name+"-"+as.Version)
+	fctx, fcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer fcancel()
+	used, err := assets.Fetch(fctx, results, dest, as.SHA256, 512<<20)
+	if err != nil {
+		middleware.Fail(c, 2011, "下载失败: "+err.Error())
+		return
+	}
+	st, _ := os.Stat(dest)
+	sum := as.SHA256
+	if sum == "" {
+		if h, err := fileSHA256(dest); err == nil {
+			sum = h
+		}
+	}
+	as.Path, as.Size, as.SHA256, as.UpdatedAt = dest, st.Size(), sum, time.Now().Unix()
+	if _, err := a.DB.UpsertWGAsset(as); err != nil {
+		middleware.Fail(c, 5000, err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_asset_fetch", as.Name, "via="+used, ipOf(c))
+	middleware.OK(c, gin.H{"path": dest, "size": as.Size, "sha256": sum, "via": used})
+}
+
+// WGAssetPush 将缓存的资产推送到指定节点 /usr/local/bin/（兜底安装路径）。
+func (a *App) WGAssetPush(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		middleware.Fail(c, 1001, "ID 无效")
+		return
+	}
+	as, _ := a.DB.GetWGAsset(id)
+	if as == nil {
+		middleware.Fail(c, 2002, "资产不存在")
+		return
+	}
+	if as.Path == "" {
+		middleware.Fail(c, 2010, "资产尚未下载缓存，请先执行下载")
+		return
+	}
+	var in struct {
+		ServerID int64 `json:"server_id"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil || in.ServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 server_id")
+		return
+	}
+	if _, err := a.DB.GetWGPeerByServer(in.ServerID); err != nil {
+		middleware.Fail(c, 2002, "目标节点不是网内成员")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, closer, err := a.WG.DialHub(ctx, in.ServerID)
+	if err != nil {
+		middleware.Fail(c, 2011, err.Error())
+		return
+	}
+	defer closer()
+	if err := wg.InstallAsset(ctx, conn, as.Name, as.Path); err != nil {
+		middleware.Fail(c, 2011, "推送失败: "+err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_asset_push", as.Name, fmt.Sprintf("server=%d", in.ServerID), ipOf(c))
+	middleware.OK(c, gin.H{"ok": true})
+}
+
+// fileSHA256 文件哈希（fetch 路径校验用）。
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

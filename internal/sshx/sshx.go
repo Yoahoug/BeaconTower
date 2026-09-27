@@ -26,7 +26,7 @@ const (
 	// MaxOutputLen 单次执行输出上限（与采集链路一致，防恶意输出撑爆内存）。
 	MaxOutputLen = 256 * 1024
 	// MaxPayloadLen PushFile 单文件上限（WG conf 量级远小于此）。
-	MaxPayloadLen = 8 * 1024 * 1024
+	MaxPayloadLen = 32 * 1024 * 1024
 )
 
 // Cred 解密后的连接凭据（内存态，不落盘、不入日志）。

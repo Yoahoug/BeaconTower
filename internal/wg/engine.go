@@ -3,6 +3,7 @@ package wg
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -398,4 +399,21 @@ func SpokeConfFile(priv, spokeIPCIDR, hubPub, hubEndpoint, subnetCIDR, psk strin
 // SubnetBits 导出子网前缀长度（handler 组装 CIDR 用）。
 func SubnetBits(subnetCIDR string) (int, error) {
 	return subnetBits(subnetCIDR)
+}
+
+// InstallAsset 将面板缓存的资产文件推送到节点 /usr/local/bin/<name>（0755）。
+// 用于国内节点装不了包时的兜底分发（wireguard-go / 静态 wg 工具等）。
+func InstallAsset(ctx context.Context, conn *sshx.Conn, name, localPath string) error {
+	if strings.ContainsAny(name, "/. '\\") {
+		return fmt.Errorf("资产名含非法字符: %q", name)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	if err := conn.PushFile(ctx, "/usr/local/bin/"+name, data); err != nil {
+		return err
+	}
+	_, err = conn.Run(ctx, "chmod 0755 /usr/local/bin/"+name+" && command -v "+name+" >/dev/null 2>&1 && echo installed || echo placed")
+	return err
 }

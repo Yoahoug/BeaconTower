@@ -67,6 +67,12 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.GET("/wg/peers/:id/conf", app.WGPeerConf)
 				auth.POST("/wg/peers/:id/verify", app.WGPeerVerify)
 				auth.DELETE("/wg/peers/:id", app.WGPeerDelete)
+				auth.GET("/wg/assets", app.WGAssetList)
+				auth.POST("/wg/assets", app.WGAssetUpsert)
+				auth.DELETE("/wg/assets/:id", app.WGAssetDelete)
+				auth.POST("/wg/assets/:id/probe", app.WGAssetProbe)
+				auth.POST("/wg/assets/:id/fetch", app.WGAssetFetch)
+				auth.POST("/wg/assets/:id/push", app.WGAssetPush)
 			}
 		}
 	}

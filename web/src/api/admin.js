@@ -48,6 +48,12 @@ const realAdmin = {
   wgPeerConf: (id, hub = 0) => http.get(`/v1/admin/wg/peers/${id}/conf${hub ? `?hub=${hub}` : ''}`, { retries: 0 }),
   wgPeerVerify: (id) => http.post(`/v1/admin/wg/peers/${id}/verify`, {}, { timeoutMs: 60000, retries: 0 }),
   wgPeerDelete: (id) => http.del(`/v1/admin/wg/peers/${id}`, { timeoutMs: 60000, retries: 0 }),
+  wgAssets: () => http.get('/v1/admin/wg/assets'),
+  wgAssetUpsert: (payload) => http.post('/v1/admin/wg/assets', payload),
+  wgAssetDelete: (id) => http.del(`/v1/admin/wg/assets/${id}`),
+  wgAssetProbe: (id) => http.post(`/v1/admin/wg/assets/${id}/probe`, {}, { timeoutMs: 30000, retries: 0 }),
+  wgAssetFetch: (id) => http.post(`/v1/admin/wg/assets/${id}/fetch`, {}, { timeoutMs: 600000, retries: 0 }),
+  wgAssetPush: (id, serverId) => http.post(`/v1/admin/wg/assets/${id}/push`, { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
 }
 
 function withTimeout(promise, ms = 15000) {
@@ -92,4 +98,10 @@ export const adminClient = {
   wgPeerConf: (id, hub) => withTimeout(realAdmin.wgPeerConf(id, hub), 20000),
   wgPeerVerify: (id) => withTimeout(realAdmin.wgPeerVerify(id), 70000),
   wgPeerDelete: (id) => withTimeout(realAdmin.wgPeerDelete(id), 70000),
+  wgAssets: () => withTimeout(realAdmin.wgAssets(), 15000),
+  wgAssetUpsert: (payload) => withTimeout(realAdmin.wgAssetUpsert(payload)),
+  wgAssetDelete: (id) => withTimeout(realAdmin.wgAssetDelete(id)),
+  wgAssetProbe: (id) => withTimeout(realAdmin.wgAssetProbe(id), 35000),
+  wgAssetFetch: (id) => realAdmin.wgAssetFetch(id),
+  wgAssetPush: (id, serverId) => withTimeout(realAdmin.wgAssetPush(id, serverId), 95000),
 }
