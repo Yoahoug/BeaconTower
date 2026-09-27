@@ -3,8 +3,6 @@ package collector
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -14,25 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ssh"
+	"github.com/Yoahoug/BeaconTower/internal/sshx"
 )
 
-// FingerprintSHA256 计算 host key 指纹（SHA256:...，TOFU 展示用）。
-func FingerprintSHA256(key ssh.PublicKey) string {
-	sum := sha256.Sum256(key.Marshal())
-	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
-}
-
-// SSHCred 解密后的连接凭据（内存态，不落盘）。
-type SSHCred struct {
-	Host       string
-	Port       int
-	Username   string
-	AuthType   string // password | key
-	Password   string
-	PrivateKey string
-	Passphrase string
-}
+// SSHCred 解密后的连接凭据（内存态，不落盘）。见文件底部 SSH 执行段说明。
 
 // collectScript 单次 exec 采集脚本（doc/02 §4.2 + doc/09 §2.2）。
 // 全部只读：/proc、df、uname、os-release、sysfs 功率/温度接口、出口 IP 回显。
@@ -600,35 +583,11 @@ func cleanStr(v string, max int) string {
 	return v
 }
 
-// ---------- SSH 执行 ----------
+// ---------- SSH 执行（通用通道已抽至 internal/sshx，此处仅采集封装） ----------
 
-// authMethods 组装认证方式。
-func authMethods(c *SSHCred) ([]ssh.AuthMethod, error) {
-	switch c.AuthType {
-	case "password":
-		if c.Password == "" {
-			return nil, fmt.Errorf("认证失败：密码为空")
-		}
-		return []ssh.AuthMethod{ssh.Password(c.Password)}, nil
-	case "key":
-		if c.PrivateKey == "" {
-			return nil, fmt.Errorf("认证失败：私钥为空")
-		}
-		var signer ssh.Signer
-		var err error
-		if c.Passphrase != "" {
-			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(c.PrivateKey), []byte(c.Passphrase))
-		} else {
-			signer, err = ssh.ParsePrivateKey([]byte(c.PrivateKey))
-		}
-		if err != nil {
-			return nil, fmt.Errorf("认证失败：私钥无法解析")
-		}
-		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
-	default:
-		return nil, fmt.Errorf("参数错误：未知认证方式 %q", c.AuthType)
-	}
-}
+// SSHCred 解密后的连接凭据（内存态，不落盘）。sshx.Cred 的别名，
+// 凭据解密/TOFU/错误分类等公共逻辑统一在 sshx 维护。
+type SSHCred = sshx.Cred
 
 // DialResult 一次连接+执行的结果。
 type DialResult struct {
@@ -640,103 +599,15 @@ type DialResult struct {
 // DialAndCollect 建连、校验 host key、执行采集脚本并解析。
 // storedFP 为空 = TOFU 记录；strict=true 时指纹不匹配直接拒绝。
 func DialAndCollect(ctx context.Context, cred *SSHCred, storedFP string, strict bool) (*DialResult, error) {
-	methods, err := authMethods(cred)
-	if err != nil {
-		return nil, classifyErr(err)
-	}
-	var presented ssh.PublicKey
-	cfg := &ssh.ClientConfig{
-		User:    cred.Username,
-		Auth:    methods,
-		Timeout: 8 * time.Second,
-		HostKeyCallback: func(host string, remote net.Addr, key ssh.PublicKey) error {
-			presented = key
-			fp := FingerprintSHA256(key)
-			if storedFP == "" {
-				return nil // TOFU：由上层持久化
-			}
-			if fp != storedFP {
-				if strict {
-					return fmt.Errorf("host key 指纹不匹配（严格模式，拒绝连接）")
-				}
-				return nil // 非严格：记录但放行（上层更新指纹并可告警）
-			}
-			return nil
-		},
-	}
-	addr := net.JoinHostPort(cred.Host, strconv.Itoa(cred.Port))
-	start := time.Now()
-	// ssh.Dial 不接受 ctx：用 goroutine + ctx 取消兜底
-	type dialOut struct {
-		client *ssh.Client
-		err    error
-	}
-	dch := make(chan dialOut, 1)
-	go func() {
-		cl, err := ssh.Dial("tcp", addr, cfg)
-		dch <- dialOut{cl, err}
-	}()
-	var client *ssh.Client
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("连接超时：主机不可达（8s 超时）")
-	case o := <-dch:
-		if o.err != nil {
-			return nil, classifyErr(o.err)
-		}
-		client = o.client
-	}
-	defer client.Close()
-
-	sess, err := client.NewSession()
-	if err != nil {
-		return nil, classifyErr(err)
-	}
-	defer sess.Close()
-
-	type execOut struct {
-		out []byte
-		err error
-	}
-	ech := make(chan execOut, 1)
-	go func() {
-		// 脚本经 stdin 喂给远端 sh（heredoc 经 SSH 通道同样有 shell 转义风险；
-		// stdin 方式避免一切引号拼装，转义问题由传输层而非 shell 解析承担）。
-		stdin, err := sess.StdinPipe()
-		if err != nil {
-			ech <- execOut{nil, err}
-			return
-		}
-		go func() {
-			defer stdin.Close()
-			_, _ = io.WriteString(stdin, collectScript)
-		}()
-		out, err := sess.Output("sh -s")
-		if len(out) > maxOutputLen {
-			out = out[:maxOutputLen]
-		}
-		ech <- execOut{out, err}
-	}()
-	var out []byte
-	select {
-	case <-ctx.Done():
-		sess.Close()
-		return nil, fmt.Errorf("连接超时：主机不可达（8s 超时）")
-	case o := <-ech:
-		if o.err != nil {
-			return nil, classifyErr(o.err)
-		}
-		out = o.out
-	}
-	raw, err := parseOutput(out)
+	res, err := sshx.RunScript(ctx, cred, storedFP, strict, collectScript)
 	if err != nil {
 		return nil, err
 	}
-	fp := ""
-	if presented != nil {
-		fp = FingerprintSHA256(presented)
+	raw, err := parseOutput([]byte(res.Out))
+	if err != nil {
+		return nil, err
 	}
-	return &DialResult{Raw: raw, HostKeyFP: fp, LatencyMs: time.Since(start).Milliseconds()}, nil
+	return &DialResult{Raw: raw, HostKeyFP: res.HostKeyFP, LatencyMs: res.LatencyMs}, nil
 }
 
 // collectScript 经 stdin 喂给远端 sh -s 执行，不再拼装 sh -c 引号，
@@ -829,45 +700,3 @@ echo bt_arch=$(uname -m 2>/dev/null)
 echo bt_virt=物理机
 echo bt_proc=$(ps -axo pid= 2>/dev/null | wc -l | tr -d ' ')
 echo bt_end=1`
-
-// classifyErr SSH 错误分类（doc/04 错误码 2001 的 msg 分类）。
-func classifyErr(err error) error {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "unable to authenticate"),
-		strings.Contains(msg, "Authentication failed"),
-		strings.Contains(msg, "permission denied"),
-		strings.Contains(msg, "no supported methods"),
-		strings.Contains(msg, "认证失败"):
-		return fmt.Errorf("认证失败：%s", trimErr(msg))
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("连接被拒绝：目标端口未监听 SSH")
-	case strings.Contains(msg, "no route"),
-		strings.Contains(msg, "unreachable"),
-		strings.Contains(msg, "i/o timeout"),
-		strings.Contains(msg, "deadline exceeded"),
-		strings.Contains(msg, "不可达"):
-		return fmt.Errorf("连接超时：主机不可达（8s 超时）")
-	case strings.Contains(msg, "指纹不匹配"):
-		return err
-	default:
-		if len(msg) > 160 {
-			msg = msg[:160]
-		}
-		return fmt.Errorf("SSH 连接失败：%s", msg)
-	}
-}
-
-func trimErr(msg string) string {
-	// 去掉 Go ssh 库的前缀噪音，保留关键原因
-	if i := strings.Index(msg, "unable to authenticate"); i >= 0 {
-		return "用户名或密码/密钥错误"
-	}
-	if strings.Contains(msg, "permission denied") {
-		return "Permission denied（用户名或密码/密钥错误）"
-	}
-	if len(msg) > 160 {
-		return msg[:160]
-	}
-	return msg
-}
