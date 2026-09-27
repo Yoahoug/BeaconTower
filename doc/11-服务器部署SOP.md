@@ -45,6 +45,7 @@ services:
     image: ghcr.io/yoahoug/beacontower:latest
     container_name: beacontower
     restart: unless-stopped
+    user: root                      # RAPL energy_uj 宿主上仅 root 可读(0400)，非 root 容器读不到
     ports:
       - "10.66.66.66:8091:8080"   # 绑组网地址（组网内设备可直接访问）；走公网反代则改 127.0.0.1
     environment:
@@ -52,6 +53,9 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data          # SQLite 库 + master.key
+      # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
+      # 只读挂到 /powercap-ro 兜底，采集脚本自动探测两种布局：
+      - /sys/devices/virtual/powercap:/powercap-ro:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -64,6 +68,8 @@ services:
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | `打开数据库失败: unable to open database file (14)` 循环重启 | 宿主 `data/` 为 root 属主，容器内 beacon(uid 10001) 不可写 | `chown -R 10001:10001 data/`；新镜像已在构建期 `mkdir + chown /app/data`，匿名卷首挂载继承镜像属主，全新部署不再需要手工 chown |
+| 容器内读不到 RAPL（`/sys/class/powercap/intel-rapl:0` 符号链接失效） | Docker 默认 MaskedPaths 掩了 `/sys/devices/virtual/powercap` | compose 只读挂载宿主该目录到 `/powercap-ro`；采集脚本（v6503c8a+）自动探测标准路径与兜底路径两种布局 |
+| `/powercap-ro` 能看到目录但 `cat energy_uj` Permission denied | 宿主 energy_uj 权限 0400 root，非 root 容器不可读 | compose 加 `user: root`（i5-6300HQ 实测 total_w/cpu_w/temp/freq 全部出数） |
 
 ## 相关入口
 
