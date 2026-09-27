@@ -443,8 +443,8 @@ func DecodeWGPayload(raw string) *WGTaskPayload {
 // 进程中断后状态无人回写，HasRunningWGTask 会永久锁死全部组网操作。
 func (db *DB) FailStaleWGTasks(now int64) error {
 	_, err := db.SQL.Exec(`UPDATE wg_task SET status='failed',
-		result='进程中断，任务状态未知（请核对节点实况后重试）', finished_at=?,
-		updated_at=? WHERE status='running'`, now, now)
+		result='进程中断，任务状态未知（请核对节点实况后重试）', finished_at=?
+		WHERE status='running'`, now)
 	return err
 }
 
