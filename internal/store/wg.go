@@ -425,6 +425,9 @@ type WGAlloc struct {
 	ServerID int64  `json:"server_id"`
 	WgIP     string `json:"wg_ip"`
 	Role     string `json:"role"` // hub/standby/spoke
+	// Reprovision 节点已是本网成员的重复配置（校正/重下发）：预检对
+	// 同名接口降级为警告，引擎备份后重写
+	Reprovision bool `json:"reprovision,omitempty"`
 }
 
 // DecodeWGPayload 解析任务载荷（容错：非法 JSON 返回空载荷）。

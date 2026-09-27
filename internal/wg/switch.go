@@ -57,8 +57,8 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 		var err error
 		logLine := ""
 		switch {
-		case st.Seq == 0: // 目标 hub 校正
-			err = r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby))
+		case st.Seq == 0: // 目标 hub 校正（备胎已在网内，重配降级预检）
+			err = r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby), true)
 		case st.Seq == 1: // 金丝雀
 			var canary *store.WGPeer
 			if st.ServerID.Valid {

@@ -145,8 +145,12 @@ func (r *Runner) RunApply(taskID int64) {
 	}
 	payload := store.DecodeWGPayload(task.Payload)
 	roleByServer := map[int64]string{}
+	reprovByServer := map[int64]bool{}
 	for _, a := range payload.Allocations {
 		roleByServer[a.ServerID] = a.Role
+		if a.Reprovision {
+			reprovByServer[a.ServerID] = true
+		}
 	}
 	okN, failN, skipN := 0, 0, 0
 	// 1) hub/standby 先行（串行；spoke 依赖其公钥与端点）
@@ -156,7 +160,7 @@ func (r *Runner) RunApply(taskID int64) {
 			continue
 		}
 		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
-		err := r.applyHubNode(context.Background(), network, st.ServerID.Int64, role)
+		err := r.applyHubNode(context.Background(), network, st.ServerID.Int64, role, reprovByServer[st.ServerID.Int64])
 		if err != nil {
 			failN++
 			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())
@@ -177,7 +181,7 @@ func (r *Runner) RunApply(taskID int64) {
 		go func(st *store.WGTaskStep) {
 			defer runWG.Done()
 			_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
-			skipped, err := r.applySpokeNode(context.Background(), network, st.ServerID.Int64)
+			skipped, err := r.applySpokeNode(context.Background(), network, st.ServerID.Int64, reprovByServer[st.ServerID.Int64])
 			now := time.Now().Unix()
 			switch {
 			case err != nil && skipped:
@@ -210,7 +214,7 @@ func (r *Runner) RunApply(taskID int64) {
 
 // applyHubNode 配置 hub/standby 节点：预检 → 安装 → 转发/防火墙 →
 // 全量重写 conf（含 DB 全部成员）→ 拉起 → 自检。
-func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, serverID int64, role string) error {
+func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, serverID int64, role string, reprovision bool) error {
 	hub, err := r.DB.GetWGHub(serverID)
 	if err != nil || hub == nil {
 		return errors.New("中心节点槽位不存在")
@@ -249,7 +253,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if role == string(RoleHub) {
 		wgRole = RoleHub
 	}
-	if issues := Judge(probe, wgRole, network.Iface, hub.ListenPort); HasErr(issues) {
+	if issues := Judge(probe, wgRole, network.Iface, hub.ListenPort, reprovision); HasErr(issues) {
 		return fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
 	if _, err := InstallWireGuard(dctx, conn, probe); err != nil {
@@ -281,7 +285,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 			Comment:             p.Name,
 			PublicKey:           p.PublicKey,
 			PresharedKey:        r.decrypt(p.PskEnc),
-			AllowedIPs:          []string{p.WgIP + "/" + strconv.Itoa(bits)},
+			AllowedIPs:          []string{p.WgIP + "/32"}, // hub 侧按主机路由，/24 会让成员间 allowed-ips 互相覆盖
 			PersistentKeepalive: 0,
 		})
 	}
@@ -324,7 +328,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 
 // applySpokeNode 接入 spoke 节点：预检 → 安装 → 写 conf → 拉起 → ping hub 验证。
 // 返回 skipped=true 表示无需执行（已在线）。
-func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, serverID int64) (skipped bool, err error) {
+func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, serverID int64, reprovision bool) (skipped bool, err error) {
 	peer, err := r.DB.GetWGPeerByServer(serverID)
 	if err != nil || peer == nil {
 		return false, errors.New("成员记录不存在")
@@ -353,7 +357,7 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if err != nil {
 		return false, fmt.Errorf("预检失败: %w", err)
 	}
-	if issues := Judge(probe, RoleSpoke, network.Iface, 0); HasErr(issues) {
+	if issues := Judge(probe, RoleSpoke, network.Iface, 0, reprovision); HasErr(issues) {
 		return false, fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
 	if _, err := InstallWireGuard(dctx, conn, probe); err != nil {
@@ -429,7 +433,7 @@ func (r *Runner) resolveEndpoint(serverID int64, port int) string {
 }
 
 // ProbeServer 对节点执行 WG 预检探测并给出判定（plan 接口 dry-run 用）。
-func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role) (*Probe, []Issue, error) {
+func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role, reprovision bool) (*Probe, []Issue, error) {
 	strict := r.strictHostKey()
 	conn, closer, err := r.dial(ctx, serverID, strict)
 	if err != nil {
@@ -440,7 +444,7 @@ func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int
 	if err != nil {
 		return nil, nil, err
 	}
-	issues := Judge(probe, role, "wg0", listenPort)
+	issues := Judge(probe, role, "wg0", listenPort, reprovision)
 	return probe, issues, nil
 }
 
@@ -572,7 +576,7 @@ func (r *Runner) rebuildHubConf(ctx context.Context, network *store.WGNetwork, h
 			Comment:      p.Name,
 			PublicKey:    p.PublicKey,
 			PresharedKey: r.decrypt(p.PskEnc),
-			AllowedIPs:   []string{p.WgIP + "/" + strconv.Itoa(bits)},
+			AllowedIPs:   []string{p.WgIP + "/32"}, // 同 applyHubNode：hub 侧主机路由
 		})
 	}
 	priv := r.decrypt(hub.PrivateKeyEnc)

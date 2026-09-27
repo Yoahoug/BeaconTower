@@ -31,11 +31,13 @@ func (r *Runner) Patrol() {
 		byPub[p.PublicKey] = p
 	}
 	for _, hub := range hubs {
-		r.patrolHub(network, hub, byPub, day, now)
+		// 成员握手/在线状态只认现役 hub：备胎的 dump 是陈旧镜像
+		//（成员不向备胎握手），若参与判定会把全网误标离线
+		r.patrolHub(network, hub, byPub, day, now, hub.ServerID == network.ActiveHubServerID)
 	}
 }
 
-func (r *Runner) patrolHub(network *store.WGNetwork, hub *store.WGHub, byPub map[string]*store.WGPeer, day, now int64) {
+func (r *Runner) patrolHub(network *store.WGNetwork, hub *store.WGHub, byPub map[string]*store.WGPeer, day, now int64, active bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	strict := r.strictHostKey()
@@ -98,7 +100,10 @@ func (r *Runner) patrolHub(network *store.WGNetwork, hub *store.WGHub, byPub map
 	if err := r.DB.UpsertWGHub(hub); err != nil {
 		log.Printf("[wg] patrol hub %d 状态写入失败: %v", hub.ServerID, err)
 	}
-	// 成员状态（hub 侧视角）
+	// 成员状态（仅现役 hub 视角；备胎只做健康检查与流量基线）
+	if !active {
+		return
+	}
 	seen := map[string]bool{}
 	for _, dp := range dumpDev.Peers {
 		p := byPub[dp.PublicKey]

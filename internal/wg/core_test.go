@@ -327,7 +327,7 @@ func TestAllocatorSkipsNetworkBroadcast(t *testing.T) {
 func TestJudgeHubErrors(t *testing.T) {
 	// 非 root + 端口占用 → 两条 Err
 	p := &Probe{UID0: false, PkgManager: "apt", ListenPortBusy: true, UfwActive: true}
-	issues := Judge(p, RoleHub, "wg0", 51820)
+	issues := Judge(p, RoleHub, "wg0", 51820, false)
 	if !HasErr(issues) {
 		t.Fatal("非 root 应阻断")
 	}
@@ -345,21 +345,26 @@ func TestJudgeHubErrors(t *testing.T) {
 func TestJudgeSpokeWarnings(t *testing.T) {
 	// 正常 Ubuntu spoke：无 Err，仅有「未安装将自动安装」类 Warn
 	p := &Probe{UID0: true, PkgManager: "apt", Arch: "x86_64", Virt: "kvm", Systemd: true}
-	issues := Judge(p, RoleSpoke, "wg0", 51820)
+	issues := Judge(p, RoleSpoke, "wg0", 51820, false)
 	if HasErr(issues) {
 		t.Fatalf("正常 spoke 不应阻断: %+v", issues)
 	}
 	// 已有 wg0 → Err
 	p.WgIfaces = []string{"wg0"}
-	issues = Judge(p, RoleSpoke, "wg0", 51820)
+	issues = Judge(p, RoleSpoke, "wg0", 51820, false)
 	if !HasErr(issues) {
 		t.Fatal("已存在同接口应阻断")
+	}
+	// 重配（成员校正/重下发）→ 降级为 Warn，不阻断
+	issues = Judge(p, RoleSpoke, "wg0", 51820, true)
+	if HasErr(issues) {
+		t.Fatalf("重配路径不应阻断: %+v", issues)
 	}
 }
 
 func TestJudgeUnsupportedOS(t *testing.T) {
 	p := &Probe{UID0: true, OsID: "freebsd", PkgManager: ""}
-	issues := Judge(p, RoleSpoke, "wg0", 51820)
+	issues := Judge(p, RoleSpoke, "wg0", 51820, false)
 	if !HasErr(issues) {
 		t.Fatal("不支持系统应阻断")
 	}
@@ -367,7 +372,7 @@ func TestJudgeUnsupportedOS(t *testing.T) {
 
 func TestJudgeProbeError(t *testing.T) {
 	p := &Probe{Err: "连接超时"}
-	issues := Judge(p, RoleSpoke, "wg0", 51820)
+	issues := Judge(p, RoleSpoke, "wg0", 51820, false)
 	if len(issues) != 1 || !HasErr(issues) {
 		t.Fatalf("探测失败应单条 Err: %+v", issues)
 	}

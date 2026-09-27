@@ -49,7 +49,9 @@ type Issue struct {
 
 // Judge 预检判定（纯函数）：根据探测结果与目标角色给出阻断/警告清单。
 // 有 Err 级问题则不可继续；Warn 不阻断但需在向导中展示。
-func Judge(p *Probe, role Role, ifaceName string, listenPort int) []Issue {
+// reprovision=true 表示节点已是本网成员的重配（校正备胎/重下发），
+// 同名接口由引擎备份后重写，不再视为阻断。
+func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bool) []Issue {
 	var out []Issue
 	if p.Err != "" {
 		out = append(out, Issue{Err, "SSH 连接或探测失败：" + p.Err})
@@ -82,7 +84,11 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int) []Issue {
 	// 已有 WG 接口
 	for _, name := range p.WgIfaces {
 		if name == ifaceName {
-			out = append(out, Issue{Err, "已存在接口 " + name + "：节点可能已在其他 WG 网络，勿重复配置"})
+			if reprovision {
+				out = append(out, Issue{Warn, "已存在接口 " + name + "：将按面板配置重写（原配置自动备份）"})
+			} else {
+				out = append(out, Issue{Err, "已存在接口 " + name + "：节点可能已在其他 WG 网络，勿重复配置"})
+			}
 		} else {
 			out = append(out, Issue{Warn, "存在其他 WG 接口 " + name + "（不受影响，仅提示）"})
 		}

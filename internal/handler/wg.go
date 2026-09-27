@@ -222,6 +222,16 @@ func (a *App) WGPlan(c *gin.Context) {
 		targets = append(targets, s.ServerID)
 		roles[s.ServerID] = wg.RoleSpoke
 	}
+	// 已有 hub 槽位 / 已在网成员 = 重配：预检对同名接口降级为警告
+	reprovision := map[int64]bool{}
+	if hr, _ := a.DB.GetWGHub(hubID); hr != nil {
+		reprovision[hubID] = true
+	}
+	for _, al := range alloc {
+		if al.Reprovision {
+			reprovision[al.ServerID] = true
+		}
+	}
 	outCh := make(chan probeOut, len(targets))
 	var runWG sync.WaitGroup
 	for _, id := range targets {
@@ -232,7 +242,7 @@ func (a *App) WGPlan(c *gin.Context) {
 			if id == hubID {
 				port = hubPort
 			}
-			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id])
+			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id], reprovision[id])
 			if err != nil {
 				issues = []wg.Issue{{Level: wg.Err, Msg: err.Error()}}
 			}
@@ -321,7 +331,8 @@ func (a *App) wgAllocate(netRow *store.WGNetwork, spokes []wgSpokeInput) ([]stor
 		}
 		existing, _ := a.DB.GetWGPeerByServer(s.ServerID)
 		if existing != nil && existing.Status != "left" {
-			allocs = append(allocs, store.WGAlloc{ServerID: s.ServerID, WgIP: existing.WgIP, Role: string(wg.RoleSpoke)})
+			allocs = append(allocs, store.WGAlloc{ServerID: s.ServerID, WgIP: existing.WgIP,
+				Role: string(wg.RoleSpoke), Reprovision: true})
 			continue
 		}
 		ip := strings.TrimSpace(s.WgIP)
@@ -414,6 +425,7 @@ func (a *App) WGApply(c *gin.Context) {
 	}
 	// hub 槽位（存在则复用；缺钥由引擎自愈）
 	hubRow, _ := a.DB.GetWGHub(hubID)
+	hubExisted := hubRow != nil
 	if hubRow == nil {
 		kp, err := wg.GenerateKeyPair()
 		if err != nil {
@@ -499,7 +511,8 @@ func (a *App) WGApply(c *gin.Context) {
 		}
 	}
 	// 任务 + 步骤
-	allocs := []store.WGAlloc{{ServerID: hubID, WgIP: netRow.HubIP, Role: wgRoleText(netRow, hubID)}}
+	allocs := []store.WGAlloc{{ServerID: hubID, WgIP: netRow.HubIP,
+		Role: wgRoleText(netRow, hubID), Reprovision: hubExisted}}
 	allocs = append(allocs, alloc...)
 	payload, _ := json.Marshal(store.WGTaskPayload{Allocations: allocs})
 	taskID, err := a.DB.InsertWGTask(&store.WGTask{Kind: "apply", Status: "running",
