@@ -26,6 +26,15 @@ func (c *Collector) rebuildSnapshot() {
 	var monthKwh, estCost float64
 
 	// 今日流量（按日记录）：一次取全节点，避免快照循环内逐节点查询
+	day := time.Unix(now, 0)
+	dayTs := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location()).Unix()
+	dailyTraffic, _ := c.db.DailyTrafficSumAll(dayTs)
+	var dayIn, dayOut int64
+	for _, v := range dailyTraffic {
+		dayIn += v[0]
+		dayOut += v[1]
+	}
+
 	for _, r := range rows {
 		s := r.Srv
 		if s.Hidden {
@@ -76,6 +85,10 @@ func (c *Collector) rebuildSnapshot() {
 			"is_self": s.IsSelf,
 			"profile": profile, "metrics": m,
 		}
+		// 今日流量（按日记录，实时聚合值；无记录为 null）
+		if d, ok := dailyTraffic[s.ID]; ok {
+			item["traffic_today"] = map[string]any{"in_total": d[0], "out_total": d[1]}
+		}
 		// 功耗（受站点开关控制；RAPL 不可用输出 null）
 		if showPower {
 			pw := powerOf(r, prof, price, showCost)
@@ -101,6 +114,7 @@ func (c *Collector) rebuildSnapshot() {
 		"up_bps": upBps, "down_bps": downBps,
 		"watts": watts, "measured_count": measured,
 		"month_kwh": monthKwh, "est_cost_month": estCost,
+		"day_in_total": dayIn, "day_out_total": dayOut,
 	}
 	c.mu.Lock()
 	b, err := json.Marshal(servers)

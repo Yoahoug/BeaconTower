@@ -319,6 +319,16 @@
   gap: var(--bt-space-2);
 }
 
+/* 今日流量格：独占一整行（grid-column: 1 / -1） */
+.node-net__cell--day {
+  grid-column: 1 / -1;
+  color: var(--bt-text-secondary, #475569);
+  font-size: var(--bt-font-xs, 12px);
+}
+
+.node-net__day {
+  letter-spacing: 0.02em;
+}
 
 .node-net__cell {
   display: flex;

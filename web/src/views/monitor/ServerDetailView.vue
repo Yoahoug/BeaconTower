@@ -15,7 +15,7 @@ import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import NodeCard from '../../components/monitor/NodeCard.vue'
 import { useMonitorStore } from '../../stores/monitor'
 import { monitorClient, normalizePoints, RANGE_META } from '../../api/monitor'
-import { fmtBps, fmtSizeShort, fmtWatts } from '../../utils/format'
+import { fmtBps, fmtSizeShort, fmtWatts, fmtBytes } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -64,6 +64,7 @@ async function load() {
   status.value = 'loading'
   error.value = ''
   needLogin.value = false
+  loadTraffic()
   try {
     const raw = await monitorClient.history(nodeId.value, range.value, ctrl.signal)
     points.value = normalizePoints(raw)
@@ -80,6 +81,40 @@ async function load() {
     } else {
       error.value = e?.message || '历史曲线加载失败'
     }
+  }
+}
+
+// ---------- 按日流量记录（独立于 range，固定近 30 天） ----------
+const TRAFFIC_DAYS = 30
+const traffic = ref([]) // [{ ts, in_total, out_total }]
+const trafficErr = ref(false)
+let trafficCtrl = null
+
+const TRAFFIC_COLORS = { in: '#8b5cf6', out: '#0ea5e9' }
+
+const trafficLabels = computed(() =>
+  traffic.value.map((p) => {
+    const d = new Date(p.ts * 1000)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }),
+)
+// ECharts 复用 TrendChart 折线形态画日流量（GB），双色同吞吐
+const trafficSeries = computed(() => [
+  { name: '上行', color: TRAFFIC_COLORS.out, data: traffic.value.map((p) => p.out_total / 1024 ** 3), fill: true },
+  { name: '下行', color: TRAFFIC_COLORS.in, data: traffic.value.map((p) => p.in_total / 1024 ** 3), fill: true },
+])
+const hasTraffic = computed(() => traffic.value.length > 0)
+
+async function loadTraffic() {
+  trafficCtrl?.abort()
+  trafficCtrl = new AbortController()
+  try {
+    const raw = await monitorClient.traffic(nodeId.value, TRAFFIC_DAYS, trafficCtrl.signal)
+    traffic.value = Array.isArray(raw?.points) ? raw.points : []
+    trafficErr.value = false
+  } catch {
+    // 流量图失败不打断主曲线，静默降级为不展示
+    trafficErr.value = true
   }
 }
 
@@ -100,6 +135,7 @@ function goLogin() {
 watch(range, load)
 watch(nodeId, () => {
   points.value = []
+  traffic.value = []
   load()
 })
 
@@ -110,6 +146,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   ctrl?.abort()
+  trafficCtrl?.abort()
 })
 </script>
 
@@ -198,5 +235,25 @@ onUnmounted(() => {
         </div>
       </section>
     </template>
+
+    <!-- 按日流量记录（独立于 range；有记录才展示） -->
+    <section v-if="hasTraffic" class="bt-card trend-panel bt-enter" style="--i: 5" aria-label="按日流量">
+      <div class="bt-card__head">
+        <div class="bt-card__title">每日流量 · 近 {{ TRAFFIC_DAYS }} 天</div>
+        <div class="trend-legend tnum">
+          <span><i class="lg up" />上行（累计字节）</span>
+          <span><i class="lg down" />下行</span>
+        </div>
+      </div>
+      <div class="bt-card__body">
+        <TrendChart
+          :series="trafficSeries"
+          :x-labels="trafficLabels"
+          :height="200"
+          label="每日流量记录"
+          :y-formatter="(v) => fmtBytes(v * 1024 ** 3)"
+        />
+      </div>
+    </section>
   </div>
 </template>

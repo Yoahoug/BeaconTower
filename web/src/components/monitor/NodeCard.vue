@@ -19,6 +19,7 @@ import {
   fmtKwh,
   fmtCost,
   fmtGhz,
+  fmtBytes,
 } from '../../utils/format'
 
 const props = defineProps({
@@ -122,6 +123,16 @@ const powerHistory = computed(() =>
       <div class="node-net__cell node-net__cell--down">
         <span class="node-net__dir" aria-hidden="true"><AppIcon name="arrow-down" /></span>
         <span>{{ fmtBps(server.metrics.netDown) }}</span>
+      </div>
+      <div
+        v-if="server.trafficToday"
+        class="node-net__cell node-net__cell--day"
+        title="今日收发字节累计（按日流量记录，实时聚合）"
+      >
+        <span class="node-net__dir" aria-hidden="true"><AppIcon name="calendar" /></span>
+        <span class="node-net__day">
+          ↑{{ fmtBytes(server.trafficToday.out) }} · ↓{{ fmtBytes(server.trafficToday.in) }}
+        </span>
       </div>
     </div>
 

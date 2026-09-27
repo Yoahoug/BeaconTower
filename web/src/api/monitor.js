@@ -56,5 +56,7 @@ export function normalizePoints(raw) {
 export const monitorClient = {
   history: (id, range = '1h', signal) =>
     withTimeout(http.get(`/v1/public/servers/${id}/history?range=${range}`, { signal })),
+  traffic: (id, days = 30, signal) =>
+    withTimeout(http.get(`/v1/public/servers/${id}/traffic?days=${days}`, { signal })),
   servers: (signal) => withTimeout(http.get('/v1/public/servers', { signal })),
 }

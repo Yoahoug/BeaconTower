@@ -32,6 +32,7 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 			pub.GET("/summary", app.PublicSummary)
 			pub.GET("/servers", app.PublicServers)
 			pub.GET("/servers/:id/history", app.PublicHistory)
+			pub.GET("/servers/:id/traffic", app.PublicTraffic)
 			pub.GET("/stream", app.PublicStream)
 		}
 		adm := api.Group("/admin")

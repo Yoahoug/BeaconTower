@@ -100,6 +100,11 @@ function adaptServer(raw, prev) {
     },
     powerHistory,
     cpuHistory,
+    // 今日流量（按日记录，字节；无记录或离线为 null）
+    trafficToday:
+      online && raw.traffic_today
+        ? { in: num(raw.traffic_today.in_total, 0), out: num(raw.traffic_today.out_total, 0) }
+        : null,
     offlineSince: online ? '' : '采集失联',
   }
 }
@@ -140,6 +145,10 @@ export const useMonitorStore = defineStore('monitor', {
         measuredCount: measured.length,
         monthKwh: measured.reduce((a, s) => a + (s.power.energy?.monthKwh ?? 0), 0),
         estCostMonth: measured.reduce((a, s) => a + (s.power.energy?.estCostMonth ?? 0), 0),
+        // 今日全网流量（字节；任一节点有按日记录即计）
+        dayIn: online.reduce((a, s) => a + (s.trafficToday?.in ?? 0), 0),
+        dayOut: online.reduce((a, s) => a + (s.trafficToday?.out ?? 0), 0),
+        dayMeasured: online.some((s) => s.trafficToday),
       }
     },
 

@@ -23,6 +23,18 @@ export function fmtSizeShort(gb) {
   return `${Math.round(gb)}G`
 }
 
+// 字节流量：820 MB / 3.4 GB / 1.2 TB（按日流量记录用，输入 bytes）
+export function fmtBytes(b) {
+  if (!b || b <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = b
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
 
 export function fmtUptime(days) {
   if (days <= 0) return '—'

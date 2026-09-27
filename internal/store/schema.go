@@ -77,7 +77,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 5
+const schemaVersion = 6
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -263,6 +263,18 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 			`ALTER TABLE metric_sample ADD COLUMN net_in_total INTEGER`,
 			`ALTER TABLE metric_sample ADD COLUMN net_out_total INTEGER`,
 			`CREATE INDEX IF NOT EXISTS idx_sample_ts ON metric_sample(ts)`,
+		)
+	case 6: // 流量监控：按日收发字节记录（首尾累计计数器差聚合）
+		return exec(
+			`CREATE TABLE IF NOT EXISTS metric_daily (
+				server_id INTEGER NOT NULL REFERENCES server(id) ON DELETE CASCADE,
+				day_ts INTEGER NOT NULL,
+				in_total INTEGER DEFAULT 0,
+				out_total INTEGER DEFAULT 0,
+				updated_at INTEGER,
+				PRIMARY KEY (server_id, day_ts)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_daily_ts ON metric_daily(day_ts)`,
 		)
 	}
 	return fmt.Errorf("unknown migration %d", v)

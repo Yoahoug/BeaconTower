@@ -104,6 +104,41 @@ func (a *App) PublicHistory(c *gin.Context) {
 	return
 }
 
+// GET /api/v1/public/servers/:id/traffic?days=30 （按日流量记录：收发字节）
+func (a *App) PublicTraffic(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		middleware.Fail(c, 1001, "参数错误：id 非法")
+		return
+	}
+	srv, err := a.DB.GetServer(id)
+	if err != nil || srv == nil || srv.Hidden {
+		middleware.Fail(c, 2002, "节点不存在")
+		return
+	}
+	if a.privateMode() && !a.loggedIn(c) {
+		middleware.AbortCode(c, http.StatusUnauthorized, 1002, "未登录或会话已过期")
+		return
+	}
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days < 1 || days > 365 {
+		days = 30
+	}
+	now := nowUnix()
+	today := dayFloor(now)
+	rows, err := a.DB.DailyTrafficRange(id, today-int64(days-1)*86400, today)
+	if err != nil {
+		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+		return
+	}
+	middleware.OK(c, gin.H{"days": days, "points": rows})
+}
+
+func dayFloor(ts int64) int64 {
+	t := time.Unix(ts, 0)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Unix()
+}
+
 // windowPoints SQL 分桶聚合行 → 曲线点（字段白名单同 downsampleMetrics）。
 func windowPoints(rows []map[string]any, showPower bool) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))

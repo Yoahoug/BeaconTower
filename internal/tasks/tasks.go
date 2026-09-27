@@ -72,6 +72,60 @@ func cleanup(db *store.DB) {
 	} else if n > 0 {
 		log.Printf("[tasks] cleaned %d hourly rows", n)
 	}
+	if n, err := db.DeleteDailyBefore((now - int64(hourlyDays)*86400) / 86400 * 86400); err != nil {
+		log.Printf("[tasks] clean daily: %v", err)
+	} else if n > 0 {
+		log.Printf("[tasks] cleaned %d daily rows", n)
+	}
+	// 流量日记录与小时聚合同生命周期更新（今日实时 + 昨日定稿）
+	aggregateDailyTraffic(db)
+}
+
+// dayFloorTs 当日零点（本地时区）。
+func dayFloorTs(now int64) int64 {
+	t := time.Unix(now, 0)
+	t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	return t.Unix()
+}
+
+// aggregateDailyTraffic 按日流量聚合：今日（实时，用截至当前的样本首尾差）+
+// 昨日（全天样本定稿）。首尾累计计数器差；回绕/重启归零（last < first）时
+// 退化为「当日最后一个有效窗口差」累加不可行，直接取 0 并保留已有较大值（幂等 upsert 取 max 语义由调用方保证）。
+func aggregateDailyTraffic(db *store.DB) {
+	now := time.Now().Unix()
+	today := dayFloorTs(now)
+	yesterday := today - 86400
+	servers, err := db.ListServers()
+	if err != nil {
+		return
+	}
+	for _, s := range servers {
+		// 今日：零点至今（实时值，随轮次收敛）
+		if in, out, ok := trafficDelta(db, s.ID, today, now); ok {
+			_ = db.UpsertDailyTraffic(s.ID, today, in, out, now)
+		}
+		// 昨日：全天定稿（只在有完整覆盖时重算，幂等）
+		if in, out, ok := trafficDelta(db, s.ID, yesterday, today-1); ok {
+			_ = db.UpsertDailyTraffic(s.ID, yesterday, in, out, now)
+		}
+	}
+}
+
+// trafficDelta [from,to] 窗口流量：首个与最后一个样本的累计计数器差。
+// 样本不足 2 条、计数器未初始化（0）或发生回绕（重启归零）时返回 false（不写库）。
+func trafficDelta(db *store.DB, serverID, from, to int64) (inTotal, outTotal int64, ok bool) {
+	samples, err := db.SamplesInRange(serverID, from, to, 0)
+	if err != nil || len(samples) < 2 {
+		return 0, 0, false
+	}
+	first, last := samples[0], samples[len(samples)-1]
+	if first.NetInTotal <= 0 || first.NetOutTotal <= 0 {
+		return 0, 0, false // 旧数据（schema v5 前无累计列）
+	}
+	if last.NetInTotal < first.NetInTotal || last.NetOutTotal < first.NetOutTotal {
+		return 0, 0, false // 回绕/重启归零：窗口不可信，跳过
+	}
+	return last.NetInTotal - first.NetInTotal, last.NetOutTotal - first.NetOutTotal, true
 }
 
 // aggregate 上一完整小时聚合：cpu avg/max、mem avg/max、net 均值、

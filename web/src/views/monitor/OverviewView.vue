@@ -13,7 +13,7 @@ import StateEmpty from '../../components/ui/StateEmpty.vue'
 import StateError from '../../components/ui/StateError.vue'
 import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import AppIcon from '../../components/AppIcon.vue'
-import { fmtBps, fmtWatts, fmtKwh, fmtCost, agoText } from '../../utils/format'
+import { fmtBps, fmtWatts, fmtKwh, fmtCost, agoText, fmtBytes } from '../../utils/format'
 
 const monitor = useMonitorStore()
 
@@ -89,6 +89,24 @@ const powerSeries = computed(() => [
           <div class="kpi-card__sub">实时入口带宽</div>
         </div>
 
+        <div class="kpi-card kpi-card--success spot bt-enter" style="--i: 4" v-spotlight>
+          <div class="kpi-card__label"><AppIcon name="calendar" aria-hidden="true" />今日流量</div>
+          <div class="kpi-card__value">
+            <TweenNumber
+              v-if="monitor.summary.dayMeasured"
+              :value="monitor.summary.dayIn + monitor.summary.dayOut"
+              :format="fmtBytes"
+            />
+            <template v-else>—</template>
+          </div>
+          <div class="kpi-card__sub">
+            <template v-if="monitor.summary.dayMeasured">
+              ↑ {{ fmtBytes(monitor.summary.dayOut) }} · ↓ {{ fmtBytes(monitor.summary.dayIn) }}
+            </template>
+            <template v-else>按日流量记录累积中</template>
+          </div>
+        </div>
+
         <div class="kpi-card kpi-card--warn spot bt-enter" style="--i: 5" v-spotlight>
           <div class="kpi-card__label"><AppIcon name="sparkles" aria-hidden="true" />实时功耗</div>
           <div class="kpi-card__value">
@@ -104,7 +122,7 @@ const powerSeries = computed(() => [
           </div>
         </div>
 
-        <div class="kpi-card kpi-card--brand spot bt-enter" style="--i: 5" v-spotlight>
+        <div class="kpi-card kpi-card--brand spot bt-enter" style="--i: 6" v-spotlight>
           <div class="kpi-card__label"><AppIcon name="calendar" aria-hidden="true" />本月用电</div>
           <div class="kpi-card__value">
             <TweenNumber
