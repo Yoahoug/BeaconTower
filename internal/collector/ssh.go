@@ -64,10 +64,18 @@ echo bt_arch=$(uname -m 2>/dev/null)
 echo bt_cpu_model=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-)
 echo bt_virt=$(systemd-detect-virt 2>/dev/null || echo unknown)
 echo bt_pub_ip=$(curl -sS -m 5 -4 https://ip.sb 2>/dev/null || curl -sS -m 5 -4 'http://ip-api.com/json/?fields=query' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-for d in /sys/class/powercap/intel-rapl:*; do
-  echo rapl:${d##*/}=$(cat $d/energy_uj 2>/dev/null)
-  echo raplmax:${d##*/}=$(cat $d/max_energy_range_uj 2>/dev/null)
-done
+# RAPL：优先标准 sysfs 路径；容器内 Docker 默认 mask 了
+# /sys/devices/virtual/powercap（class 符号链接失效），故兜底挂载点 /powercap-ro
+rapl_base=""
+[ -e /sys/class/powercap/intel-rapl:0/energy_uj ] && rapl_base=/sys/class/powercap
+[ -z "$rapl_base" ] && [ -d /powercap-ro/intel-rapl ] && rapl_base=/powercap-ro
+if [ -n "$rapl_base" ]; then
+  for d in $rapl_base/intel-rapl:*; do
+    case $d in *mmio*) continue ;; esac
+    echo rapl:${d##*/}=$(cat $d/energy_uj 2>/dev/null)
+    echo raplmax:${d##*/}=$(cat $d/max_energy_range_uj 2>/dev/null)
+  done
+fi
 for z in /sys/class/thermal/thermal_zone*; do
   echo tz:$(cat $z/type 2>/dev/null)=$(cat $z/temp 2>/dev/null)
 done
