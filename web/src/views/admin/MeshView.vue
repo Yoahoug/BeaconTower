@@ -1,0 +1,961 @@
+<!-- ============================================================
+     WG 组网管理（doc/12）：单网 + 主备 hub（A/B 流量额度轮换）。
+     - 总览：网络信息条 / hub 额度卡 / 拓扑图 / 成员表
+     - 操作：组网向导（预检→执行）、导入现有网络、一键切换 hub、
+             设备凭证（conf + 二维码）、手动巡检
+     - 任务进度：wg_task/step 2s 轮询至完结
+     ============================================================ -->
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import * as echarts from 'echarts/core'
+import { GraphChart } from 'echarts/charts'
+import { CanvasRenderer } from 'echarts/renderers'
+import QRCode from 'qrcode'
+import AppIcon from '../../components/AppIcon.vue'
+import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
+import { agoFromTs } from '../../api/auth'
+import { useAdminStore } from '../../stores/admin'
+import { useUiStore } from '../../stores/ui'
+
+echarts.use([GraphChart, CanvasRenderer])
+
+const admin = useAdminStore()
+const ui = useUiStore()
+
+const overview = computed(() => admin.wgOverview)
+const network = computed(() => admin.wgOverview?.network || null)
+const hubs = computed(() => admin.wgOverview?.hubs || [])
+const peers = computed(() => admin.wgOverview?.peers || [])
+const servers = computed(() => admin.wgOverview?.servers || [])
+const activeHub = computed(() => hubs.value.find((h) => h.is_active) || null)
+const runningTask = computed(() => !!admin.wgOverview?.running_task)
+const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'))
+const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
+
+// ---------- 文案与格式 ----------
+function fmtBytes(n) {
+  if (!n || n <= 0) return '0'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+function statusTag(s) {
+  switch (s) {
+    case 'online':
+      return { text: '在线', cls: 'bt-tag--success' }
+    case 'offline':
+      return { text: '离线', cls: 'bt-tag--warning' }
+    case 'pending':
+      return { text: '待接入', cls: '' }
+    case 'joining':
+      return { text: '接入中', cls: 'bt-tag--info' }
+    case 'error':
+      return { text: '异常', cls: 'bt-tag--danger' }
+    default:
+      return { text: s || '—', cls: '' }
+  }
+}
+
+// ---------- 拓扑图 ----------
+const topoEl = ref(null)
+let topoChart = null
+
+function buildTopoOption() {
+  if (!network.value) return null
+  const nodes = []
+  const links = []
+  const cat = (s) => (s === 'online' ? '在线' : s === 'offline' ? '离线' : '待接入')
+  for (const h of hubs.value) {
+    nodes.push({
+      id: `hub-${h.server_id}`,
+      name: `${h.is_active ? '★ ' : ''}${h.name || `节点${h.server_id}`}`,
+      symbolSize: 54,
+      category: h.is_active ? '现役 hub' : '备胎 hub',
+      itemStyle: { color: h.is_active ? '#2f7ef7' : '#8a94a6' },
+      label: { show: true, formatter: `${h.name}\n:${h.listen_port}` },
+      tooltip: { formatter: `${h.endpoint || '端点未知'} · ${cat(h.status)}` },
+    })
+  }
+  for (const p of peers.value) {
+    if (p.status === 'left') continue
+    const color = p.status === 'online' ? '#31b06d' : p.status === 'offline' ? '#e0a23c' : '#8a94a6'
+    nodes.push({
+      id: `peer-${p.id}`,
+      name: p.name,
+      symbolSize: p.kind === 'device' ? 30 : 38,
+      category: cat(p.status),
+      itemStyle: { color },
+      label: { show: true, formatter: `${p.name}\n${p.wg_ip}` },
+      tooltip: { formatter: `${p.wg_ip} · ${cat(p.status)} · ↓${fmtBytes(p.rx_bytes)} ↑${fmtBytes(p.tx_bytes)}` },
+    })
+    if (activeHub.value) {
+      links.push({
+        source: `hub-${activeHub.value.server_id}`,
+        target: `peer-${p.id}`,
+        lineStyle: { color, width: p.status === 'online' ? 2.4 : 1.2, type: p.status === 'online' ? 'solid' : 'dashed' },
+      })
+    }
+  }
+  return {
+    tooltip: {},
+    legend: { data: ['现役 hub', '备胎 hub', '在线', '离线', '待接入'], bottom: 0, textStyle: { fontSize: 11 } },
+    series: [{
+      type: 'graph',
+      layout: 'force',
+      roam: true,
+      force: { repulsion: 320, edgeLength: 110 },
+      label: { position: 'bottom', fontSize: 11 },
+      edgeSymbol: ['none', 'arrow'],
+      edgeSymbolSize: 8,
+      data: nodes,
+      links,
+    }],
+  }
+}
+
+function renderTopo() {
+  if (!topoEl.value) return
+  if (!topoChart) {
+    topoChart = echarts.init(topoEl.value)
+  }
+  const opt = buildTopoOption()
+  if (opt) topoChart.setOption(opt, true)
+}
+
+function resizeTopo() {
+  topoChart?.resize()
+}
+
+// ---------- 任务进度（2s 轮询） ----------
+const taskModal = ref(null) // { id, task, error }
+let pollTimer = 0
+
+function stopPoll() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = 0
+  }
+}
+
+function watchTask(id) {
+  stopPoll()
+  taskModal.value = { id, task: null, error: '' }
+  const tick = async () => {
+    try {
+      const t = await admin.loadWgTask(id)
+      taskModal.value.task = t
+      if (t && t.status !== 'running') {
+        stopPoll()
+        await admin.loadWg()
+        ui.notify(t.status === 'done' ? '任务完成' : `任务结束：${t.status} · ${t.result || ''}`)
+      }
+    } catch (e) {
+      taskModal.value.error = e?.message || '任务状态获取失败'
+    }
+  }
+  tick()
+  pollTimer = window.setInterval(tick, 2000)
+}
+
+onBeforeUnmount(() => {
+  stopPoll()
+  topoChart?.dispose()
+  topoChart = null
+  window.removeEventListener('resize', resizeTopo)
+})
+
+// ---------- 组网向导 ----------
+const wizard = ref(null)
+// { step: 1|2|3, plan, error, busy, hubId, hubPort, ids:[], subnet, hubIp }
+const selectedIds = ref([])
+const wizardHubId = ref(0)
+const wizardHubPort = ref(51820)
+const wizardSubnet = ref('10.66.66.0/24')
+const wizardHubIp = ref('10.66.66.2')
+
+const selectableServers = computed(() => (servers.value || []).filter((s) => !s.is_self))
+
+function openWizard() {
+  selectedIds.value = []
+  wizardHubId.value = activeHub.value?.server_id || 0
+  wizard.value = { step: 1, plan: null, error: '', busy: false }
+}
+
+function togglePick(id) {
+  const i = selectedIds.value.indexOf(id)
+  if (i >= 0) selectedIds.value.splice(i, 1)
+  else selectedIds.value.push(id)
+}
+
+function wizardPayload() {
+  const spokes = selectedIds.value.map((id) => ({ server_id: id }))
+  const p = { hub_server_id: wizardHubId.value || undefined, hub_port: wizardHubPort.value, spokes }
+  if (!network.value) {
+    p.network = { subnet: wizardSubnet.value, hub_ip: wizardHubIp.value, keepalive: 25, mtu: 1420 }
+  }
+  return p
+}
+
+async function runPlan() {
+  if (!wizardHubId.value) {
+    wizard.value.error = '请选择中心节点（须为公网可达的节点）'
+    return
+  }
+  if (!selectedIds.value.length) {
+    wizard.value.error = '请至少勾选一台要接入的节点'
+    return
+  }
+  wizard.value.busy = true
+  wizard.value.error = ''
+  try {
+    wizard.value.plan = await admin.planWg(wizardPayload())
+    wizard.value.step = 2
+  } catch (e) {
+    wizard.value.error = e?.message || '预检失败'
+  } finally {
+    wizard.value.busy = false
+  }
+}
+
+async function runApply() {
+  wizard.value.busy = true
+  wizard.value.error = ''
+  try {
+    const r = await admin.applyWg(wizardPayload())
+    wizard.value = null
+    ui.notify('组网任务已启动')
+    watchTask(r.task_id)
+  } catch (e) {
+    wizard.value.error = e?.message || '执行失败'
+  } finally {
+    wizard.value.busy = false
+  }
+}
+
+// ---------- 导入现有网络 ----------
+const importModal = ref(null)
+// { hubId, standbyId, picked:[], busy, error }
+const importHubId = ref(0)
+const importStandbyId = ref(0)
+const importPicked = ref([])
+
+function openImport() {
+  importHubId.value = 0
+  importStandbyId.value = 0
+  importPicked.value = []
+  importModal.value = { busy: false, error: '' }
+}
+
+async function runImport() {
+  if (!importHubId.value) {
+    importModal.value.error = '请选择现役中心节点'
+    return
+  }
+  importModal.value.busy = true
+  importModal.value.error = ''
+  try {
+    const r = await admin.importWg({
+      hub_server_id: importHubId.value,
+      standby_server_id: importStandbyId.value || undefined,
+      candidates: importPicked.value,
+    })
+    importModal.value = null
+    ui.notify('导入任务已启动')
+    watchTask(r.task_id)
+  } catch (e) {
+    importModal.value.error = e?.message || '导入失败'
+  } finally {
+    importModal.value.busy = false
+  }
+}
+
+// ---------- hub 切换 ----------
+const switchModal = ref(null)
+const switchTargetId = ref(0)
+
+const switchCandidates = computed(() => hubs.value.filter((h) => !h.is_active))
+
+function openSwitch(hub) {
+  if (!switchCandidates.value.length) {
+    ui.notify('暂无备胎 hub：先把另一台公网节点加入为备援')
+    return
+  }
+  switchTargetId.value = hub?.server_id || switchCandidates.value[0].server_id
+  switchModal.value = { busy: false, error: '' }
+}
+
+async function runSwitch() {
+  switchModal.value.busy = true
+  switchModal.value.error = ''
+  try {
+    const r = await admin.switchHub({ target_server_id: switchTargetId.value })
+    switchModal.value = null
+    ui.notify('切换任务已启动（金丝雀验证通过后才会全网切换）')
+    watchTask(r.task_id)
+  } catch (e) {
+    switchModal.value.error = e?.message || '切换失败'
+  } finally {
+    switchModal.value.busy = false
+  }
+}
+
+// ---------- 设备凭证 ----------
+const deviceModal = ref(null) // { name, busy, error }
+const confModal = ref(null) // { peer, hubId, conf, filename, dataUrl, error }
+
+function openDevice() {
+  deviceModal.value = { name: '', busy: false, error: '' }
+}
+
+async function createDevice() {
+  const name = (deviceModal.value.name || '').trim()
+  if (!name) {
+    deviceModal.value.error = '请输入设备名称'
+    return
+  }
+  deviceModal.value.busy = true
+  deviceModal.value.error = ''
+  try {
+    const r = await admin.createDevice(name)
+    deviceModal.value = null
+    ui.notify(r.warn ? `设备已创建，但 ${r.warn}` : `设备已创建（${r.wg_ip}）`)
+  } catch (e) {
+    deviceModal.value.error = e?.message || '创建失败'
+  } finally {
+    deviceModal.value.busy = false
+  }
+}
+
+async function openConf(peer, hubId = 0) {
+  confModal.value = { peer, hubId, conf: '', filename: '', dataUrl: '', error: '', loading: true }
+  try {
+    const r = await admin.peerConf(peer.id, hubId)
+    confModal.value.conf = r.conf
+    confModal.value.filename = r.filename
+    confModal.value.dataUrl = await QRCode.toDataURL(r.conf, { width: 320, margin: 1 })
+  } catch (e) {
+    confModal.value.error = e?.message || '配置导出失败'
+  } finally {
+    confModal.value.loading = false
+  }
+}
+
+function downloadConf() {
+  if (!confModal.value?.conf) return
+  const blob = new Blob([confModal.value.conf], { type: 'text/plain' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = confModal.value.filename || 'wg0.conf'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+// ---------- 成员操作 ----------
+const confirmDelete = ref(null)
+const deleting = ref(false)
+const verifyingId = ref(0)
+
+async function doDelete() {
+  if (!confirmDelete.value) return
+  deleting.value = true
+  try {
+    const r = await admin.deletePeer(confirmDelete.value.id)
+    ui.notify(`已移出网络 · ${r.detail || ''}`)
+    confirmDelete.value = null
+  } catch (e) {
+    ui.notify(e?.message || '移除失败')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function verifyPeer(p) {
+  verifyingId.value = p.id
+  try {
+    const r = await admin.verifyPeer(p.id)
+    ui.notify(r.online ? `${p.name}：${r.detail}` : `${p.name}：${r.detail}`)
+  } catch (e) {
+    ui.notify(e?.message || '验证失败')
+  } finally {
+    verifyingId.value = 0
+  }
+}
+
+async function patrol() {
+  try {
+    await admin.patrolNow()
+    ui.notify('巡检完成')
+  } catch (e) {
+    ui.notify(e?.message || '巡检失败')
+  }
+}
+
+// ---------- 生命周期 ----------
+onMounted(async () => {
+  await admin.loadWg()
+  await nextTick()
+  renderTopo()
+  window.addEventListener('resize', resizeTopo)
+})
+
+watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
+</script>
+
+<template>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>WG 组网</h1>
+        <p class="page-head__desc">WireGuard 一键组网 · 主备中心（A/B 流量额度轮换）· 设备凭证二维码</p>
+      </div>
+      <div class="page-head__actions">
+        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="admin.wgLoading || runningTask" @click="patrol">
+          <AppIcon name="refresh" aria-hidden="true" />手动巡检
+        </button>
+        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openImport">
+          <AppIcon name="download" aria-hidden="true" />导入现有网络
+        </button>
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="runningTask" @click="openWizard">
+          <AppIcon name="plus" aria-hidden="true" />组网向导
+        </button>
+      </div>
+    </div>
+
+    <div v-if="admin.wgError" class="bt-card" style="margin-bottom: 12px">
+      <div class="bt-card__body bt-text-danger" role="alert">{{ admin.wgError }}</div>
+    </div>
+
+    <!-- 未初始化引导 -->
+    <div v-if="!admin.wgLoading && !network && !admin.wgError" class="bt-card">
+      <div class="bt-card__body" style="text-align: center; padding: 40px 16px">
+        <AppIcon name="beacon" style="width: 40px; height: 40px" aria-hidden="true" />
+        <h2 style="margin: 12px 0 6px">尚未初始化 WG 组网</h2>
+        <p style="color: var(--bt-text-2, #667); margin: 0 0 20px">
+          已有现网（如 wg1/wg2 星型组网）可直接导入纳管；也可以用向导从零组一张新网。
+        </p>
+        <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap">
+          <button class="bt-btn bt-btn--primary" type="button" @click="openImport">
+            <AppIcon name="download" aria-hidden="true" />导入现有网络（推荐）
+          </button>
+          <button class="bt-btn bt-btn--default" type="button" @click="openWizard">
+            <AppIcon name="plus" aria-hidden="true" />全新组网
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 已初始化总览 -->
+    <template v-if="network">
+      <div class="bt-card" style="margin-bottom: 12px">
+        <div class="bt-card__body mesh-bar">
+          <span class="bt-tag bt-tag--info"><AppIcon name="shield" aria-hidden="true" />{{ network.subnet }}</span>
+          <span>hub 虚拟 IP <b class="mono">{{ network.hub_ip }}</b></span>
+          <span>接口 <b class="mono">{{ network.iface }}</b></span>
+          <span>keepalive {{ network.keepalive }}s · MTU {{ network.mtu }}</span>
+          <span v-if="activeHub">现役：<b>{{ activeHub.name }}</b></span>
+          <span v-if="runningTask" class="bt-tag bt-tag--warning">任务执行中…</span>
+        </div>
+      </div>
+
+      <!-- hub 额度卡 -->
+      <div class="mesh-hubs">
+        <div v-for="h in hubs" :key="h.server_id" class="bt-card bt-card--hover">
+          <div class="bt-card__head">
+            <div class="bt-card__title">
+              {{ h.name }}
+              <span class="bt-tag" :class="h.is_active ? 'bt-tag--success' : ''">{{ h.is_active ? '现役' : '备胎' }}</span>
+              <span class="bt-tag" :class="statusTag(h.status).cls">{{ statusTag(h.status).text }}</span>
+            </div>
+          </div>
+          <div class="bt-card__body">
+            <div class="mesh-hub-line mono">{{ h.endpoint || '端点未知' }}</div>
+            <div class="mesh-hub-line">
+              本月 WG 流量 <b class="tnum">{{ fmtBytes(h.month_rx + h.month_tx) }}</b>
+              <span v-if="h.quota_gb" class="tnum">/ {{ h.quota_gb }} GB</span>
+            </div>
+            <div v-if="h.quota_gb" class="mesh-quota">
+              <div
+                class="mesh-quota__bar"
+                :class="{ 'is-warn': (h.month_rx + h.month_tx) / (h.quota_gb * 1e9) > 0.8, 'is-full': (h.month_rx + h.month_tx) / (h.quota_gb * 1e9) >= 1 }"
+                :style="{ width: Math.min(100, ((h.month_rx + h.month_tx) / (h.quota_gb * 1e9)) * 100) + '%' }"
+              />
+            </div>
+            <div v-if="h.last_error" class="mesh-hub-error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ h.last_error }}
+            </div>
+            <div class="mesh-hub-actions">
+              <button v-if="!h.is_active" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openSwitch(h)">
+                <AppIcon name="pulse" aria-hidden="true" />切换为现役
+              </button>
+              <span v-else class="bt-tag bt-tag--info">流量额度用完时切到备胎</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 拓扑 -->
+      <div class="bt-card" style="margin-bottom: 12px">
+        <div class="bt-card__head"><div class="bt-card__title">拓扑</div></div>
+        <div ref="topoEl" class="mesh-topo" aria-label="组网拓扑图" />
+      </div>
+
+      <!-- 成员表 -->
+      <div class="bt-card">
+        <div class="bt-card__head">
+          <div class="bt-card__title">成员（{{ peers.length }}）</div>
+          <div class="mesh-peer-actions">
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openDevice">
+              <AppIcon name="apple" aria-hidden="true" />添加设备
+            </button>
+            <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="runningTask" @click="openWizard">
+              <AppIcon name="plus" aria-hidden="true" />接入节点
+            </button>
+          </div>
+        </div>
+        <div class="bt-card__body" style="padding: 0">
+          <table class="mesh-table">
+            <thead>
+              <tr>
+                <th>名称</th><th>类型</th><th>WG IP</th><th>状态</th>
+                <th>最近握手</th><th>收 / 发</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in peers" :key="p.id">
+                <td>
+                  {{ p.name }}
+                  <span v-if="p.last_error" class="bt-tag bt-tag--danger" :title="p.last_error">!</span>
+                </td>
+                <td>{{ p.kind === 'device' ? '设备' : '节点' }}</td>
+                <td class="mono">{{ p.wg_ip }}</td>
+                <td><span class="bt-tag" :class="statusTag(p.status).cls">{{ statusTag(p.status).text }}</span></td>
+                <td class="tnum">{{ p.last_handshake ? agoFromTs(p.last_handshake) : '从未' }}</td>
+                <td class="tnum">{{ fmtBytes(p.rx_bytes) }} / {{ fmtBytes(p.tx_bytes) }}</td>
+                <td class="mesh-row-actions">
+                  <button v-if="p.kind === 'server'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="verifyingId === p.id" @click="verifyPeer(p)">
+                    {{ verifyingId === p.id ? '验证中…' : '验证' }}
+                  </button>
+                  <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p)">
+                    凭证 / QR
+                  </button>
+                  <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
+                    <AppIcon name="trash" aria-hidden="true" />移出
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!peers.length">
+                <td colspan="7" style="text-align: center; padding: 24px; color: #889">暂无成员，用右上角「接入节点」或「导入现有网络」开始</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- 组网向导 -->
+    <div v-if="wizard" class="bt-modal-mask" @click.self="wizard.busy ? null : (wizard = null)">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="组网向导">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">组网向导 · 第 {{ wizard.step }} 步 / 3</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="wizard.busy" @click="wizard = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <!-- 第 1 步：选择 -->
+          <template v-if="wizard.step === 1">
+            <div v-if="!network" class="mesh-wizard-params">
+              <label class="bt-field"><span class="bt-field__label">子网 CIDR</span>
+                <input v-model="wizardSubnet" class="bt-input mono" type="text" /></label>
+              <label class="bt-field"><span class="bt-field__label">hub 虚拟 IP</span>
+                <input v-model="wizardHubIp" class="bt-input mono" type="text" /></label>
+              <label class="bt-field"><span class="bt-field__label">hub 监听端口</span>
+                <input v-model.number="wizardHubPort" class="bt-input" type="number" min="1" max="65535" /></label>
+            </div>
+            <p class="mesh-hint">中心节点（★）：须公网 UDP 端口可达（云服务器）；再勾选要接入的节点。</p>
+            <div class="mesh-pick-list">
+              <div v-for="s in selectableServers" :key="s.id" class="bt-check mesh-pick">
+                <input
+                  :id="'wg-hub-' + s.id"
+                  type="radio"
+                  name="wg-hub"
+                  :checked="wizardHubId === s.id"
+                  @change="wizardHubId = s.id"
+                />
+                <label :for="'wg-hub-' + s.id" title="设为中心节点">★ 中心</label>
+                <input
+                  :id="'wg-mem-' + s.id"
+                  type="checkbox"
+                  :checked="selectedIds.includes(s.id)"
+                  :disabled="wizardHubId === s.id"
+                  @change="togglePick(s.id)"
+                />
+                <label :for="'wg-mem-' + s.id">
+                  {{ s.name }} · {{ wizardHubId === s.id ? '作为中心' : s.in_network ? '已在网' : '接入' }}
+                </label>
+              </div>
+            </div>
+          </template>
+          <!-- 第 2 步：预检结果 -->
+          <template v-else-if="wizard.step === 2 && wizard.plan">
+            <div class="mesh-plan-hub">
+              <b>★ {{ wizard.plan.hub.name }}</b>
+              <span class="bt-tag bt-tag--info">{{ wizard.plan.hub.role === 'hub' ? '现役中心' : '备胎中心' }} :{{ wizard.plan.hub.listen_port }}</span>
+              <span v-for="(i, idx) in wizard.plan.hub.issues" :key="idx" class="bt-tag" :class="i.level === 'error' ? 'bt-tag--danger' : 'bt-tag--warning'">{{ i.msg }}</span>
+            </div>
+            <div v-for="s in wizard.plan.spokes" :key="s.server_id" class="mesh-plan-row">
+              <b>{{ s.name }}</b>
+              <span class="mono">{{ s.wg_ip || '未分配' }}</span>
+              <span v-for="(i, idx) in s.issues" :key="idx" class="bt-tag" :class="i.level === 'error' ? 'bt-tag--danger' : 'bt-tag--warning'">{{ i.msg }}</span>
+            </div>
+            <p v-if="wizard.plan.blocked" class="bt-text-danger mesh-hint" role="alert">存在阻断级问题（红标），请处理后重试。</p>
+          </template>
+          <!-- 第 3 步：执行中说明 -->
+          <template v-else-if="wizard.step === 3">
+            <p>任务已提交，可关闭本窗口后在任务进度中查看。</p>
+          </template>
+          <div v-if="wizard.error" class="bt-text-danger mesh-hint" role="alert">{{ wizard.error }}</div>
+        </div>
+        <div class="mesh-modal-foot">
+          <button v-if="wizard.step === 1" class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy" @click="runPlan">
+            {{ wizard.busy ? '预检中…（SSH 探测各节点）' : '下一步：预检' }}
+          </button>
+          <template v-else-if="wizard.step === 2">
+            <button class="bt-btn bt-btn--ghost" type="button" @click="wizard.step = 1">上一步</button>
+            <button class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy" @click="runApply">
+              {{ wizard.busy ? '提交中…' : '确认执行组网' }}
+            </button>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导入现有网络 -->
+    <div v-if="importModal" class="bt-modal-mask" @click.self="importModal.busy ? null : (importModal = null)">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="导入现有网络">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">导入现有 WG 网络</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="importModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <p class="mesh-hint">选择现役中心节点，面板将读取其配置与运行态，自动纳管网内成员（按公钥匹配；无法匹配的记为设备）。</p>
+          <label class="bt-field"><span class="bt-field__label">现役中心节点 ★</span>
+            <select v-model="importHubId" class="bt-select">
+              <option :value="0" disabled>请选择</option>
+              <option v-for="s in selectableServers" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </label>
+          <label class="bt-field"><span class="bt-field__label">备援节点（可选，warm standby）</span>
+            <select v-model="importStandbyId" class="bt-select">
+              <option :value="0">无</option>
+              <option v-for="s in selectableServers.filter((x) => x.id !== importHubId)" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </label>
+          <p class="mesh-hint">勾选参与匹配的节点（面板将 SSH 读取其 WG 配置）：</p>
+          <div class="mesh-pick-list">
+            <label v-for="s in selectableServers.filter((x) => x.id !== importHubId && x.id !== importStandbyId)" :key="s.id" class="bt-check mesh-pick">
+              <input v-model="importPicked" type="checkbox" :value="s.id" />
+              <span>{{ s.name }}</span>
+            </label>
+          </div>
+          <div v-if="importModal.error" class="bt-text-danger mesh-hint" role="alert">{{ importModal.error }}</div>
+        </div>
+        <div class="mesh-modal-foot">
+          <button class="bt-btn bt-btn--primary" type="button" :disabled="importModal.busy" @click="runImport">
+            {{ importModal.busy ? '导入中…' : '开始导入' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 切换 hub -->
+    <div v-if="switchModal" class="bt-modal-mask" @click.self="switchModal.busy ? null : (switchModal = null)">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="切换现役中心">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">切换现役中心节点</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="switchModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <p class="mesh-hint">
+            流程：校正备援 hub → 金丝雀节点先切换验证（失败自动回滚）→ 其余节点切换。
+            设备（Mac/iPhone）需在切换后重新扫码/导入对应凭证。
+          </p>
+          <label class="bt-field"><span class="bt-field__label">目标中心（切换后现役）</span>
+            <select v-model="switchTargetId" class="bt-select">
+              <option v-for="h in switchCandidates" :key="h.server_id" :value="h.server_id">{{ h.name }}（:{{ h.listen_port }}）</option>
+            </select>
+          </label>
+          <div v-if="switchModal.error" class="bt-text-danger mesh-hint" role="alert">{{ switchModal.error }}</div>
+        </div>
+        <div class="mesh-modal-foot">
+          <button class="bt-btn bt-btn--danger" type="button" :disabled="switchModal.busy" @click="runSwitch">
+            {{ switchModal.busy ? '提交中…' : '开始切换' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加设备 -->
+    <div v-if="deviceModal" class="bt-modal-mask" @click.self="deviceModal.busy ? null : (deviceModal = null)">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="添加设备">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">添加设备（Mac / iPhone / Win）</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="deviceModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <label class="bt-field"><span class="bt-field__label">设备名称</span>
+            <input v-model="deviceModal.name" class="bt-input" type="text" placeholder="如 iPhone 15" @keyup.enter="createDevice" />
+          </label>
+          <p class="mesh-hint">面板生成密钥并热加入现役 hub；创建后点成员表「凭证 / QR」扫码导入。</p>
+          <div v-if="deviceModal.error" class="bt-text-danger mesh-hint" role="alert">{{ deviceModal.error }}</div>
+        </div>
+        <div class="mesh-modal-foot">
+          <button class="bt-btn bt-btn--primary" type="button" :disabled="deviceModal.busy" @click="createDevice">
+            {{ deviceModal.busy ? '创建中…' : '创建' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 设备凭证 / QR -->
+    <div v-if="confModal" class="bt-modal-mask" @click.self="confModal = null">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="设备凭证">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">凭证 · {{ confModal.peer.name }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="confModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body mesh-conf">
+          <div v-if="hubs.length > 1" class="mesh-conf-hubs">
+            <button
+              v-for="h in hubs" :key="h.server_id"
+              class="bt-btn bt-btn--sm" :class="confModal.hubId === h.server_id ? 'bt-btn--primary' : 'bt-btn--ghost'"
+              type="button" @click="openConf(confModal.peer, h.server_id)"
+            >
+              {{ h.is_active ? 'A · 现役' : 'B · 备胎' }}（{{ h.name }}）
+            </button>
+          </div>
+          <div v-if="confModal.loading" style="padding: 24px; text-align: center">生成中…</div>
+          <template v-else-if="confModal.error">
+            <div class="bt-text-danger" role="alert">{{ confModal.error }}</div>
+          </template>
+          <template v-else>
+            <img :src="confModal.dataUrl" alt="WireGuard 配置二维码" class="mesh-qr" />
+            <textarea class="bt-textarea mono mesh-conf-text" readonly :value="confModal.conf" rows="10" />
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="downloadConf">
+              <AppIcon name="download" aria-hidden="true" />下载 .conf
+            </button>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- 任务进度 -->
+    <div v-if="taskModal" class="bt-modal-mask" @click.self="taskModal.task && taskModal.task.status !== 'running' ? (taskModal = null) : null">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="任务进度">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">
+            任务 #{{ taskModal.id }}
+            <span v-if="taskModal.task" class="bt-tag" :class="taskModal.task.status === 'running' ? 'bt-tag--info' : taskModal.task.status === 'done' ? 'bt-tag--success' : 'bt-tag--danger'">
+              {{ taskModal.task.status === 'running' ? '执行中' : taskModal.task.status === 'done' ? '完成' : taskModal.task.status === 'partial' ? '部分成功' : '失败' }}
+            </span>
+          </div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="taskModal = null">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div v-for="st in taskModal.task?.steps || []" :key="st.id" class="mesh-step">
+            <div class="mesh-step__head">
+              <span class="bt-tag" :class="st.status === 'ok' ? 'bt-tag--success' : st.status === 'failed' ? 'bt-tag--danger' : st.status === 'running' ? 'bt-tag--info' : ''">
+                {{ st.status === 'ok' ? '成功' : st.status === 'failed' ? '失败' : st.status === 'running' ? '执行中' : st.status === 'skipped' ? '跳过' : '等待' }}
+              </span>
+              {{ st.title }}
+            </div>
+            <pre v-if="st.log" class="mesh-step__log">{{ st.log }}</pre>
+          </div>
+          <div v-if="taskModal.error" class="bt-text-danger mesh-hint" role="alert">{{ taskModal.error }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 移出确认 -->
+    <ConfirmDialog
+      v-if="confirmDelete"
+      :title="`移出 ${confirmDelete.name}`"
+      :message="`将下线其 WG 接口并从中心节点移除该成员（${confirmDelete.wg_ip}）。确认执行？`"
+      confirm-text="移出网络"
+      :danger="true"
+      :busy="deleting"
+      @cancel="confirmDelete = null"
+      @confirm="doDelete"
+    />
+  </div>
+</template>
+
+<style scoped>
+.mesh-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: center;
+  font-size: 13px;
+}
+.mesh-hubs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.mesh-hub-line {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.mesh-hub-error {
+  color: var(--bt-danger, #d64545);
+  font-size: 12px;
+  margin: 6px 0;
+}
+.mesh-hub-actions {
+  margin-top: 8px;
+}
+.mesh-quota {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.18);
+  overflow: hidden;
+  margin: 4px 0 8px;
+}
+.mesh-quota__bar {
+  height: 100%;
+  background: #31b06d;
+}
+.mesh-quota__bar.is-warn {
+  background: #e0a23c;
+}
+.mesh-quota__bar.is-full {
+  background: #d64545;
+}
+.mesh-topo {
+  height: 340px;
+}
+.mesh-peer-actions {
+  display: flex;
+  gap: 8px;
+}
+.mesh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.mesh-table th,
+.mesh-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+  text-align: left;
+}
+.mesh-table th {
+  font-weight: 600;
+  color: #778;
+  font-size: 12px;
+}
+.mesh-row-actions {
+  white-space: nowrap;
+}
+.mesh-row-actions .bt-btn {
+  margin-right: 4px;
+}
+.mesh-hint {
+  font-size: 13px;
+  color: #778;
+  margin: 8px 0;
+}
+.mesh-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+.mesh-pick {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+}
+.mesh-wizard-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.mesh-plan-hub,
+.mesh-plan-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.mesh-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.mesh-conf {
+  text-align: center;
+}
+.mesh-conf-hubs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.mesh-qr {
+  width: 300px;
+  max-width: 100%;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+.mesh-conf-text {
+  width: 100%;
+  margin: 10px 0;
+  font-size: 12px;
+  text-align: left;
+}
+.mesh-step {
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.mesh-step__head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.mesh-step__log {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 6px;
+  font-size: 12px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.bt-text-muted {
+  opacity: 0.6;
+}
+</style>

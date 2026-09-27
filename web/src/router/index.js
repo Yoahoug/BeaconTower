@@ -18,6 +18,7 @@ import ServerDetailView from '../views/monitor/ServerDetailView.vue'
 // 管理端按路由懒加载：公开页 bundle 不包含节点/凭据等管理代码。
 const AdminLayout = () => import('../views/admin/AdminLayout.vue')
 const ServersView = () => import('../views/admin/ServersView.vue')
+const MeshView = () => import('../views/admin/MeshView.vue')
 const SettingsView = () => import('../views/admin/SettingsView.vue')
 const SecurityView = () => import('../views/admin/SecurityView.vue')
 const AuditView = () => import('../views/admin/AuditView.vue')
@@ -68,6 +69,14 @@ const router = createRouter({
               component: ServersView,
               meta: {
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '节点管理' }],
+              },
+            },
+            {
+              path: 'mesh',
+              name: 'admin-mesh',
+              component: MeshView,
+              meta: {
+                breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: 'WG 组网' }],
               },
             },
             {

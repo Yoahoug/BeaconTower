@@ -34,6 +34,20 @@ const realAdmin = {
   saveSettings: (next) => http.put('/v1/admin/settings', next),
 
   listAudit: (page, size) => http.get(`/v1/admin/audit?page=${page}&size=${size}`),
+
+  // ---------- WG 组网（doc/12 §5） ----------
+  wgOverview: () => http.get('/v1/admin/wg/overview'),
+  wgPlan: (payload) => http.post('/v1/admin/wg/plan', payload, { timeoutMs: 60000, retries: 0 }),
+  wgApply: (payload) => http.post('/v1/admin/wg/apply', payload, { timeoutMs: 30000, retries: 0 }),
+  wgImport: (payload) => http.post('/v1/admin/wg/import', payload, { timeoutMs: 30000, retries: 0 }),
+  wgSwitchHub: (payload) => http.post('/v1/admin/wg/switch-hub', payload, { timeoutMs: 30000, retries: 0 }),
+  wgPatrol: () => http.post('/v1/admin/wg/patrol', {}, { timeoutMs: 45000, retries: 0 }),
+  wgTask: (id) => http.get(`/v1/admin/wg/tasks/${id}`, { retries: 0 }),
+  wgTasks: () => http.get('/v1/admin/wg/tasks', { retries: 0 }),
+  wgDeviceCreate: (name) => http.post('/v1/admin/wg/devices', { name }),
+  wgPeerConf: (id, hub = 0) => http.get(`/v1/admin/wg/peers/${id}/conf${hub ? `?hub=${hub}` : ''}`, { retries: 0 }),
+  wgPeerVerify: (id) => http.post(`/v1/admin/wg/peers/${id}/verify`, {}, { timeoutMs: 60000, retries: 0 }),
+  wgPeerDelete: (id) => http.del(`/v1/admin/wg/peers/${id}`, { timeoutMs: 60000, retries: 0 }),
 }
 
 function withTimeout(promise, ms = 15000) {
@@ -64,4 +78,18 @@ export const adminClient = {
   saveSettings: (next) => withTimeout(realAdmin.saveSettings(next)),
 
   listAudit: (page, size) => withTimeout(realAdmin.listAudit(page, size)),
+
+  // WG 组网：plan/verify/delete 涉及 SSH 串行探测，给长超时；任务轮询不重试
+  wgOverview: () => withTimeout(realAdmin.wgOverview(), 15000),
+  wgPlan: (payload) => withTimeout(realAdmin.wgPlan(payload), 70000),
+  wgApply: (payload) => withTimeout(realAdmin.wgApply(payload), 35000),
+  wgImport: (payload) => withTimeout(realAdmin.wgImport(payload), 35000),
+  wgSwitchHub: (payload) => withTimeout(realAdmin.wgSwitchHub(payload), 35000),
+  wgPatrol: () => withTimeout(realAdmin.wgPatrol(), 50000),
+  wgTask: (id) => realAdmin.wgTask(id),
+  wgTasks: () => withTimeout(realAdmin.wgTasks()),
+  wgDeviceCreate: (name) => withTimeout(realAdmin.wgDeviceCreate(name), 20000),
+  wgPeerConf: (id, hub) => withTimeout(realAdmin.wgPeerConf(id, hub), 20000),
+  wgPeerVerify: (id) => withTimeout(realAdmin.wgPeerVerify(id), 70000),
+  wgPeerDelete: (id) => withTimeout(realAdmin.wgPeerDelete(id), 70000),
 }

@@ -16,6 +16,7 @@ const ui = useUiStore()
 
 const tabs = [
   { to: '/admin/servers', label: '节点管理', icon: 'server' },
+  { to: '/admin/mesh', label: 'WG 组网', icon: 'layers' },
   { to: '/admin/settings', label: '采集与展示', icon: 'sliders' },
   { to: '/admin/security', label: '安全与账号', icon: 'key' },
   { to: '/admin/audit', label: '审计日志', icon: 'log' },

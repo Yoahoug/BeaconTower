@@ -36,6 +36,11 @@ export const useAdminStore = defineStore('admin', {
     auditLoading: false,
     auditError: '',
     auditFilter: '',
+
+    // WG 组网
+    wgOverview: null,
+    wgLoading: false,
+    wgError: '',
   }),
 
   getters: {
@@ -134,6 +139,72 @@ export const useAdminStore = defineStore('admin', {
 
     setAuditFilter(q) {
       this.auditFilter = q
+    },
+
+    // ---------- WG 组网（doc/12 §6） ----------
+    async loadWg() {
+      this.wgLoading = true
+      this.wgError = ''
+      try {
+        this.wgOverview = await adminClient.wgOverview()
+      } catch (e) {
+        this.wgError = e?.message || '组网信息加载失败'
+      } finally {
+        this.wgLoading = false
+      }
+    },
+
+    async planWg(payload) {
+      return adminClient.wgPlan(payload)
+    },
+
+    async applyWg(payload) {
+      const r = await adminClient.wgApply(payload)
+      await this.loadWg()
+      return r
+    },
+
+    async importWg(payload) {
+      const r = await adminClient.wgImport(payload)
+      await this.loadWg()
+      return r
+    },
+
+    async switchHub(payload) {
+      const r = await adminClient.wgSwitchHub(payload)
+      await this.loadWg()
+      return r
+    },
+
+    async patrolNow() {
+      await adminClient.wgPatrol()
+      await this.loadWg()
+    },
+
+    async loadWgTask(id) {
+      return adminClient.wgTask(id)
+    },
+
+    async createDevice(name) {
+      const r = await adminClient.wgDeviceCreate(name)
+      await this.loadWg()
+      return r
+    },
+
+    async peerConf(id, hub = 0) {
+      return adminClient.wgPeerConf(id, hub)
+    },
+
+    async verifyPeer(id) {
+      const r = await adminClient.wgPeerVerify(id)
+      await this.loadWg()
+      return r
+    },
+
+    async deletePeer(id) {
+      const r = await adminClient.wgPeerDelete(id)
+      await this.loadWg()
+      return r
     },
   },
 })
