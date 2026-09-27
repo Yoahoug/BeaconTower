@@ -798,3 +798,186 @@ func (a *App) WGPeerVerify(c *gin.Context) {
 	_ = a.DB.UpdateWGPeer(peer)
 	middleware.OK(c, gin.H{"online": online, "detail": detail})
 }
+
+// ---------- 导入现有网络 / hub 切换（doc/12 §6-7） ----------
+
+type wgImportInput struct {
+	HubServerID     int64   `json:"hub_server_id"`
+	StandbyServerID int64   `json:"standby_server_id"`
+	Candidates      []int64 `json:"candidates"`
+}
+
+// WGImport 导入现有 WG 网络：读现役 hub 实况建网收编成员，备援建 warm standby。
+func (a *App) WGImport(c *gin.Context) {
+	var in wgImportInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.HubServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 hub_server_id")
+		return
+	}
+	if running, _ := a.DB.HasRunningWGTask(); running {
+		middleware.Fail(c, 1004, "已有组网任务在执行，请等待完成")
+		return
+	}
+	hubSrv, _ := a.DB.GetServer(in.HubServerID)
+	if hubSrv == nil || hubSrv.IsSelf {
+		middleware.Fail(c, 2010, "中心节点不存在或不支持")
+		return
+	}
+	if in.StandbyServerID > 0 {
+		st, _ := a.DB.GetServer(in.StandbyServerID)
+		if st == nil || st.IsSelf {
+			middleware.Fail(c, 2010, "备援节点不存在或不支持")
+			return
+		}
+	}
+	// 候选去重并剔除 hub/standby
+	excl := map[int64]bool{in.HubServerID: true, in.StandbyServerID: true}
+	var candidates []int64
+	for _, id := range in.Candidates {
+		if !excl[id] {
+			excl[id] = true
+			candidates = append(candidates, id)
+		}
+	}
+	now := time.Now().Unix()
+	payload, _ := json.Marshal(wg.ImportInput{
+		HubServerID:     in.HubServerID,
+		StandbyServerID: in.StandbyServerID,
+		Candidates:      candidates,
+	})
+	taskID, err := a.DB.InsertWGTask(&store.WGTask{Kind: "import", Status: "running",
+		Payload: string(payload), CreatedAt: now})
+	if err != nil {
+		middleware.Fail(c, 5000, "任务创建失败: "+err.Error())
+		return
+	}
+	seq := int64(0)
+	nameOf := func(id int64) string {
+		if s, _ := a.DB.GetServer(id); s != nil {
+			return s.Name
+		}
+		return strconv.FormatInt(id, 10)
+	}
+	steps := []*store.WGTaskStep{{
+		TaskID: taskID, Seq: seq, ServerID: sql.NullInt64{Int64: in.HubServerID, Valid: true},
+		Title: "读取中心节点 · " + nameOf(in.HubServerID), Status: "pending",
+	}}
+	if in.StandbyServerID > 0 {
+		seq++
+		steps = append(steps, &store.WGTaskStep{TaskID: taskID, Seq: seq,
+			ServerID: sql.NullInt64{Int64: in.StandbyServerID, Valid: true},
+			Title:    "读取备援节点 · " + nameOf(in.StandbyServerID), Status: "pending"})
+	}
+	for _, id := range candidates {
+		seq++
+		steps = append(steps, &store.WGTaskStep{TaskID: taskID, Seq: seq,
+			ServerID: sql.NullInt64{Int64: id, Valid: true},
+			Title:    "匹配成员 · " + nameOf(id), Status: "pending"})
+	}
+	for _, st := range steps {
+		if _, err := a.DB.InsertWGTaskStep(st); err != nil {
+			middleware.Fail(c, 5000, "步骤创建失败: "+err.Error())
+			return
+		}
+	}
+	go a.WG.RunImport(taskID)
+	a.audit(a.actorOf(c), "wg_import", fmt.Sprintf("task:%d", taskID),
+		fmt.Sprintf("hub=%d standby=%d candidates=%v", in.HubServerID, in.StandbyServerID, candidates), ipOf(c))
+	middleware.OK(c, gin.H{"task_id": taskID})
+}
+
+type wgSwitchInput struct {
+	TargetServerID int64 `json:"target_server_id"`
+	CanaryServerID int64 `json:"canary_server_id"`
+}
+
+// WGSwitchHub 一键切换现役 hub（金丝雀两阶段，失败自动回滚）。
+func (a *App) WGSwitchHub(c *gin.Context) {
+	var in wgSwitchInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.TargetServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 target_server_id")
+		return
+	}
+	netRow, _ := a.DB.GetWGNetwork()
+	if netRow == nil {
+		middleware.Fail(c, 2010, "尚未初始化组网")
+		return
+	}
+	if in.TargetServerID == netRow.ActiveHubServerID {
+		middleware.Fail(c, 2010, "该节点已是现役中心节点")
+		return
+	}
+	target, _ := a.DB.GetWGHub(in.TargetServerID)
+	if target == nil {
+		middleware.Fail(c, 2010, "目标节点尚未纳管为 hub/备胎（请先导入或组网）")
+		return
+	}
+	if running, _ := a.DB.HasRunningWGTask(); running {
+		middleware.Fail(c, 1004, "已有组网任务在执行，请等待完成")
+		return
+	}
+	// 金丝雀：指定或自动挑选在线 SSH 成员
+	canaryID := in.CanaryServerID
+	if canaryID == 0 {
+		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid {
+			canaryID = p.ServerID.Int64
+		}
+	}
+	now := time.Now().Unix()
+	payload, _ := json.Marshal(wg.SwitchInput{TargetServerID: in.TargetServerID, CanaryServerID: canaryID})
+	taskID, err := a.DB.InsertWGTask(&store.WGTask{Kind: "switch_hub", Status: "running",
+		Payload: string(payload), CreatedAt: now})
+	if err != nil {
+		middleware.Fail(c, 5000, "任务创建失败: "+err.Error())
+		return
+	}
+	nameOf := func(id int64) string {
+		if s, _ := a.DB.GetServer(id); s != nil {
+			return s.Name
+		}
+		return strconv.FormatInt(id, 10)
+	}
+	seq := int64(0)
+	if _, err := a.DB.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: seq,
+		ServerID: sql.NullInt64{Int64: in.TargetServerID, Valid: true},
+		Title:    "校正备援 hub · " + nameOf(in.TargetServerID), Status: "pending"}); err != nil {
+		middleware.Fail(c, 5000, "步骤创建失败: "+err.Error())
+		return
+	}
+	// 其余 SSH 成员步骤（金丝雀 seq=1，其余 seq≥2）
+	peers, _ := a.DB.ListWGPeers()
+	canaryChosen := false
+	for _, p := range peers {
+		if p.Kind != "server" || !p.ServerID.Valid {
+			continue
+		}
+		if p.ServerID.Int64 == in.TargetServerID {
+			continue
+		}
+		seq++
+		title := "切换 · " + p.Name
+		if !canaryChosen && p.ServerID.Int64 == canaryID {
+			title = "金丝雀 · " + p.Name
+			canaryChosen = true
+		}
+		if _, err := a.DB.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: seq,
+			ServerID: sql.NullInt64{Int64: p.ServerID.Int64, Valid: true},
+			Title:    title, Status: "pending"}); err != nil {
+			middleware.Fail(c, 5000, "步骤创建失败: "+err.Error())
+			return
+		}
+	}
+	go a.WG.RunSwitchHub(taskID)
+	a.audit(a.actorOf(c), "wg_switch_hub", fmt.Sprintf("task:%d", taskID),
+		fmt.Sprintf("target=%d canary=%d", in.TargetServerID, canaryID), ipOf(c))
+	middleware.OK(c, gin.H{"task_id": taskID})
+}
+
+// WGPatrol 手动触发一次巡检。
+func (a *App) WGPatrol(c *gin.Context) {
+	if err := a.WG.PatrolOnce(); err != nil {
+		middleware.Fail(c, 2010, err.Error())
+		return
+	}
+	middleware.OK(c, gin.H{"ok": true})
+}

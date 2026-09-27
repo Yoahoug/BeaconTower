@@ -78,7 +78,7 @@ func main() {
 
 	// 后台任务 + 采集器
 	taskStop := make(chan struct{})
-	tasks.Start(db, taskStop)
+	tasks.Start(db, app.WG, taskStop)
 	coll.Start()
 
 	engine := router.New(app, webDist, hasDist)

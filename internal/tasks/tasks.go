@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/store"
+	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
 
 // Start 后台任务：采样清理（10min）+ 小时聚合（整点+5min 时触发检查）+ 会话清理（每小时）
-// + 月累计 kWh 月初清零（10min 检查一次，月份翻转即归零）。
+// + WG 组网巡检（5min：握手判活/hub 流量差值/配置漂移）+ 月累计 kWh 月初清零。
 // retention 天数从 setting 表读取（doc/03 §3）。
-func Start(db *store.DB, stop <-chan struct{}) {
+func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
 	go func() {
 		cleanTick := time.NewTicker(10 * time.Minute)
 		defer cleanTick.Stop()
@@ -19,6 +20,8 @@ func Start(db *store.DB, stop <-chan struct{}) {
 		defer aggTick.Stop()
 		sessTick := time.NewTicker(time.Hour)
 		defer sessTick.Stop()
+		wgTick := time.NewTicker(5 * time.Minute)
+		defer wgTick.Stop()
 		curMonth := time.Now().Format("2006-01")
 		for {
 			select {
@@ -30,6 +33,10 @@ func Start(db *store.DB, stop <-chan struct{}) {
 				aggregate(db)
 			case <-sessTick.C:
 				_ = db.CleanExpiredSessions(time.Now().Unix())
+			case <-wgTick.C:
+				if wgRunner != nil {
+					wgRunner.Patrol()
+				}
 			}
 			// 月翻转检查放在所有 case 之后统一做（ticker 周期远小于月份粒度）
 			if m := time.Now().Format("2006-01"); m != curMonth {

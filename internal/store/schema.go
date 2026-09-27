@@ -298,7 +298,9 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 				status TEXT NOT NULL DEFAULT 'pending',
 				last_error TEXT,
 				quota_gb REAL,
-				checked_at INTEGER
+				checked_at INTEGER,
+				rx_cum INTEGER DEFAULT 0,
+				tx_cum INTEGER DEFAULT 0
 			)`,
 			`CREATE TABLE IF NOT EXISTS wg_peer (
 				id INTEGER PRIMARY KEY,

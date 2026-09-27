@@ -30,6 +30,8 @@ type WGHub struct {
 	LastError    string          `json:"last_error"`
 	QuotaGB      sql.NullFloat64 `json:"quota_gb"` // 月流量提醒阈值（GB），NULL=不限
 	CheckedAt    sql.NullInt64   `json:"checked_at"`
+	RxCum        int64           `json:"-"` // dump 累计计数器（按日差值用）
+	TxCum        int64           `json:"-"`
 }
 
 // WGPeer 网内成员：服务器（SSH 管理）或设备（面板发凭证）。
@@ -116,7 +118,7 @@ func (db *DB) SetActiveHub(serverID int64, now int64) error {
 func (db *DB) ListWGHub() ([]*WGHub, error) {
 	rows, err := db.SQL.Query(`SELECT server_id, listen_port, COALESCE(public_key,''),
 		COALESCE(private_key_enc,x''), COALESCE(endpoint,''), status, COALESCE(last_error,''),
-		quota_gb, checked_at FROM wg_hub ORDER BY server_id`)
+		quota_gb, checked_at, COALESCE(rx_cum,0), COALESCE(tx_cum,0) FROM wg_hub ORDER BY server_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +127,8 @@ func (db *DB) ListWGHub() ([]*WGHub, error) {
 	for rows.Next() {
 		h := &WGHub{}
 		if err := rows.Scan(&h.ServerID, &h.ListenPort, &h.PublicKey, &h.PrivateKeyEnc,
-			&h.Endpoint, &h.Status, &h.LastError, &h.QuotaGB, &h.CheckedAt); err != nil {
+			&h.Endpoint, &h.Status, &h.LastError, &h.QuotaGB, &h.CheckedAt,
+			&h.RxCum, &h.TxCum); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
@@ -137,9 +140,9 @@ func (db *DB) GetWGHub(serverID int64) (*WGHub, error) {
 	h := &WGHub{}
 	err := db.SQL.QueryRow(`SELECT server_id, listen_port, COALESCE(public_key,''),
 		COALESCE(private_key_enc,x''), COALESCE(endpoint,''), status, COALESCE(last_error,''),
-		quota_gb, checked_at FROM wg_hub WHERE server_id = ?`, serverID).
+		quota_gb, checked_at, COALESCE(rx_cum,0), COALESCE(tx_cum,0) FROM wg_hub WHERE server_id = ?`, serverID).
 		Scan(&h.ServerID, &h.ListenPort, &h.PublicKey, &h.PrivateKeyEnc, &h.Endpoint,
-			&h.Status, &h.LastError, &h.QuotaGB, &h.CheckedAt)
+			&h.Status, &h.LastError, &h.QuotaGB, &h.CheckedAt, &h.RxCum, &h.TxCum)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -152,16 +155,17 @@ func (db *DB) GetWGHub(serverID int64) (*WGHub, error) {
 // UpsertWGHub 写入/更新 hub 槽位（private_key_enc 为空则保留原值）。
 func (db *DB) UpsertWGHub(h *WGHub) error {
 	_, err := db.SQL.Exec(`INSERT INTO wg_hub
-		(server_id, listen_port, public_key, private_key_enc, endpoint, status, last_error, quota_gb, checked_at)
-		VALUES (?,?,?,?,?,?,?,?,?)
+		(server_id, listen_port, public_key, private_key_enc, endpoint, status, last_error, quota_gb, checked_at, rx_cum, tx_cum)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(server_id) DO UPDATE SET listen_port=excluded.listen_port,
 			public_key=excluded.public_key,
 			private_key_enc=CASE WHEN excluded.private_key_enc IS NULL THEN wg_hub.private_key_enc
 				ELSE excluded.private_key_enc END,
 			endpoint=excluded.endpoint, status=excluded.status, last_error=excluded.last_error,
-			quota_gb=excluded.quota_gb, checked_at=excluded.checked_at`,
+			quota_gb=excluded.quota_gb, checked_at=excluded.checked_at,
+			rx_cum=excluded.rx_cum, tx_cum=excluded.tx_cum`,
 		h.ServerID, h.ListenPort, h.PublicKey, h.PrivateKeyEnc, h.Endpoint,
-		h.Status, h.LastError, nullFloat(h.QuotaGB), h.CheckedAt)
+		h.Status, h.LastError, nullFloat(h.QuotaGB), h.CheckedAt, h.RxCum, h.TxCum)
 	return err
 }
 
