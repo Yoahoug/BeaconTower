@@ -80,3 +80,20 @@ services:
 - 面板（组网）：http://10.66.66.66:8091（绑定组网地址，组网内设备可直接访问）
 - GHCR 镜像：`ghcr.io/yoahoug/beacontower:latest`（另含 `${sha}` tag 可回滚）
 - 构建日志：GitHub 仓库 → Actions → "Docker image (GHCR)"
+
+## WG 组网模块（doc/12）运维要点
+
+- **现状**：星型组网，hub 虚拟 IP `10.66.66.2` 浮动于 wg1(47.109.156.165:51820) 与
+  wg2(47.108.59.19:51830) 之间；ops(10.66.66.66) 家庭 NAT 拨出；面板「WG 组网」页
+  可导入纳管、一键切换、设备凭证二维码、额度巡检。
+- **切换前检查**：目标 hub 的云安全组已放行其 UDP 端口（阿里云控制台，无法自动化）；
+  切换后按任务摘要给设备（Mac/iPhone/Win）换 A/B 凭证（面板重新扫码）。
+- **conf 备份**：面板每次改写前自动 `wg0.conf.bak.<时间戳>`；手工恢复用
+  `wg-quick down wg0 && cp wg0.conf.bak.<ts> wg0.conf && wg-quick up wg0`。
+- **wg2 遗留问题（2026-09-27 记录）**：与 wg1 同占 10.66.66.2/24、conf 无 PostUp
+  （FORWARD 规则手工加、重启丢失）、peer 全部 4 天零握手。处理：面板导入纳管为备胎后
+  走「校正备援 hub」重写 conf（自动补 PostUp 幂等放行），遗留 `.bak`/残网人工归档。
+- **巡检告警语义**：`接口公钥与面板记录不符` = 有人绕过面板手工改了 hub 配置；
+  `handshake 超 3 分钟` = 成员离线（keepalive 25s 下正常活体 ≤2min 必有握手）。
+- **本机节点**：v1 不支持经 SSH 管理本机 WG（面板容器无 NET_ADMIN）；ops 的 wg0
+  仍按本文档手工维护，或在后续版本引入宿主凭据路径。
