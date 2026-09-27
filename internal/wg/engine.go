@@ -1,0 +1,401 @@
+package wg
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/Yoahoug/BeaconTower/internal/sshx"
+)
+
+// ---------- 预检探测 ----------
+
+// probeScript 预检脚本（只读）：输出白名单 key=value。listenPort>0 时额外探测
+// 该 UDP 端口占用（hub/standby 用）。
+func probeScript(listenPort int) string {
+	portPart := ""
+	if listenPort > 0 {
+		portPart = `
+if command -v ss >/dev/null 2>&1; then
+  ss -uln 2>/dev/null | awk '{print $5}' | grep -q ':` + strconv.Itoa(listenPort) + `$' && busy=1
+elif command -v netstat >/dev/null 2>&1; then
+  netstat -uln 2>/dev/null | awk '{print $4}' | grep -q ':` + strconv.Itoa(listenPort) + `$' && busy=1
+fi
+echo pf_port_busy=$busy`
+	} else {
+		portPart = "\necho pf_port_busy=0"
+	}
+	return `pf_busy=0
+echo pf_os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+echo pf_os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+echo pf_arch=$(uname -m 2>/dev/null)
+echo pf_kernel=$(uname -r 2>/dev/null)
+echo pf_virt=$(systemd-detect-virt 2>/dev/null || echo unknown)
+[ "$(id -u 2>/dev/null)" = 0 ] && pf_uid0=1 || pf_uid0=0
+echo pf_uid0=$pf_uid0
+pkg=""
+command -v apt-get >/dev/null 2>&1 && pkg=apt
+[ -z "$pkg" ] && command -v dnf >/dev/null 2>&1 && pkg=dnf
+[ -z "$pkg" ] && command -v yum >/dev/null 2>&1 && pkg=yum
+[ -z "$pkg" ] && command -v apk >/dev/null 2>&1 && pkg=apk
+[ -z "$pkg" ] && command -v pacman >/dev/null 2>&1 && pkg=pacman
+echo pf_pkg=$pkg
+command -v wg >/dev/null 2>&1 && pf_wg=1 || pf_wg=0
+echo pf_wg=$pf_wg
+command -v wg-quick >/dev/null 2>&1 && pf_wgq=1 || pf_wgq=0
+echo pf_wgq=$pf_wgq
+if modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then pf_mod=1; else pf_mod=0; fi
+echo pf_mod=$pf_mod
+echo pf_ifaces=$(wg show interfaces 2>/dev/null | tr '\n' ' ')
+ufw status 2>/dev/null | head -n1 | grep -qi active && pf_ufw=1 || pf_ufw=0
+echo pf_ufw=$pf_ufw
+command -v systemctl >/dev/null 2>&1 && pf_sd=1 || pf_sd=0
+echo pf_systemd=$pf_sd` + portPart + `
+echo pf_end=1`
+}
+
+// parseProbe 解析预检输出（白名单键，宽松：缺失字段取零值）。
+func parseProbe(out string) *Probe {
+	p := &Probe{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		switch strings.TrimSpace(k) {
+		case "pf_os_id":
+			p.OsID = v
+		case "pf_os_ver":
+			p.OsVer = v
+		case "pf_arch":
+			p.Arch = v
+		case "pf_kernel":
+			p.Kernel = v
+		case "pf_virt":
+			p.Virt = v
+		case "pf_uid0":
+			p.UID0 = v == "1"
+		case "pf_pkg":
+			p.PkgManager = v
+		case "pf_wg":
+			p.HasWg = v == "1"
+		case "pf_wgq":
+			p.HasWgQuick = v == "1"
+		case "pf_mod":
+			p.KernelModule = v == "1"
+		case "pf_ifaces":
+			p.WgIfaces = strings.Fields(v)
+		case "pf_ufw":
+			p.UfwActive = v == "1"
+		case "pf_systemd":
+			p.Systemd = v == "1"
+		case "pf_port_busy":
+			p.ListenPortBusy = v == "1"
+		}
+	}
+	return p
+}
+
+// ProbeNode 对已建连节点执行预检探测。listenPort>0 时探测端口占用。
+func ProbeNode(ctx context.Context, conn *sshx.Conn, listenPort int) (*Probe, error) {
+	out, err := conn.Run(ctx, probeScript(listenPort))
+	if err != nil {
+		return nil, err
+	}
+	return parseProbe(out), nil
+}
+
+// ---------- 安装 ----------
+
+// installScript 按包管理器生成安装脚本（幂等：已装则零开销）。
+func installScript(pkg string) string {
+	switch pkg {
+	case "apt":
+		return `export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y -qq wireguard-tools >/dev/null 2>&1 || apt-get install -y wireguard-tools`
+	case "dnf":
+		return `dnf install -y wireguard-tools || yum install -y wireguard-tools`
+	case "yum":
+		return `yum install -y epel-release >/dev/null 2>&1 || true
+yum install -y wireguard-tools`
+	case "apk":
+		return `apk add --no-cache wireguard-tools-wg wireguard-tools-wg-quick 2>/dev/null || apk add --no-cache wireguard-tools`
+	case "pacman":
+		return `pacman -Sy --noconfirm wireguard-tools`
+	default:
+		return `echo unsupported-pkg-manager; exit 1`
+	}
+}
+
+// InstallWireGuard 安装 wireguard-tools（依据预检的包管理器），安装后复核 wg 可用。
+// 返回是否实际执行了安装。
+func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe) (bool, error) {
+	if p.HasWg && p.HasWgQuick {
+		return false, nil
+	}
+	if p.PkgManager == "" {
+		return false, fmt.Errorf("无法识别包管理器，请手动安装 wireguard-tools")
+	}
+	if _, err := conn.Run(ctx, installScript(p.PkgManager)); err != nil {
+		return false, fmt.Errorf("安装 wireguard-tools 失败: %w", err)
+	}
+	out, err := conn.Run(ctx, `command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && echo ok || echo missing`)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(out) != "ok" {
+		return true, fmt.Errorf("安装后 wg 仍不可用（内核过旧或源缺失）")
+	}
+	return true, nil
+}
+
+// EnsureForward 开启并持久化 IPv4 转发（hub/standby 需要）。
+func EnsureForward(ctx context.Context, conn *sshx.Conn) error {
+	if err := conn.PushFile(ctx, "/etc/sysctl.d/99-bt-wg-mesh.conf", []byte("net.ipv4.ip_forward = 1\n")); err != nil {
+		return err
+	}
+	_, err := conn.Run(ctx, `sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv4/ip_forward`)
+	return err
+}
+
+// EnsureUFWAllow ufw 启用时放行 UDP 端口（未启用则跳过）。
+func EnsureUFWAllow(ctx context.Context, conn *sshx.Conn, port int) error {
+	script := `if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -n1 | grep -qi active; then
+  ufw allow ` + strconv.Itoa(port) + `/udp >/dev/null 2>&1 && echo fw=allowed || echo fw=failed
+else
+  echo fw=skip
+fi`
+	out, err := conn.Run(ctx, script)
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(out) {
+	case "fw=failed":
+		return fmt.Errorf("ufw 放行 UDP %d 失败，请手动检查", port)
+	default:
+		return nil
+	}
+}
+
+// BackupConf 修改前备份现有 conf（沿用运维习惯：时间戳后缀，已存在才备份）。
+func BackupConf(ctx context.Context, conn *sshx.Conn, iface string) error {
+	iface = sanitizeIface(iface)
+	_, err := conn.Run(ctx, `[ -f /etc/wireguard/`+iface+`.conf ] && cp /etc/wireguard/`+iface+
+		`.conf /etc/wireguard/`+iface+`.conf.bak.$(date +%Y%m%d%H%M%S) || true`)
+	return err
+}
+
+func sanitizeIface(name string) string {
+	// 接口名仅允许字母数字与下划线/短横线（拼进 shell 用，须白名单）
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "wg0"
+	}
+	return out
+}
+
+// WriteConf 渲染内容写入 /etc/wireguard/<iface>.conf（600）。
+func WriteConf(ctx context.Context, conn *sshx.Conn, iface, content string) error {
+	iface = sanitizeIface(iface)
+	return conn.PushFile(ctx, "/etc/wireguard/"+iface+".conf", []byte(content))
+}
+
+// BringUp 启用并保持接口（systemd 可用则设开机自启，否则直接 wg-quick up）。
+// 已在运行的接口会重启以加载新配置（组网初始化场景可接受）。
+func BringUp(ctx context.Context, conn *sshx.Conn, iface string, hasSystemd bool) error {
+	iface = sanitizeIface(iface)
+	var script string
+	if hasSystemd {
+		script = `systemctl enable wg-quick@` + iface + ` >/dev/null 2>&1 || true
+systemctl restart wg-quick@` + iface + ` 2>/dev/null || { wg-quick down ` + iface + ` >/dev/null 2>&1; wg-quick up ` + iface + `; }`
+	} else {
+		script = `wg-quick down ` + iface + ` >/dev/null 2>&1; wg-quick up ` + iface
+	}
+	_, err := conn.Run(ctx, script)
+	return err
+}
+
+// BringDown 停用接口并取消自启（下线节点用；conf 保留为 .conf.removed 由调用方处理）。
+func BringDown(ctx context.Context, conn *sshx.Conn, iface string) error {
+	iface = sanitizeIface(iface)
+	_, err := conn.Run(ctx, `wg-quick down `+iface+` >/dev/null 2>&1; systemctl disable wg-quick@`+
+		iface+` >/dev/null 2>&1 || true; [ -f /etc/wireguard/`+iface+`.conf ] && mv /etc/wireguard/`+
+		iface+`.conf /etc/wireguard/`+iface+`.conf.removed.$(date +%Y%m%d%H%M%S) || true`)
+	return err
+}
+
+// ShowDump 执行 wg show all dump 并解析（接口不存在时返回 nil 状态而非错误）。
+func ShowDump(ctx context.Context, conn *sshx.Conn) ([]DevState, error) {
+	out, err := conn.Run(ctx, `wg show all dump 2>/dev/null || true`)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	return ParseDumpAll([]byte(out))
+}
+
+// HubAddPeer hub 热加 peer：wg set 立即生效（不断开存量隧道）+ conf 追加 [Peer] 段
+// （SaveConfig=false，重启后仍生效）。psk 为空则不设预共享密钥。
+func HubAddPeer(ctx context.Context, conn *sshx.Conn, iface string, peer Peer, ip string) error {
+	iface = sanitizeIface(iface)
+	if !ValidKey(peer.PublicKey) {
+		return fmt.Errorf("peer 公钥无效")
+	}
+	if !ValidCIDR(ip) {
+		return fmt.Errorf("peer AllowedIPs 无效: %q", ip)
+	}
+	confPath := "/etc/wireguard/" + iface + ".conf"
+	// 1) 运行态：wg set（PSK 经临时文件传递，避免出现在 ps/命令历史里）
+	const tmpPSK = "/tmp/.bt_wg_psk"
+	var cmd strings.Builder
+	if peer.PresharedKey != "" {
+		if err := conn.PushFile(ctx, tmpPSK, []byte(peer.PresharedKey+"\n")); err != nil {
+			return err
+		}
+		cmd.WriteString("wg set " + iface + " peer " + peer.PublicKey + " preshared-key " + tmpPSK)
+	} else {
+		cmd.WriteString("wg set " + iface + " peer " + peer.PublicKey)
+	}
+	cmd.WriteString(" allowed-ips " + ip)
+	if peer.PersistentKeepalive > 0 {
+		cmd.WriteString(" persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive))
+	}
+	if _, err := conn.Run(ctx, cmd.String()+"\nrm -f "+tmpPSK); err != nil {
+		return err
+	}
+	// 2) conf 持久化：先查重，再以独立 exec 通道追加（cat >> 数据走 stdin）
+	dup, err := conn.Run(ctx, `grep -qF '`+peer.PublicKey+`' `+confPath+` 2>/dev/null && echo dup=1 || echo dup=0`)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(dup) == "dup=1" {
+		return nil
+	}
+	var block strings.Builder
+	if peer.Comment != "" {
+		block.WriteString("# " + peer.Comment + "\n")
+	}
+	block.WriteString("[Peer]\nPublicKey = " + peer.PublicKey + "\n")
+	if peer.PresharedKey != "" {
+		block.WriteString("PresharedKey = " + peer.PresharedKey + "\n")
+	}
+	block.WriteString("AllowedIPs = " + ip + "\n")
+	if peer.PersistentKeepalive > 0 {
+		block.WriteString("PersistentKeepalive = " + strconv.Itoa(peer.PersistentKeepalive) + "\n")
+	}
+	return conn.AppendFile(ctx, confPath, []byte(block.String()))
+}
+
+// HubRemovePeer hub 热删 peer（运行态立即移除；conf 由全量重写路径清理）。
+func HubRemovePeer(ctx context.Context, conn *sshx.Conn, iface, publicKey string) error {
+	iface = sanitizeIface(iface)
+	if !ValidKey(publicKey) {
+		return fmt.Errorf("公钥无效")
+	}
+	_, err := conn.Run(ctx, `wg set `+iface+` peer `+publicKey+` remove 2>/dev/null || true`)
+	return err
+}
+
+// SyncConf 重载接口配置（不重启不断连）：strip → 临时文件 → wg syncconf。
+func SyncConf(ctx context.Context, conn *sshx.Conn, iface string) error {
+	iface = sanitizeIface(iface)
+	_, err := conn.Run(ctx, `wg-quick strip `+iface+` > /tmp/.bt_sync.conf 2>/dev/null && wg syncconf `+
+		iface+` /tmp/.bt_sync.conf; rm -f /tmp/.bt_sync.conf`)
+	return err
+}
+
+// VerifySpoke 从 spoke 侧验证入网：ping hub 虚拟 IP（重试若干轮），随后以
+// handshake 时间兜底判定（ICMP 被禁但 WG 隧道可用时 handshake 仍应新鲜）。
+func VerifySpoke(ctx context.Context, conn *sshx.Conn, hubIP string, iface string) (online bool, detail string, err error) {
+	iface = sanitizeIface(iface)
+	pingScript := `ok=0
+for i in 1 2 3 4 5; do
+  ping -n -c1 -W2 ` + hubIP + ` >/dev/null 2>&1 && ok=1 && break
+  sleep 1
+done
+echo vf_ping=$ok`
+	out, err := conn.Run(ctx, pingScript)
+	if err != nil {
+		return false, "", err
+	}
+	pingOK := strings.TrimSpace(out) == "vf_ping=1"
+	devs, err := ShowDump(ctx, conn)
+	if err != nil {
+		return false, "", err
+	}
+	hsA := int64(0)
+	for _, d := range devs {
+		if d.Interface != iface {
+			continue
+		}
+		for _, p := range d.Peers {
+			if p.LastHandshakeA > hsA {
+				hsA = p.LastHandshakeA
+			}
+		}
+	}
+	switch {
+	case pingOK:
+		return true, fmt.Sprintf("ping %s 通，handshake=%d", hubIP, hsA), nil
+	case hsA > 0:
+		return true, fmt.Sprintf("ping 不通但 handshake=%d（ICMP 可能被禁）", hsA), nil
+	default:
+		return false, fmt.Sprintf("ping %s 不通且无握手记录", hubIP), nil
+	}
+}
+
+// ---------- 配置渲染 ----------
+
+// HubConfFile 生成 hub/standby 全量 conf（PostUp 幂等放行 FORWARD）。
+func HubConfFile(priv string, hubIPCIDR string, listenPort, mtu int, peers []Peer) (string, error) {
+	ifc := &Interface{
+		Address:    []string{hubIPCIDR},
+		PrivateKey: priv,
+		ListenPort: listenPort,
+		MTU:        mtu,
+		PostUp: []string{
+			"iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -j ACCEPT",
+			"iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -o %i -j ACCEPT",
+		},
+		PostDown: []string{
+			"iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true",
+			"iptables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true",
+		},
+		Peers: peers,
+	}
+	return Render(ifc)
+}
+
+// SpokeConfFile 生成 spoke/设备 conf：拨出 hub、仅路由组网子网、keepalive、可选 PSK。
+func SpokeConfFile(priv, spokeIPCIDR, hubPub, hubEndpoint, subnetCIDR, psk string, keepalive, mtu int) (string, error) {
+	ifc := &Interface{
+		Address:    []string{spokeIPCIDR},
+		PrivateKey: priv,
+		MTU:        mtu,
+		Peers: []Peer{{
+			PublicKey:           hubPub,
+			PresharedKey:        psk,
+			AllowedIPs:          []string{subnetCIDR},
+			Endpoint:            hubEndpoint,
+			PersistentKeepalive: keepalive,
+		}},
+	}
+	return Render(ifc)
+}
+
+// SubnetBits 导出子网前缀长度（handler 组装 CIDR 用）。
+func SubnetBits(subnetCIDR string) (int, error) {
+	return subnetBits(subnetCIDR)
+}

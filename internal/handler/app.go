@@ -8,6 +8,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/store"
+	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
 
 // App handler 共享依赖。
@@ -16,6 +17,7 @@ type App struct {
 	Cfg     *config.Config
 	Coll    *collector.Collector
 	Master  []byte
+	WG      *wg.Runner
 	Blocker *middleware.LoginBlocker
 	SetupRL *middleware.RateLimiter
 	LoginRL *middleware.RateLimiter

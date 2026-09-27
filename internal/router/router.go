@@ -55,6 +55,15 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.GET("/settings", app.GetSettings)
 				auth.PUT("/settings", app.SaveSettings)
 				auth.GET("/audit", app.ListAudit)
+				auth.GET("/wg/overview", app.WGOverview)
+				auth.POST("/wg/plan", app.WGPlan)
+				auth.POST("/wg/apply", app.WGApply)
+				auth.GET("/wg/tasks", app.WGTaskList)
+				auth.GET("/wg/tasks/:id", app.WGTaskGet)
+				auth.POST("/wg/devices", app.WGDeviceCreate)
+				auth.GET("/wg/peers/:id/conf", app.WGPeerConf)
+				auth.POST("/wg/peers/:id/verify", app.WGPeerVerify)
+				auth.DELETE("/wg/peers/:id", app.WGPeerDelete)
 			}
 		}
 	}

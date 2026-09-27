@@ -235,13 +235,26 @@ func (c *Conn) RunOut(ctx context.Context, script string) (stdout, stderr string
 // PushFile 将 data 写入远端 path（umask 077，权限 600）。path 须为绝对路径且
 // 不含单引号/换行（由面板生成，非用户自由输入）。
 func (c *Conn) PushFile(ctx context.Context, path string, data []byte) error {
+	return c.push(ctx, path, data, false)
+}
+
+// AppendFile 将 data 追加到远端 path 末尾（文件不存在则创建，权限 600）。
+func (c *Conn) AppendFile(ctx context.Context, path string, data []byte) error {
+	return c.push(ctx, path, data, true)
+}
+
+func (c *Conn) push(ctx context.Context, path string, data []byte, isAppend bool) error {
 	if err := ValidatePath(path); err != nil {
 		return err
 	}
 	if len(data) > MaxPayloadLen {
 		return fmt.Errorf("文件过大（%d bytes > %d）", len(data), MaxPayloadLen)
 	}
-	cmd := "umask 077 && cat > '" + path + "'"
+	op := ">"
+	if isAppend {
+		op = ">>"
+	}
+	cmd := "umask 077 && cat " + op + " '" + path + "'"
 	_, err := c.run(ctx, cmd, bytes.NewReader(data))
 	return err
 }

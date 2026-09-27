@@ -19,6 +19,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/router"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/Yoahoug/BeaconTower/internal/tasks"
+	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
 
 //go:embed web/dist
@@ -51,7 +52,7 @@ func main() {
 
 	coll := collector.New(cfg, db, master)
 	app := &handler.App{
-		DB: db, Cfg: cfg, Coll: coll, Master: master,
+		DB: db, Cfg: cfg, Coll: coll, Master: master, WG: wg.NewRunner(db, master),
 		Blocker: middleware.NewLoginBlocker(),
 		SetupRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),

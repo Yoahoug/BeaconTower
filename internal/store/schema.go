@@ -77,7 +77,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 6
+const schemaVersion = 7
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -275,6 +275,80 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 				PRIMARY KEY (server_id, day_ts)
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_daily_ts ON metric_daily(day_ts)`,
+		)
+	case 7: // WG 组网：单网 + 主备 hub + peer（服务器/设备）+ 任务步骤 + hub 日流量
+		return exec(
+			`CREATE TABLE IF NOT EXISTS wg_network (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				subnet TEXT NOT NULL,
+				hub_ip TEXT NOT NULL,
+				iface TEXT NOT NULL DEFAULT 'wg0',
+				keepalive INTEGER NOT NULL DEFAULT 25,
+				mtu INTEGER NOT NULL DEFAULT 1420,
+				active_hub_server_id INTEGER,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER
+			)`,
+			`CREATE TABLE IF NOT EXISTS wg_hub (
+				server_id INTEGER PRIMARY KEY REFERENCES server(id) ON DELETE CASCADE,
+				listen_port INTEGER NOT NULL DEFAULT 51820,
+				public_key TEXT NOT NULL DEFAULT '',
+				private_key_enc BLOB,
+				endpoint TEXT DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'pending',
+				last_error TEXT,
+				quota_gb REAL,
+				checked_at INTEGER
+			)`,
+			`CREATE TABLE IF NOT EXISTS wg_peer (
+				id INTEGER PRIMARY KEY,
+				kind TEXT NOT NULL CHECK (kind IN ('server','device')),
+				server_id INTEGER REFERENCES server(id) ON DELETE CASCADE,
+				name TEXT NOT NULL,
+				wg_ip TEXT NOT NULL,
+				public_key TEXT NOT NULL,
+				private_key_enc BLOB,
+				psk_enc BLOB,
+				managed INTEGER NOT NULL DEFAULT 1,
+				status TEXT NOT NULL DEFAULT 'pending',
+				last_error TEXT,
+				last_handshake INTEGER,
+				rx_bytes INTEGER DEFAULT 0,
+				tx_bytes INTEGER DEFAULT 0,
+				checked_at INTEGER,
+				created_at INTEGER NOT NULL
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_wg_peer_ip ON wg_peer(wg_ip)`,
+			`CREATE INDEX IF NOT EXISTS idx_wg_peer_srv ON wg_peer(server_id)`,
+			`CREATE TABLE IF NOT EXISTS wg_task (
+				id INTEGER PRIMARY KEY,
+				kind TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'running',
+				payload TEXT NOT NULL DEFAULT '{}',
+				result TEXT,
+				created_at INTEGER NOT NULL,
+				finished_at INTEGER
+			)`,
+			`CREATE TABLE IF NOT EXISTS wg_task_step (
+				id INTEGER PRIMARY KEY,
+				task_id INTEGER NOT NULL REFERENCES wg_task(id) ON DELETE CASCADE,
+				seq INTEGER NOT NULL,
+				server_id INTEGER,
+				title TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				log TEXT,
+				started_at INTEGER,
+				finished_at INTEGER
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_wg_step_task ON wg_task_step(task_id, seq)`,
+			`CREATE TABLE IF NOT EXISTS wg_hub_traffic (
+				hub_server_id INTEGER NOT NULL REFERENCES server(id) ON DELETE CASCADE,
+				day_ts INTEGER NOT NULL,
+				rx INTEGER DEFAULT 0,
+				tx INTEGER DEFAULT 0,
+				updated_at INTEGER,
+				PRIMARY KEY (hub_server_id, day_ts)
+			)`,
 		)
 	}
 	return fmt.Errorf("unknown migration %d", v)
