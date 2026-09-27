@@ -63,7 +63,21 @@ echo bt_kernel=$(uname -r 2>/dev/null)
 echo bt_arch=$(uname -m 2>/dev/null)
 echo bt_cpu_model=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-)
 echo bt_virt=$(systemd-detect-virt 2>/dev/null || echo unknown)
-echo bt_pub_ip=$(curl -sS -m 5 -4 https://ip.sb 2>/dev/null || curl -sS -m 5 -4 'http://ip-api.com/json/?fields=query' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+# 公网 IP：6h 文件缓存（探测外呼慢且被墙环境常空转；缓存命中则零开销）
+pubip=""
+[ -r /tmp/.bt_pub_ip ] && read -r pubip ts < /tmp/.bt_pub_ip 2>/dev/null
+now_s=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+case "$pubip$ts$now_s" in
+  *[!0-9\ ]*) pubip="" ;;
+esac
+if [ -z "$pubip" ] || [ -z "$ts" ] || [ -z "$now_s" ] || [ $((now_s - ts)) -gt 21600 ] 2>/dev/null; then
+  pubip=$(curl -sS -m 5 -4 https://ip.sb 2>/dev/null || curl -sS -m 5 -4 'http://ip-api.com/json/?fields=query' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  case "$pubip" in
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*) echo "$pubip $now_s" > /tmp/.bt_pub_ip 2>/dev/null ;;
+    *) pubip="" ;;
+  esac
+fi
+echo bt_pub_ip=$pubip
 # RAPL：优先标准 sysfs 路径；容器内 Docker 默认 mask 了
 # /sys/devices/virtual/powercap（class 符号链接失效），故兜底挂载点 /powercap-ro
 # （compose 挂宿主 /sys/devices/virtual/powercap → 容器 /powercap-ro，

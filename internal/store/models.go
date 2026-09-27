@@ -475,8 +475,21 @@ func nullInt(n sql.NullInt64) any {
 	return nil
 }
 
+// SetCollectResult 采集结果回写（试连等单发路径立即执行）。
 func (db *DB) SetCollectResult(serverID int64, fp, lastErr string, successAt any) error {
-	_, err := db.SQL.Exec(`UPDATE server_credential SET host_key_fp = COALESCE(NULLIF(?,''), host_key_fp),
+	return setCollectResultExec(db.SQL, serverID, fp, lastErr, successAt)
+}
+
+// QueueCollectResult 采集结果回写入本轮缓冲（CommitRound 统一提交）。
+func (db *DB) QueueCollectResult(serverID int64, fp, lastErr string, successAt any) error {
+	db.queue(func(tx *sql.Tx) error {
+		return setCollectResultExec(tx, serverID, fp, lastErr, successAt)
+	})
+	return nil
+}
+
+func setCollectResultExec(e execer, serverID int64, fp, lastErr string, successAt any) error {
+	_, err := e.Exec(`UPDATE server_credential SET host_key_fp = COALESCE(NULLIF(?,''), host_key_fp),
 		last_error = ?, last_success_at = ? WHERE server_id = ?`, fp, lastErr, successAt, serverID)
 	return err
 }
@@ -506,21 +519,33 @@ func (db *DB) GetProfile(serverID int64) (*Profile, error) {
 	return p, nil
 }
 
-// UpsertProfile 全字段写入（采集画像/试连画像共用）。
+// UpsertProfile 全字段写入（试连画像等单发路径立即执行）。
 func (db *DB) UpsertProfile(p *Profile, now int64) error {
-	_, err := db.SQL.Exec(`INSERT INTO server_profile
-		(server_id, hostname, os_name, os_version, kernel, arch, cpu_model, cpu_cores,
-		 mem_total, swap_total, disk_total, disks_json, virt, public_ip, geo_country, geo_city,
-		 power_rapl, power_battery, base_load_w, base_load_source, month_kwh, collected_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(server_id) DO UPDATE SET hostname=excluded.hostname, os_name=excluded.os_name,
-			os_version=excluded.os_version, kernel=excluded.kernel, arch=excluded.arch,
-			cpu_model=excluded.cpu_model, cpu_cores=excluded.cpu_cores, mem_total=excluded.mem_total,
-			swap_total=excluded.swap_total, disk_total=excluded.disk_total, disks_json=excluded.disks_json,
-			virt=excluded.virt, public_ip=excluded.public_ip, geo_country=excluded.geo_country,
-			geo_city=excluded.geo_city, power_rapl=excluded.power_rapl, power_battery=excluded.power_battery,
-			base_load_w=excluded.base_load_w, base_load_source=excluded.base_load_source,
-			collected_at=excluded.collected_at`,
+	return upsertProfileExec(db.SQL, p, now)
+}
+
+// QueueProfile 采集画像写入入本轮缓冲（CommitRound 统一提交）。
+func (db *DB) QueueProfile(p *Profile, now int64) error {
+	db.queue(func(tx *sql.Tx) error { return upsertProfileExec(tx, p, now) })
+	return nil
+}
+
+const profileUpsertSQL = `INSERT INTO server_profile
+	(server_id, hostname, os_name, os_version, kernel, arch, cpu_model, cpu_cores,
+	 mem_total, swap_total, disk_total, disks_json, virt, public_ip, geo_country, geo_city,
+	 power_rapl, power_battery, base_load_w, base_load_source, month_kwh, collected_at)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(server_id) DO UPDATE SET hostname=excluded.hostname, os_name=excluded.os_name,
+		os_version=excluded.os_version, kernel=excluded.kernel, arch=excluded.arch,
+		cpu_model=excluded.cpu_model, cpu_cores=excluded.cpu_cores, mem_total=excluded.mem_total,
+		swap_total=excluded.swap_total, disk_total=excluded.disk_total, disks_json=excluded.disks_json,
+		virt=excluded.virt, public_ip=excluded.public_ip, geo_country=excluded.geo_country,
+		geo_city=excluded.geo_city, power_rapl=excluded.power_rapl, power_battery=excluded.power_battery,
+		base_load_w=excluded.base_load_w, base_load_source=excluded.base_load_source,
+		collected_at=excluded.collected_at`
+
+func upsertProfileExec(e execer, p *Profile, now int64) error {
+	_, err := e.Exec(profileUpsertSQL,
 		p.ServerID, p.Hostname, p.OsName, p.OsVersion, p.Kernel, p.Arch, p.CpuModel, p.CpuCores,
 		p.MemTotal, p.SwapTotal, p.DiskTotal, p.DisksJSON, p.Virt, p.PublicIP, p.GeoCountry, p.GeoCity,
 		boolInt(p.PowerRapL), boolInt(p.PowerBattery), p.BaseLoadW, p.BaseLoadSource, p.MonthKwh, now)
@@ -540,31 +565,54 @@ func (db *DB) UpdatePowerCalibration(serverID int64, baseW float64, source strin
 }
 
 func (db *DB) AddMonthKwh(serverID int64, delta float64) error {
-	_, err := db.SQL.Exec(`UPDATE server_profile SET month_kwh = COALESCE(month_kwh,0) + ?
+	return addMonthKwhExec(db.SQL, serverID, delta)
+}
+
+// QueueMonthKwh 月累计 kWh 增量入本轮缓冲（CommitRound 统一提交）。
+func (db *DB) QueueMonthKwh(serverID int64, delta float64) error {
+	db.queue(func(tx *sql.Tx) error { return addMonthKwhExec(tx, serverID, delta) })
+	return nil
+}
+
+func addMonthKwhExec(e execer, serverID int64, delta float64) error {
+	_, err := e.Exec(`UPDATE server_profile SET month_kwh = COALESCE(month_kwh,0) + ?
 		WHERE server_id = ?`, delta, serverID)
 	return err
 }
 
 // ---------- metrics ----------
 
+// UpsertLatest 最新指标 upsert（试连等单发路径立即执行）。
 func (db *DB) UpsertLatest(m *Metric) error {
-	_, err := db.SQL.Exec(`INSERT INTO latest_metric
-		(server_id, ts, status, cpu_pct, mem_used, mem_total, swap_used, swap_total,
-		 disk_used, disk_total, net_in_bps, net_out_bps, net_in_total, net_out_total,
-		 tcp_conns, udp_conns, load1, load5, load15, uptime_s, processes,
-		 power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(server_id) DO UPDATE SET ts=excluded.ts, status=excluded.status,
-			cpu_pct=excluded.cpu_pct, mem_used=excluded.mem_used, mem_total=excluded.mem_total,
-			swap_used=excluded.swap_used, swap_total=excluded.swap_total,
-			disk_used=excluded.disk_used, disk_total=excluded.disk_total,
-			net_in_bps=excluded.net_in_bps, net_out_bps=excluded.net_out_bps,
-			net_in_total=excluded.net_in_total, net_out_total=excluded.net_out_total,
-			tcp_conns=excluded.tcp_conns, udp_conns=excluded.udp_conns,
-			load1=excluded.load1, load5=excluded.load5, load15=excluded.load15,
-			uptime_s=excluded.uptime_s, processes=excluded.processes,
-			power_w=excluded.power_w, cpu_w=excluded.cpu_w, dram_w=excluded.dram_w,
-			temp_c=excluded.temp_c, freq_mhz=excluded.freq_mhz, power_src=excluded.power_src`,
+	return upsertLatestExec(db.SQL, m)
+}
+
+// QueueLatest 最新指标 upsert 入本轮缓冲（CommitRound 统一提交）。
+func (db *DB) QueueLatest(m *Metric) error {
+	db.queue(func(tx *sql.Tx) error { return upsertLatestExec(tx, m) })
+	return nil
+}
+
+const latestUpsertSQL = `INSERT INTO latest_metric
+	(server_id, ts, status, cpu_pct, mem_used, mem_total, swap_used, swap_total,
+	 disk_used, disk_total, net_in_bps, net_out_bps, net_in_total, net_out_total,
+	 tcp_conns, udp_conns, load1, load5, load15, uptime_s, processes,
+	 power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(server_id) DO UPDATE SET ts=excluded.ts, status=excluded.status,
+		cpu_pct=excluded.cpu_pct, mem_used=excluded.mem_used, mem_total=excluded.mem_total,
+		swap_used=excluded.swap_used, swap_total=excluded.swap_total,
+		disk_used=excluded.disk_used, disk_total=excluded.disk_total,
+		net_in_bps=excluded.net_in_bps, net_out_bps=excluded.net_out_bps,
+		net_in_total=excluded.net_in_total, net_out_total=excluded.net_out_total,
+		tcp_conns=excluded.tcp_conns, udp_conns=excluded.udp_conns,
+		load1=excluded.load1, load5=excluded.load5, load15=excluded.load15,
+		uptime_s=excluded.uptime_s, processes=excluded.processes,
+		power_w=excluded.power_w, cpu_w=excluded.cpu_w, dram_w=excluded.dram_w,
+		temp_c=excluded.temp_c, freq_mhz=excluded.freq_mhz, power_src=excluded.power_src`
+
+func upsertLatestExec(e execer, m *Metric) error {
+	_, err := e.Exec(latestUpsertSQL,
 		m.ServerID, m.Ts, m.Status, m.CpuPct, m.MemUsed, m.MemTotal, m.SwapUsed, m.SwapTotal,
 		m.DiskUsed, m.DiskTotal, m.NetInBps, m.NetOutBps, m.NetInTotal, m.NetOutTotal,
 		m.TcpConns, m.UdpConns, m.Load1, m.Load5, m.Load15, m.UptimeS, m.Processes,
@@ -649,12 +697,25 @@ func (db *DB) SnapshotRows() ([]*SnapshotRow, error) {
 	return out, nil
 }
 
+// InsertSample 原始采样落库（试连等单发路径立即执行）。
 func (db *DB) InsertSample(m *Metric) error {
-	_, err := db.SQL.Exec(`INSERT INTO metric_sample
-		(server_id, ts, cpu_pct, mem_used, swap_used, disk_used, net_in_bps, net_out_bps,
-		 tcp_conns, udp_conns, load1, load5, load15, uptime_s, processes,
-		 power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	return insertSampleExec(db.SQL, m)
+}
+
+// QueueSample 原始采样落库入本轮缓冲（CommitRound 统一提交）。
+func (db *DB) QueueSample(m *Metric) error {
+	db.queue(func(tx *sql.Tx) error { return insertSampleExec(tx, m) })
+	return nil
+}
+
+const sampleInsertSQL = `INSERT INTO metric_sample
+	(server_id, ts, cpu_pct, mem_used, swap_used, disk_used, net_in_bps, net_out_bps,
+	 tcp_conns, udp_conns, load1, load5, load15, uptime_s, processes,
+	 power_w, cpu_w, dram_w, temp_c, freq_mhz, power_src)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+func insertSampleExec(e execer, m *Metric) error {
+	_, err := e.Exec(sampleInsertSQL,
 		m.ServerID, m.Ts, m.CpuPct, m.MemUsed, m.SwapUsed, m.DiskUsed,
 		m.NetInBps, m.NetOutBps, m.TcpConns, m.UdpConns,
 		m.Load1, m.Load5, m.Load15, m.UptimeS, m.Processes,

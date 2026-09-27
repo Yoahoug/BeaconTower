@@ -125,6 +125,8 @@ func (c *Collector) tick() {
 		log.Printf("[collector] list servers: %v", err)
 		return
 	}
+	settings, _ := c.db.GetSettings()
+	strict := settings["strict_host_key"] == "true"
 	now := time.Now().Unix()
 	var wg sync.WaitGroup
 	for _, s := range servers {
@@ -135,10 +137,11 @@ func (c *Collector) tick() {
 		go func(srv *store.Server) {
 			defer wg.Done()
 			// jitter 由并发调度的自然错峰承担（单轮内各节点并行建连）
-			c.collectOne(srv, now)
+			c.collectOne(srv, now, settings, strict)
 		}(s)
 	}
 	wg.Wait()
+	c.db.CommitRound()
 	c.rebuildSnapshot()
 	// private_mode 下 SSE 同样要求登录，由 handler 层控制；此处只管广播
 	c.mu.RLock()
@@ -172,7 +175,7 @@ func (c *Collector) credFor(serverID int64) (*store.Credential, *SSHCred, error)
 	}, nil
 }
 
-func (c *Collector) collectOne(srv *store.Server, now int64) {
+func (c *Collector) collectOne(srv *store.Server, now int64, settings map[string]string, strict bool) {
 	// 本机节点：免 SSH，直接本地执行同一采集脚本
 	if srv.IsSelf {
 		c.collectSelf(srv, now)
@@ -183,8 +186,6 @@ func (c *Collector) collectOne(srv *store.Server, now int64) {
 		c.markFail(srv.ID, "凭据解密失败", now)
 		return
 	}
-	settings, _ := c.db.GetSettings()
-	strict := settings["strict_host_key"] == "true"
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	res, err := DialAndCollect(ctx, sshCred, cred.HostKeyFP, strict)
@@ -194,10 +195,10 @@ func (c *Collector) collectOne(srv *store.Server, now int64) {
 	}
 	// TOFU：首次记录指纹；非严格模式下指纹变化则更新
 	if cred.HostKeyFP == "" && res.HostKeyFP != "" {
-		_ = c.db.SetCollectResult(srv.ID, res.HostKeyFP, "", now)
+		_ = c.db.QueueCollectResult(srv.ID, res.HostKeyFP, "", now)
 		cred.HostKeyFP = res.HostKeyFP
 	} else if res.HostKeyFP != "" && res.HostKeyFP != cred.HostKeyFP && !strict {
-		_ = c.db.SetCollectResult(srv.ID, res.HostKeyFP, "", now)
+		_ = c.db.QueueCollectResult(srv.ID, res.HostKeyFP, "", now)
 	}
 	c.applySample(srv, cred, res, now)
 }
@@ -208,21 +209,33 @@ func (c *Collector) selfNode(serverID int64) bool {
 	return err == nil && s != nil && s.IsSelf
 }
 
-func (c *Collector) markFail(serverID int64, reason string, now int64) {	_ = c.db.SetCollectResult(serverID, "", reason, nil)
+func (c *Collector) markFail(serverID int64, reason string, now int64) {	_ = c.db.QueueCollectResult(serverID, "", reason, nil)
 	m := &store.Metric{ServerID: serverID, Ts: now, Status: "offline"}
-	_ = c.db.UpsertLatest(m)
+	_ = c.db.QueueLatest(m)
 	// offline 不写 sample（曲线自然断点，前端显示离线）
 }
 
-// collectSelf 本机采集：本地 sh -s 执行采集脚本，产物走与 SSH 节点完全相同的
+// collectSelf 本机采集：优先平台原生路径（linux 直接读 /proc、/sys，零 fork；
+// darwin 走脚本），失败回退本地 sh -s 脚本，产物走与 SSH 节点完全相同的
 // 解析/差分/画像/落库链路（仅无凭据与 host key 环节）。
 func (c *Collector) collectSelf(srv *store.Server, now int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	raw, err := RunCollectScript(ctx)
+	raw, err := collectSelfNative(ctx)
+	if err != nil {
+		raw, err = RunCollectScript(ctx)
+	}
 	if err != nil {
 		c.markFail(srv.ID, err.Error(), now)
 		return
+	}
+	// 公网 IP：缓存过期时后台探测并回写 6h 缓存（SSH 节点缓存在目标机侧）
+	if raw.PubIP == "" && pubIPCacheStale() {
+		go func() {
+			pctx, pcancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer pcancel()
+			probePubIP(pctx)
+		}()
 	}
 	c.applySample(srv, nil, &DialResult{Raw: raw}, now)
 }
@@ -306,15 +319,15 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		if p.lastW > 0 && p.lastWAt > 0 && now > p.lastWAt && now-p.lastWAt < 300 {
 			kwh := (p.lastW + powerW) / 2 * float64(now-p.lastWAt) / 3.6e6
 			if kwh > 0 && kwh < 1 {
-				_ = c.db.AddMonthKwh(srv.ID, kwh)
+				_ = c.db.QueueMonthKwh(srv.ID, kwh)
 			}
 		}
 		p.lastW, p.lastWAt = powerW, now
 	}
-	_ = c.db.UpsertProfile(prof, now)
-	_ = c.db.UpsertLatest(m)
-	_ = c.db.InsertSample(m)
-	_ = c.db.SetCollectResult(srv.ID, "", "", now)
+	_ = c.db.QueueProfile(prof, now)
+	_ = c.db.QueueLatest(m)
+	_ = c.db.QueueSample(m)
+	_ = c.db.QueueCollectResult(srv.ID, "", "", now)
 }
 
 // powerFor RAPL 功率计算：package+core+uncore 取 package 域；dram 独立；整机 = package + base。

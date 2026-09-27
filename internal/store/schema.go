@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -11,6 +12,51 @@ import (
 // DB SQLite 访问层封装。
 type DB struct {
 	SQL *sql.DB
+
+	// roundMu/roundTx 采集轮写缓冲：同一轮内所有采集写入合并为单个事务，
+	// 每轮一次 fsync（原为每节点 4~5 条独立 Exec 各自 fsync）。
+	roundMu   sync.Mutex
+	roundTx   *sql.Tx
+	roundErr  error
+	roundCmds []func(*sql.Tx) error
+}
+
+// execer SQL.Exec 的公共接口（*sql.DB 与 *sql.Tx 皆满足），
+// 使单发/批量事务两条路径共用同一 SQL 构造函数。
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// queue 采集轮缓冲登记。须在 CommitRound 之前调用（collector 每轮结束时调用）。
+func (db *DB) queue(fn func(*sql.Tx) error) {
+	db.roundMu.Lock()
+	defer db.roundMu.Unlock()
+	db.roundCmds = append(db.roundCmds, fn)
+}
+
+// CommitRound 将本轮缓冲的写入以单事务提交；无缓冲写入时为 no-op。
+// 事务内任一语句失败不影响其他语句（失败语句被跳过，下轮重写自会覆盖）。
+func (db *DB) CommitRound() {
+	db.roundMu.Lock()
+	cmds := db.roundCmds
+	db.roundCmds = nil
+	db.roundErr = nil
+	db.roundTx = nil
+	db.roundMu.Unlock()
+	if len(cmds) == 0 {
+		return
+	}
+	tx, err := db.SQL.Begin()
+	if err != nil {
+		return
+	}
+	for _, fn := range cmds {
+		if err := fn(tx); err != nil && db.roundErr == nil {
+			db.roundErr = err
+		}
+	}
+	// 单条语句失败不回滚整轮：SQLite 语句级隔离，提交其余成功写入
+	_ = tx.Commit()
 }
 
 // Open 打开数据库并执行建表 + 增量迁移。
