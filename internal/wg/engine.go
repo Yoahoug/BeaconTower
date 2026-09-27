@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -190,8 +191,17 @@ func BackupConf(ctx context.Context, conn *sshx.Conn, iface string) error {
 	return err
 }
 
-func sanitizeIface(name string) string {
-	// 接口名仅允许字母数字与下划线/短横线（拼进 shell 用，须白名单）
+// sanitizeComment 清洗 conf 注释/成员名：剥离控制字符（换行可注入 [Peer] 段）。
+func sanitizeComment(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func sanitizeIface(name string) string {	// 接口名仅允许字母数字与下划线/短横线（拼进 shell 用，须白名单）
 	var b strings.Builder
 	for _, r := range name {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
@@ -285,8 +295,8 @@ func HubAddPeer(ctx context.Context, conn *sshx.Conn, iface string, peer Peer, i
 		return nil
 	}
 	var block strings.Builder
-	if peer.Comment != "" {
-		block.WriteString("# " + peer.Comment + "\n")
+	if comment := sanitizeComment(peer.Comment); comment != "" {
+		block.WriteString("# " + comment + "\n")
 	}
 	block.WriteString("[Peer]\nPublicKey = " + peer.PublicKey + "\n")
 	if peer.PresharedKey != "" {
@@ -403,8 +413,12 @@ func SubnetBits(subnetCIDR string) (int, error) {
 
 // InstallAsset 将面板缓存的资产文件推送到节点 /usr/local/bin/<name>（0755）。
 // 用于国内节点装不了包时的兜底分发（wireguard-go / 静态 wg 工具等）。
+// assetNameRe 资产名白名单：拼进节点 root 的 shell 命令，必须严格限制。
+var assetNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func InstallAsset(ctx context.Context, conn *sshx.Conn, name, localPath string) error {
-	if strings.ContainsAny(name, "/. '\\") {
+	// name 会以 root 身份拼进 chmod/command -v：严格白名单（与 handler 入库校验一致，双保险）
+	if !assetNameRe.MatchString(name) {
 		return fmt.Errorf("资产名含非法字符: %q", name)
 	}
 	data, err := os.ReadFile(localPath)

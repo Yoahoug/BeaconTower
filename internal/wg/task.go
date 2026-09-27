@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
@@ -19,8 +20,9 @@ import (
 // Runner 组网任务执行器：消费 pending 状态的 wg_task，按「中心节点 → spokes 并行」
 // 执行步骤并回写状态。实例由 handler 持有（持有主密钥解凭据）。
 type Runner struct {
-	DB     *store.DB
-	Master []byte
+	DB       *store.DB
+	Master   []byte
+	patrolMu sync.Mutex // Patrol 防重入（ticker 与手动触发并发时跳过本轮）
 }
 
 func NewRunner(db *store.DB, master []byte) *Runner { return &Runner{DB: db, Master: master} }
@@ -152,7 +154,8 @@ func (r *Runner) RunApply(taskID int64) {
 			reprovByServer[a.ServerID] = true
 		}
 	}
-	okN, failN, skipN := 0, 0, 0
+	// spokes 并行 goroutine 会写计数：必须原子操作（race 安全）
+	var okN, failN, skipN atomic.Int64
 	// 1) hub/standby 先行（串行；spoke 依赖其公钥与端点）
 	for _, st := range steps {
 		role := roleByServer[st.ServerID.Int64]
@@ -162,11 +165,11 @@ func (r *Runner) RunApply(taskID int64) {
 		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
 		err := r.applyHubNode(context.Background(), network, st.ServerID.Int64, role, reprovByServer[st.ServerID.Int64])
 		if err != nil {
-			failN++
+			failN.Add(1)
 			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())
 			log.Printf("[wg] task %d hub step %d 失败: %v", taskID, st.ID, err)
 		} else {
-			okN++
+			okN.Add(1)
 			_ = r.DB.FinishWGTaskStep(st.ID, "ok", "", time.Now().Unix())
 		}
 	}
@@ -185,14 +188,14 @@ func (r *Runner) RunApply(taskID int64) {
 			now := time.Now().Unix()
 			switch {
 			case err != nil && skipped:
-				skipN++
+				skipN.Add(1)
 				_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "跳过: "+err.Error(), now)
 			case err != nil:
-				failN++
+				failN.Add(1)
 				_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), now)
 				log.Printf("[wg] task %d spoke step %d 失败: %v", taskID, st.ID, err)
 			default:
-				okN++
+				okN.Add(1)
 				_ = r.DB.FinishWGTaskStep(st.ID, "ok", "", now)
 			}
 		}(st)
@@ -201,11 +204,11 @@ func (r *Runner) RunApply(taskID int64) {
 
 	// 3) 汇总
 	status := "done"
-	summary := fmt.Sprintf("成功 %d，失败 %d，跳过 %d", okN, failN, skipN)
+	summary := fmt.Sprintf("成功 %d，失败 %d，跳过 %d", okN.Load(), failN.Load(), skipN.Load())
 	switch {
-	case failN > 0 && okN == 0:
+	case failN.Load() > 0 && okN.Load() == 0:
 		status = "failed"
-	case failN > 0:
+	case failN.Load() > 0:
 		status = "partial"
 	}
 	_ = r.DB.FinishWGTask(taskID, status, summary, time.Now().Unix())

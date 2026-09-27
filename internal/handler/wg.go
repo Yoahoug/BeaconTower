@@ -12,10 +12,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Yoahoug/BeaconTower/internal/assets"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
@@ -26,6 +28,27 @@ import (
 
 // ---------- WG 组网 API（doc/12 §5） ----------
 // 全部位于 /api/v1/admin/wg/*，RequireAuth + RequireCSRF + audit。
+
+var (
+	// ifaceRe 接口名白名单（字母数字开头，含短横线，≤15 字符 IFNAMSIZ）
+	ifaceRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,14}$`)
+	// assetNameRe 资产名白名单：资产名会拼进节点 root 的 shell 命令，必须严格白名单
+	assetNameRe    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	assetVersionRe = regexp.MustCompile(`^[A-Za-z0-9._-]{0,64}$`)
+)
+
+// validMemberName 成员名入 conf 注释与文件名：拒绝控制字符（含换行，防 conf 注入）。
+func validMemberName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 type wgNetworkInput struct {
 	Subnet    string `json:"subnet"`
@@ -47,6 +70,20 @@ type wgPlanInput struct {
 	Spokes      []wgSpokeInput  `json:"spokes"`
 }
 
+// wgOpLock 串行化任务型操作：拿住进程内互斥锁并检查无 running 任务。
+// 返回 false 表示已拒绝（锁已释放或响应已写）。成功后须配对 wgOpUnlock。
+func (a *App) wgOpLock(c *gin.Context, hint string) bool {
+	a.wgOpMu.Lock()
+	if running, _ := a.DB.HasRunningWGTask(); running {
+		a.wgOpMu.Unlock()
+		middleware.Fail(c, 1004, hint)
+		return false
+	}
+	return true
+}
+
+func (a *App) wgOpUnlock() { a.wgOpMu.Unlock() }
+
 // wgResolveNetwork 取现有网络；无则用输入参数校验并构造（入库发生在 apply）。
 func (a *App) wgResolveNetwork(in *wgNetworkInput) (*store.WGNetwork, error) {
 	if netRow, err := a.DB.GetWGNetwork(); err != nil || netRow != nil {
@@ -56,22 +93,37 @@ func (a *App) wgResolveNetwork(in *wgNetworkInput) (*store.WGNetwork, error) {
 		return nil, errors.New("尚未初始化组网，请提供 subnet 与 hub_ip")
 	}
 	subnet := strings.TrimSpace(in.Subnet)
-	if _, _, err := net.ParseCIDR(subnet); err != nil {
+	_, ipNet, err := net.ParseCIDR(subnet)
+	if err != nil {
 		return nil, fmt.Errorf("subnet 格式无效: %q", subnet)
 	}
 	hubIP := strings.TrimSpace(in.HubIP)
-	if ip := net.ParseIP(hubIP); ip == nil {
+	ip := net.ParseIP(hubIP)
+	if ip == nil {
 		return nil, fmt.Errorf("hub_ip 格式无效: %q", hubIP)
+	}
+	if !ipNet.Contains(ip) {
+		return nil, fmt.Errorf("hub_ip %s 不在子网 %s 内", hubIP, subnet)
+	}
+	iface := strings.TrimSpace(in.Iface)
+	if iface == "" {
+		iface = "wg0"
+	}
+	if !ifaceRe.MatchString(iface) {
+		return nil, fmt.Errorf("接口名仅允许字母数字与短横线（≤15 字符）: %q", iface)
+	}
+	if in.MTU < 0 || in.MTU > 9000 {
+		return nil, fmt.Errorf("MTU 越界（1280-9000 或 0=默认）: %d", in.MTU)
+	}
+	if in.Keepalive < 0 || in.Keepalive > 3600 {
+		return nil, fmt.Errorf("keepalive 越界（0-3600 秒）: %d", in.Keepalive)
 	}
 	n := &store.WGNetwork{
 		Subnet:    subnet,
 		HubIP:     hubIP,
-		Iface:     strings.TrimSpace(in.Iface),
+		Iface:     iface,
 		Keepalive: in.Keepalive,
 		MTU:       in.MTU,
-	}
-	if n.Iface == "" {
-		n.Iface = "wg0"
 	}
 	if n.Keepalive <= 0 {
 		n.Keepalive = 25
@@ -263,6 +315,7 @@ func (a *App) WGPlan(c *gin.Context) {
 		"spokes":  a.wgSpokesView(in.Spokes, alloc, issuesByServer),
 		"blocked": wg.HasErr(hubIssues),
 	})
+	a.audit(a.actorOf(c), "wg_plan", fmt.Sprintf("hub:%d", hubID), "预检探测", ipOf(c))
 }
 
 // wgPlanHub 解析/校验 plan 的中心节点，返回 (hubID, port, blocked, 视图)。
@@ -391,10 +444,14 @@ func (a *App) WGApply(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误")
 		return
 	}
-	if running, _ := a.DB.HasRunningWGTask(); running {
-		middleware.Fail(c, 1004, "已有组网任务在执行，请等待完成")
+	if in.HubPort < 0 || in.HubPort > 65535 {
+		middleware.Fail(c, 1001, "hub_port 越界（1-65535）")
 		return
 	}
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
+		return
+	}
+	defer a.wgOpUnlock()
 	netRow, err := a.wgResolveNetwork(in.Network)
 	if err != nil {
 		middleware.Fail(c, 2010, err.Error())
@@ -421,7 +478,10 @@ func (a *App) WGApply(c *gin.Context) {
 			middleware.Fail(c, 5000, "网络初始化失败: "+err.Error())
 			return
 		}
-		netRow, _ = a.DB.GetWGNetwork()
+		if netRow, err = a.DB.GetWGNetwork(); err != nil || netRow == nil {
+			middleware.Fail(c, 5000, "网络读取失败")
+			return
+		}
 	}
 	// hub 槽位（存在则复用；缺钥由引擎自愈）
 	hubRow, _ := a.DB.GetWGHub(hubID)
@@ -467,11 +527,20 @@ func (a *App) WGApply(c *gin.Context) {
 		}
 	}
 	names := map[int64]string{hubID: hubSrv.Name}
+	seen := map[int64]bool{hubID: true}
+	// 入参去重；hub 不可同时作为成员（避免给 hub 再分配 spoke IP）
+	dedupSpokes := make([]wgSpokeInput, 0, len(in.Spokes))
 	for _, s := range in.Spokes {
+		if seen[s.ServerID] {
+			continue
+		}
+		seen[s.ServerID] = true
+		dedupSpokes = append(dedupSpokes, s)
 		if srv, _ := a.DB.GetServer(s.ServerID); srv != nil {
 			names[s.ServerID] = srv.Name
 		}
 	}
+	in.Spokes = dedupSpokes
 	// 确保成员记录（已存在则复用 IP/密钥并重置状态）
 	allocByServer := map[int64]store.WGAlloc{}
 	for _, al := range alloc {
@@ -530,9 +599,12 @@ func (a *App) WGApply(c *gin.Context) {
 	}
 	for _, al := range alloc {
 		seq++
-		_, _ = a.DB.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: seq,
+		if _, err := a.DB.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: seq,
 			ServerID: sql.NullInt64{Int64: al.ServerID, Valid: true},
-			Title:    "接入 · " + names[al.ServerID], Status: "pending"})
+			Title:    "接入 · " + names[al.ServerID], Status: "pending"}); err != nil {
+			middleware.Fail(c, 5000, "步骤创建失败: "+err.Error())
+			return
+		}
 	}
 	go a.WG.RunApply(taskID)
 	a.audit(a.actorOf(c), "wg_apply", fmt.Sprintf("task:%d", taskID),
@@ -609,15 +681,19 @@ func (a *App) WGDeviceCreate(c *gin.Context) {
 		middleware.Fail(c, 1001, "设备名称不能为空")
 		return
 	}
+	if !validMemberName(name) {
+		middleware.Fail(c, 1001, "设备名称含非法字符（不得包含换行等控制字符，≤64 字符）")
+		return
+	}
 	netRow, _ := a.DB.GetWGNetwork()
 	if netRow == nil || netRow.ActiveHubServerID == 0 {
 		middleware.Fail(c, 2010, "尚未初始化组网或缺少现役中心节点")
 		return
 	}
-	if running, _ := a.DB.HasRunningWGTask(); running {
-		middleware.Fail(c, 1004, "组网任务执行中，稍后再试")
+	if !a.wgOpLock(c, "组网任务执行中，稍后再试") {
 		return
 	}
+	defer a.wgOpUnlock()
 	taken, _ := a.wgTakenIPs(netRow)
 	allocator, err := wg.NewAllocator(netRow.Subnet, taken)
 	if err != nil {
@@ -669,17 +745,13 @@ func (a *App) wgHubAddOne(hub *store.WGHub, netRow *store.WGNetwork, pub, psk, i
 		return err
 	}
 	defer closer()
-	bits, err := wg.SubnetBits(netRow.Subnet)
-	if err != nil {
-		return err
-	}
 	peer := wg.Peer{
 		Comment:      name,
 		PublicKey:    pub,
 		PresharedKey: psk,
-		AllowedIPs:   []string{ip + "/" + strconv.Itoa(bits)},
+		AllowedIPs:   []string{ip + "/32"}, // hub 侧主机路由，同 applyHubNode
 	}
-	return wg.HubAddPeer(ctx, conn, netRow.Iface, peer, ip+"/"+strconv.Itoa(bits))
+	return wg.HubAddPeer(ctx, conn, netRow.Iface, peer, ip+"/32")
 }
 
 // WGPeerConf 导出成员配置（设备凭证 / 二维码内容）。
@@ -728,7 +800,11 @@ func (a *App) WGPeerConf(c *gin.Context) {
 		middleware.Fail(c, 5000, "私钥解密失败")
 		return
 	}
-	psk, _ := a.WG.DecryptBlob(peer.PskEnc)
+	psk, err := a.WG.DecryptBlob(peer.PskEnc)
+	if err != nil {
+		middleware.Fail(c, 5000, "PSK 解密失败")
+		return
+	}
 	bits, err := wg.SubnetBits(netRow.Subnet)
 	if err != nil {
 		middleware.Fail(c, 2010, err.Error())
@@ -746,6 +822,8 @@ func (a *App) WGPeerConf(c *gin.Context) {
 	}
 	a.audit(a.actorOf(c), "wg_peer_conf_export", peer.Name,
 		"hub="+strconv.FormatInt(hubID, 10), ipOf(c))
+	// conf 含设备私钥与 PSK：禁止任何形式的缓存
+	c.Header("Cache-Control", "no-store")
 	middleware.OK(c, gin.H{
 		"conf": conf,
 		"filename": strings.ReplaceAll(peer.Name, " ", "_") + "-" + tag + ".conf",
@@ -765,10 +843,10 @@ func (a *App) WGPeerDelete(c *gin.Context) {
 		middleware.Fail(c, 2002, "成员不存在")
 		return
 	}
-	if running, _ := a.DB.HasRunningWGTask(); running {
-		middleware.Fail(c, 1004, "组网任务执行中，稍后再试")
+	if !a.wgOpLock(c, "组网任务执行中，稍后再试") {
 		return
 	}
+	defer a.wgOpUnlock()
 	detail, err := a.WG.RemovePeer(peer)
 	if err != nil {
 		middleware.Fail(c, 2011, "移除失败: "+err.Error()+"（"+detail+"）")
@@ -815,6 +893,7 @@ func (a *App) WGPeerVerify(c *gin.Context) {
 		peer.LastError = detail
 	}
 	_ = a.DB.UpdateWGPeer(peer)
+	a.audit(a.actorOf(c), "wg_peer_verify", peer.Name, detail, ipOf(c))
 	middleware.OK(c, gin.H{"online": online, "detail": detail})
 }
 
@@ -833,10 +912,10 @@ func (a *App) WGImport(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：需要 hub_server_id")
 		return
 	}
-	if running, _ := a.DB.HasRunningWGTask(); running {
-		middleware.Fail(c, 1004, "已有组网任务在执行，请等待完成")
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
 		return
 	}
+	defer a.wgOpUnlock()
 	hubSrv, _ := a.DB.GetServer(in.HubServerID)
 	if hubSrv == nil || hubSrv.IsSelf {
 		middleware.Fail(c, 2010, "中心节点不存在或不支持")
@@ -931,10 +1010,10 @@ func (a *App) WGSwitchHub(c *gin.Context) {
 		middleware.Fail(c, 2010, "目标节点尚未纳管为 hub/备胎（请先导入或组网）")
 		return
 	}
-	if running, _ := a.DB.HasRunningWGTask(); running {
-		middleware.Fail(c, 1004, "已有组网任务在执行，请等待完成")
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
 		return
 	}
+	defer a.wgOpUnlock()
 	// 金丝雀：指定或自动挑选在线 SSH 成员
 	canaryID := in.CanaryServerID
 	if canaryID == 0 {
@@ -998,6 +1077,7 @@ func (a *App) WGPatrol(c *gin.Context) {
 		middleware.Fail(c, 2010, err.Error())
 		return
 	}
+	a.audit(a.actorOf(c), "wg_patrol", "manual", "", ipOf(c))
 	middleware.OK(c, gin.H{"ok": true})
 }
 
@@ -1038,8 +1118,15 @@ func (a *App) WGAssetUpsert(c *gin.Context) {
 		return
 	}
 	name := strings.TrimSpace(in.Name)
-	if len(name) > 64 || strings.ContainsAny(name, "/\\. ") {
-		middleware.Fail(c, 1001, "资产名仅允许字母数字与下划线/短横线")
+	if !assetNameRe.MatchString(name) {
+		middleware.Fail(c, 1001, "资产名仅允许字母数字与下划线/短横线（1-64 字符）")
+		return
+	}
+	version := strings.TrimSpace(in.Version)
+	arch := strings.TrimSpace(in.Arch)
+	// version/arch 会拼进缓存文件路径：白名单防路径穿越
+	if !assetVersionRe.MatchString(version) || !assetVersionRe.MatchString(arch) {
+		middleware.Fail(c, 1001, "version/arch 仅允许字母数字与 . _ -（≤64 字符）")
 		return
 	}
 	for _, s := range in.Sources {
@@ -1050,7 +1137,7 @@ func (a *App) WGAssetUpsert(c *gin.Context) {
 	}
 	now := time.Now().Unix()
 	id, err := a.DB.UpsertWGAsset(&store.WGAsset{
-		Name: name, Version: strings.TrimSpace(in.Version), Arch: strings.TrimSpace(in.Arch),
+		Name: name, Version: version, Arch: arch,
 		SHA256: strings.TrimSpace(in.SHA256), Sources: in.Sources,
 		Note: strings.TrimSpace(in.Note), UpdatedAt: now,
 	})
@@ -1104,6 +1191,7 @@ func (a *App) WGAssetProbe(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 	results := assets.Probe(ctx, urls, 10*time.Second)
+	a.audit(a.actorOf(c), "wg_asset_probe", as.Name, fmt.Sprintf("%d 源", len(results)), ipOf(c))
 	middleware.OK(c, gin.H{"results": results})
 }
 
@@ -1134,7 +1222,11 @@ func (a *App) WGAssetFetch(c *gin.Context) {
 		middleware.Fail(c, 2011, "下载失败: "+err.Error())
 		return
 	}
-	st, _ := os.Stat(dest)
+	st, err := os.Stat(dest)
+	if err != nil {
+		middleware.Fail(c, 5000, "缓存文件状态读取失败: "+err.Error())
+		return
+	}
 	sum := as.SHA256
 	if sum == "" {
 		if h, err := fileSHA256(dest); err == nil {

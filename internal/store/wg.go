@@ -439,6 +439,15 @@ func DecodeWGPayload(raw string) *WGTaskPayload {
 	return &p
 }
 
+// FailStaleWGTasks 进程启动时收尾上次运行遗留的 running 任务：
+// 进程中断后状态无人回写，HasRunningWGTask 会永久锁死全部组网操作。
+func (db *DB) FailStaleWGTasks(now int64) error {
+	_, err := db.SQL.Exec(`UPDATE wg_task SET status='failed',
+		result='进程中断，任务状态未知（请核对节点实况后重试）', finished_at=?,
+		updated_at=? WHERE status='running'`, now, now)
+	return err
+}
+
 // SetCredentialFP 回写 host key 指纹（TOFU 记录/非严格更新；不动 last_error）。
 func (db *DB) SetCredentialFP(serverID int64, fp string) error {
 	_, err := db.SQL.Exec(`UPDATE server_credential SET host_key_fp = ? WHERE server_id = ?`, fp, serverID)

@@ -58,6 +58,11 @@ func main() {
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 	}
 
+	// 上次进程中断遗留的 running WG 任务无人收尾会锁死组网操作，启动即标记失败
+	if err := db.FailStaleWGTasks(time.Now().Unix()); err != nil {
+		log.Printf("[beacontower] 清理遗留 WG 任务失败: %v", err)
+	}
+
 	// 初始化令牌提示（doc/04 §2.2）
 	if has, _ := db.HasAdmin(); !has && cfg.SetupToken != "" {
 		log.Printf("[beacontower] 初始化令牌 BEACON_SETUP_TOKEN 已启用（首次初始化需携带）")

@@ -15,6 +15,15 @@ import (
 // - hub 公钥与面板记录不符 → 标注异常（配置被外部改动的信号）。
 // 全程尽力而为：单点失败只记日志/状态，不影响其他节点。
 func (r *Runner) Patrol() {
+	// ticker 与手动触发可能并发：拿不到锁直接跳过，防止双重计数流量差值
+	if !r.patrolMu.TryLock() {
+		return
+	}
+	defer r.patrolMu.Unlock()
+	r.patrolLocked()
+}
+
+func (r *Runner) patrolLocked() {
 	network, err := r.DB.GetWGNetwork()
 	if err != nil || network == nil {
 		return

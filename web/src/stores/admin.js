@@ -45,6 +45,7 @@ export const useAdminStore = defineStore('admin', {
     // 资产中转
     assets: [],
     assetsLoading: false,
+    assetsError: '',
   }),
 
   getters: {
@@ -213,8 +214,12 @@ export const useAdminStore = defineStore('admin', {
 
     async loadAssets() {
       this.assetsLoading = true
+      this.assetsError = ''
       try {
         this.assets = (await adminClient.wgAssets()).assets
+      } catch (e) {
+        this.assetsError = e?.message || '资产加载失败'
+        throw e // 调用方（弹窗内）需要感知失败
       } finally {
         this.assetsLoading = false
       }

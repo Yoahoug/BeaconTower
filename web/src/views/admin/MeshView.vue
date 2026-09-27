@@ -13,7 +13,10 @@ import { CanvasRenderer } from 'echarts/renderers'
 import QRCode from 'qrcode'
 import AppIcon from '../../components/AppIcon.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
+import StateError from '../../components/ui/StateError.vue'
+import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import { agoFromTs } from '../../api/auth'
+import { fmtBytes } from '../../utils/format'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
 
@@ -33,18 +36,6 @@ const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'
 const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
 
 // ---------- 文案与格式 ----------
-function fmtBytes(n) {
-  if (!n || n <= 0) return '0'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let v = n
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
-}
-
 function statusTag(s) {
   switch (s) {
     case 'online':
@@ -77,14 +68,14 @@ function buildTopoOption() {
       name: `${h.is_active ? '★ ' : ''}${h.name || `节点${h.server_id}`}`,
       symbolSize: 54,
       category: h.is_active ? '现役 hub' : '备胎 hub',
-      itemStyle: { color: h.is_active ? '#2f7ef7' : '#8a94a6' },
+      itemStyle: { color: h.is_active ? '#0EA5E9' : '#64748B' },
       label: { show: true, formatter: `${h.name}\n:${h.listen_port}` },
       tooltip: { formatter: `${h.endpoint || '端点未知'} · ${cat(h.status)}` },
     })
   }
   for (const p of peers.value) {
     if (p.status === 'left') continue
-    const color = p.status === 'online' ? '#31b06d' : p.status === 'offline' ? '#e0a23c' : '#8a94a6'
+    const color = p.status === 'online' ? '#10B981' : p.status === 'offline' ? '#F59E0B' : '#64748B'
     nodes.push({
       id: `peer-${p.id}`,
       name: p.name,
@@ -146,9 +137,12 @@ function stopPoll() {
 function watchTask(id) {
   stopPoll()
   taskModal.value = { id, task: null, error: '' }
+  rememberFocus()
   const tick = async () => {
+    if (!taskModal.value) { stopPoll(); return } // 弹窗已关闭：停止轮询
     try {
       const t = await admin.loadWgTask(id)
+      if (!taskModal.value) return
       taskModal.value.task = t
       if (t && t.status !== 'running') {
         stopPoll()
@@ -156,11 +150,45 @@ function watchTask(id) {
         ui.notify(t.status === 'done' ? '任务完成' : `任务结束：${t.status} · ${t.result || ''}`)
       }
     } catch (e) {
-      taskModal.value.error = e?.message || '任务状态获取失败'
+      if (taskModal.value) taskModal.value.error = e?.message || '任务状态获取失败'
     }
   }
   tick()
   pollTimer = window.setInterval(tick, 2000)
+}
+
+function closeTaskModal() {
+  taskModal.value = null
+  stopPoll()
+  restoreFocus()
+}
+
+// ---------- 弹窗焦点管理（doc/10 §8：ESC 关闭 / 打开聚焦 / 关闭归还焦点） ----------
+let lastFocusEl = null
+
+function rememberFocus() {
+  lastFocusEl = document.activeElement
+  nextTick(() => {
+    const modal = document.querySelector('.bt-modal')
+    modal?.querySelector('button, input, select, textarea')?.focus()
+  })
+}
+
+function restoreFocus() {
+  if (lastFocusEl && document.contains(lastFocusEl)) lastFocusEl.focus?.()
+  lastFocusEl = null
+}
+
+// ESC 关闭最上层弹窗（busy 中的操作弹窗不关，防误触）
+function onMeshKey(e) {
+  if (e.key !== 'Escape') return
+  if (taskModal.value) { closeTaskModal(); return }
+  if (confModal.value) { confModal.value = null; restoreFocus(); return }
+  if (assetModal.value) { if (!assetModal.value.busy) { assetModal.value = null; restoreFocus() } return }
+  if (deviceModal.value) { if (!deviceModal.value.busy) { deviceModal.value = null; restoreFocus() } return }
+  if (switchModal.value) { if (!switchModal.value.busy) { switchModal.value = null; restoreFocus() } return }
+  if (importModal.value) { if (!importModal.value.busy) { importModal.value = null; restoreFocus() } return }
+  if (wizard.value && !wizard.value.busy) { wizard.value = null; restoreFocus() }
 }
 
 onBeforeUnmount(() => {
@@ -168,6 +196,7 @@ onBeforeUnmount(() => {
   topoChart?.dispose()
   topoChart = null
   window.removeEventListener('resize', resizeTopo)
+  window.removeEventListener('keydown', onMeshKey)
 })
 
 // ---------- 组网向导 ----------
@@ -185,6 +214,7 @@ function openWizard() {
   selectedIds.value = []
   wizardHubId.value = activeHub.value?.server_id || 0
   wizard.value = { step: 1, plan: null, error: '', busy: false }
+  rememberFocus()
 }
 
 function togglePick(id) {
@@ -194,7 +224,7 @@ function togglePick(id) {
 }
 
 function wizardPayload() {
-  const spokes = selectedIds.value.map((id) => ({ server_id: id }))
+  const spokes = selectedIds.value.filter((id) => id !== wizardHubId.value).map((id) => ({ server_id: id }))
   const p = { hub_server_id: wizardHubId.value || undefined, hub_port: wizardHubPort.value, spokes }
   if (!network.value) {
     p.network = { subnet: wizardSubnet.value, hub_ip: wizardHubIp.value, keepalive: 25, mtu: 1420 }
@@ -214,12 +244,14 @@ async function runPlan() {
   wizard.value.busy = true
   wizard.value.error = ''
   try {
-    wizard.value.plan = await admin.planWg(wizardPayload())
+    const plan = await admin.planWg(wizardPayload())
+    if (!wizard.value) return // 请求期间弹窗已关闭
+    wizard.value.plan = plan
     wizard.value.step = 2
   } catch (e) {
-    wizard.value.error = e?.message || '预检失败'
+    if (wizard.value) wizard.value.error = e?.message || '预检失败'
   } finally {
-    wizard.value.busy = false
+    if (wizard.value) wizard.value.busy = false
   }
 }
 
@@ -229,12 +261,13 @@ async function runApply() {
   try {
     const r = await admin.applyWg(wizardPayload())
     wizard.value = null
+    restoreFocus()
     ui.notify('组网任务已启动')
     watchTask(r.task_id)
   } catch (e) {
-    wizard.value.error = e?.message || '执行失败'
+    if (wizard.value) wizard.value.error = e?.message || '执行失败'
   } finally {
-    wizard.value.busy = false
+    if (wizard.value) wizard.value.busy = false
   }
 }
 
@@ -250,6 +283,7 @@ function openImport() {
   importStandbyId.value = 0
   importPicked.value = []
   importModal.value = { busy: false, error: '' }
+  rememberFocus()
 }
 
 async function runImport() {
@@ -266,12 +300,13 @@ async function runImport() {
       candidates: importPicked.value,
     })
     importModal.value = null
+    restoreFocus()
     ui.notify('导入任务已启动')
     watchTask(r.task_id)
   } catch (e) {
-    importModal.value.error = e?.message || '导入失败'
+    if (importModal.value) importModal.value.error = e?.message || '导入失败'
   } finally {
-    importModal.value.busy = false
+    if (importModal.value) importModal.value.busy = false
   }
 }
 
@@ -288,6 +323,7 @@ function openSwitch(hub) {
   }
   switchTargetId.value = hub?.server_id || switchCandidates.value[0].server_id
   switchModal.value = { busy: false, error: '' }
+  rememberFocus()
 }
 
 async function runSwitch() {
@@ -296,12 +332,13 @@ async function runSwitch() {
   try {
     const r = await admin.switchHub({ target_server_id: switchTargetId.value })
     switchModal.value = null
+    restoreFocus()
     ui.notify('切换任务已启动（金丝雀验证通过后才会全网切换）')
     watchTask(r.task_id)
   } catch (e) {
-    switchModal.value.error = e?.message || '切换失败'
+    if (switchModal.value) switchModal.value.error = e?.message || '切换失败'
   } finally {
-    switchModal.value.busy = false
+    if (switchModal.value) switchModal.value.busy = false
   }
 }
 
@@ -311,6 +348,7 @@ const confModal = ref(null) // { peer, hubId, conf, filename, dataUrl, error }
 
 function openDevice() {
   deviceModal.value = { name: '', busy: false, error: '' }
+  rememberFocus()
 }
 
 async function createDevice() {
@@ -324,25 +362,34 @@ async function createDevice() {
   try {
     const r = await admin.createDevice(name)
     deviceModal.value = null
+    restoreFocus()
     ui.notify(r.warn ? `设备已创建，但 ${r.warn}` : `设备已创建（${r.wg_ip}）`)
   } catch (e) {
-    deviceModal.value.error = e?.message || '创建失败'
+    if (deviceModal.value) deviceModal.value.error = e?.message || '创建失败'
   } finally {
-    deviceModal.value.busy = false
+    if (deviceModal.value) deviceModal.value.busy = false
   }
 }
 
+let confSeq = 0
+
 async function openConf(peer, hubId = 0) {
+  const seq = ++confSeq
   confModal.value = { peer, hubId, conf: '', filename: '', dataUrl: '', error: '', loading: true }
+  rememberFocus()
   try {
     const r = await admin.peerConf(peer.id, hubId)
+    if (seq !== confSeq || !confModal.value) return // 已关闭或已切到其他 hub（A/B 竞态，丢弃旧响应）
     confModal.value.conf = r.conf
     confModal.value.filename = r.filename
-    confModal.value.dataUrl = await QRCode.toDataURL(r.conf, { width: 320, margin: 1 })
+    const url = await QRCode.toDataURL(r.conf, { width: 320, margin: 1 })
+    if (seq !== confSeq || !confModal.value) return
+    confModal.value.dataUrl = url
   } catch (e) {
+    if (seq !== confSeq || !confModal.value) return
     confModal.value.error = e?.message || '配置导出失败'
   } finally {
-    confModal.value.loading = false
+    if (confModal.value && seq === confSeq) confModal.value.loading = false
   }
 }
 
@@ -379,7 +426,7 @@ async function verifyPeer(p) {
   verifyingId.value = p.id
   try {
     const r = await admin.verifyPeer(p.id)
-    ui.notify(r.online ? `${p.name}：${r.detail}` : `${p.name}：${r.detail}`)
+    ui.notify(r.online ? `${p.name} 在线：${r.detail}` : `${p.name} 未连通：${r.detail}`)
   } catch (e) {
     ui.notify(e?.message || '验证失败')
   } finally {
@@ -387,12 +434,19 @@ async function verifyPeer(p) {
   }
 }
 
+const patrolling = ref(false)
+
 async function patrol() {
+  if (patrolling.value) return
+  patrolling.value = true
   try {
     await admin.patrolNow()
+    await admin.loadWg()
     ui.notify('巡检完成')
   } catch (e) {
     ui.notify(e?.message || '巡检失败')
+  } finally {
+    patrolling.value = false
   }
 }
 
@@ -403,7 +457,12 @@ const assetServerId = ref(0)
 
 async function openAssets() {
   assetModal.value = { form: null, probe: null, busy: false, error: '' }
-  await admin.loadAssets()
+  rememberFocus()
+  try {
+    await admin.loadAssets()
+  } catch (e) {
+    assetModal.value.error = e?.message || '资产列表加载失败'
+  }
   if (serverPeers.value.length && !assetServerId.value) {
     assetServerId.value = serverPeers.value[0].server_id
   }
@@ -424,12 +483,12 @@ async function saveAsset() {
   assetModal.value.error = ''
   try {
     await admin.upsertAsset({ name: f.name, version: f.version, sha256: f.sha256, sources, note: f.note })
-    assetModal.value.form = null
+    if (assetModal.value) assetModal.value.form = null
     ui.notify('资产已保存')
   } catch (e) {
-    assetModal.value.error = e?.message || '保存失败'
+    if (assetModal.value) assetModal.value.error = e?.message || '保存失败'
   } finally {
-    assetModal.value.busy = false
+    if (assetModal.value) assetModal.value.busy = false
   }
 }
 
@@ -438,11 +497,11 @@ async function probeAsset(id) {
   assetModal.value.error = ''
   try {
     const r = await admin.probeAsset(id)
-    assetModal.value.probe = { id, results: r.results }
+    if (assetModal.value) assetModal.value.probe = { id, results: r.results }
   } catch (e) {
-    assetModal.value.error = e?.message || '测速失败'
+    if (assetModal.value) assetModal.value.error = e?.message || '测速失败'
   } finally {
-    assetModal.value.busy = false
+    if (assetModal.value) assetModal.value.busy = false
   }
 }
 
@@ -453,9 +512,9 @@ async function fetchAsset(id) {
     const r = await admin.fetchAsset(id)
     ui.notify(`下载完成（${fmtBytes(r.size)}，经 ${r.via}）`)
   } catch (e) {
-    assetModal.value.error = e?.message || '下载失败'
+    if (assetModal.value) assetModal.value.error = e?.message || '下载失败'
   } finally {
-    assetModal.value.busy = false
+    if (assetModal.value) assetModal.value.busy = false
   }
 }
 
@@ -470,9 +529,9 @@ async function pushAsset(id) {
     await admin.pushAsset(id, assetServerId.value)
     ui.notify('已推送到节点 /usr/local/bin/')
   } catch (e) {
-    assetModal.value.error = e?.message || '推送失败'
+    if (assetModal.value) assetModal.value.error = e?.message || '推送失败'
   } finally {
-    assetModal.value.busy = false
+    if (assetModal.value) assetModal.value.busy = false
   }
 }
 
@@ -480,8 +539,11 @@ async function removeAsset(id) {
   assetModal.value.busy = true
   try {
     await admin.deleteAsset(id)
+    ui.notify('资产已删除')
+  } catch (e) {
+    ui.notify(e?.message || '删除失败')
   } finally {
-    assetModal.value.busy = false
+    if (assetModal.value) assetModal.value.busy = false
   }
 }
 
@@ -502,6 +564,7 @@ function probeTag(r) {
 
 // ---------- 生命周期 ----------
 onMounted(async () => {
+  window.addEventListener('keydown', onMeshKey)
   await admin.loadWg()
   await nextTick()
   renderTopo()
@@ -519,8 +582,8 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         <p class="page-head__desc">WireGuard 一键组网 · 主备中心（A/B 流量额度轮换）· 设备凭证二维码</p>
       </div>
       <div class="page-head__actions">
-        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="admin.wgLoading || runningTask" @click="patrol">
-          <AppIcon name="refresh" aria-hidden="true" />手动巡检
+        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="admin.wgLoading || runningTask || patrolling" @click="patrol">
+          <AppIcon name="refresh" aria-hidden="true" />{{ patrolling ? '巡检中…' : '手动巡检' }}
         </button>
         <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openAssets">
           <AppIcon name="download" aria-hidden="true" />资产中转
@@ -534,9 +597,14 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
       </div>
     </div>
 
-    <div v-if="admin.wgError" class="bt-card" style="margin-bottom: 12px">
-      <div class="bt-card__body bt-text-danger" role="alert">{{ admin.wgError }}</div>
-    </div>
+    <StateError
+      v-if="admin.wgError"
+      style="margin-bottom: 12px"
+      :message="admin.wgError"
+      @retry="admin.loadWg()"
+    />
+
+    <StateSkeleton v-if="admin.wgLoading && !network" style="margin-bottom: 12px" :rows="4" />
 
     <!-- 未初始化引导 -->
     <div v-if="!admin.wgLoading && !network && !admin.wgError" class="bt-card">
@@ -625,12 +693,13 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             </button>
           </div>
         </div>
-        <div class="bt-card__body" style="padding: 0">
-          <table class="mesh-table">
+        <div class="bt-card__body bt-table-wrap" style="padding: 0">
+          <table class="bt-table mesh-table">
+            <caption>组网成员 · 共 {{ peers.length }} 个</caption>
             <thead>
               <tr>
-                <th>名称</th><th>类型</th><th>WG IP</th><th>状态</th>
-                <th>最近握手</th><th>收 / 发</th><th>操作</th>
+                <th scope="col">名称</th><th scope="col">类型</th><th scope="col">WG IP</th><th scope="col">状态</th>
+                <th scope="col">最近握手</th><th scope="col">收 / 发</th><th scope="col">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -641,14 +710,16 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
                 </td>
                 <td>{{ p.kind === 'device' ? '设备' : '节点' }}</td>
                 <td class="mono">{{ p.wg_ip }}</td>
-                <td><span class="bt-tag" :class="statusTag(p.status).cls">{{ statusTag(p.status).text }}</span></td>
+                <td>
+                  <span class="bt-tag pulse-dot" :class="statusTag(p.status).cls">{{ statusTag(p.status).text }}</span>
+                </td>
                 <td class="tnum">{{ p.last_handshake ? agoFromTs(p.last_handshake) : '从未' }}</td>
                 <td class="tnum">{{ fmtBytes(p.rx_bytes) }} / {{ fmtBytes(p.tx_bytes) }}</td>
                 <td class="mesh-row-actions">
                   <button v-if="p.kind === 'server'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="verifyingId === p.id" @click="verifyPeer(p)">
                     {{ verifyingId === p.id ? '验证中…' : '验证' }}
                   </button>
-                  <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p)">
+                  <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, activeHub?.server_id || 0)">
                     凭证 / QR
                   </button>
                   <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
@@ -657,7 +728,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
                 </td>
               </tr>
               <tr v-if="!peers.length">
-                <td colspan="7" style="text-align: center; padding: 24px; color: #889">暂无成员，用右上角「接入节点」或「导入现有网络」开始</td>
+                <td colspan="7" style="text-align: center; padding: 24px" class="bt-text-muted">暂无成员，用右上角「接入节点」或「导入现有网络」开始</td>
               </tr>
             </tbody>
           </table>
@@ -666,7 +737,8 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
     </template>
 
     <!-- 组网向导 -->
-    <div v-if="wizard" class="bt-modal-mask" @click.self="wizard.busy ? null : (wizard = null)">
+    <Transition name="modal">
+    <div v-if="wizard" class="bt-modal-mask" @click.self="wizard.busy ? null : (wizard = null, restoreFocus())">
       <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="组网向导">
         <div class="bt-modal__head">
           <div class="bt-modal__title">组网向导 · 第 {{ wizard.step }} 步 / 3</div>
@@ -721,11 +793,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             </div>
             <p v-if="wizard.plan.blocked" class="bt-text-danger mesh-hint" role="alert">存在阻断级问题（红标），请处理后重试。</p>
           </template>
-          <!-- 第 3 步：执行中说明 -->
-          <template v-else-if="wizard.step === 3">
-            <p>任务已提交，可关闭本窗口后在任务进度中查看。</p>
-          </template>
-          <div v-if="wizard.error" class="bt-text-danger mesh-hint" role="alert">{{ wizard.error }}</div>
+          <div v-if="wizard.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ wizard.error }}
+          </div>
         </div>
         <div class="mesh-modal-foot">
           <button v-if="wizard.step === 1" class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy" @click="runPlan">
@@ -733,20 +803,22 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           </button>
           <template v-else-if="wizard.step === 2">
             <button class="bt-btn bt-btn--ghost" type="button" @click="wizard.step = 1">上一步</button>
-            <button class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy" @click="runApply">
+            <button class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy || wizard.plan?.blocked" @click="runApply">
               {{ wizard.busy ? '提交中…' : '确认执行组网' }}
             </button>
           </template>
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 导入现有网络 -->
-    <div v-if="importModal" class="bt-modal-mask" @click.self="importModal.busy ? null : (importModal = null)">
+    <Transition name="modal">
+    <div v-if="importModal" class="bt-modal-mask" @click.self="importModal.busy ? null : (importModal = null, restoreFocus())">
       <div class="bt-modal" role="dialog" aria-modal="true" aria-label="导入现有网络">
         <div class="bt-modal__head">
           <div class="bt-modal__title">导入现有 WG 网络</div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="importModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="importModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
           <p class="mesh-hint">选择现役中心节点，面板将读取其配置与运行态，自动纳管网内成员（按公钥匹配；无法匹配的记为设备）。</p>
@@ -769,7 +841,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               <span>{{ s.name }}</span>
             </label>
           </div>
-          <div v-if="importModal.error" class="bt-text-danger mesh-hint" role="alert">{{ importModal.error }}</div>
+          <div v-if="importModal.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ importModal.error }}
+          </div>
         </div>
         <div class="mesh-modal-foot">
           <button class="bt-btn bt-btn--primary" type="button" :disabled="importModal.busy" @click="runImport">
@@ -778,13 +852,15 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 切换 hub -->
-    <div v-if="switchModal" class="bt-modal-mask" @click.self="switchModal.busy ? null : (switchModal = null)">
+    <Transition name="modal">
+    <div v-if="switchModal" class="bt-modal-mask" @click.self="switchModal.busy ? null : (switchModal = null, restoreFocus())">
       <div class="bt-modal" role="dialog" aria-modal="true" aria-label="切换现役中心">
         <div class="bt-modal__head">
           <div class="bt-modal__title">切换现役中心节点</div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="switchModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="switchModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
           <p class="mesh-hint">
@@ -796,7 +872,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               <option v-for="h in switchCandidates" :key="h.server_id" :value="h.server_id">{{ h.name }}（:{{ h.listen_port }}）</option>
             </select>
           </label>
-          <div v-if="switchModal.error" class="bt-text-danger mesh-hint" role="alert">{{ switchModal.error }}</div>
+          <div v-if="switchModal.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ switchModal.error }}
+          </div>
         </div>
         <div class="mesh-modal-foot">
           <button class="bt-btn bt-btn--danger" type="button" :disabled="switchModal.busy" @click="runSwitch">
@@ -805,20 +883,24 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 添加设备 -->
-    <div v-if="deviceModal" class="bt-modal-mask" @click.self="deviceModal.busy ? null : (deviceModal = null)">
+    <Transition name="modal">
+    <div v-if="deviceModal" class="bt-modal-mask" @click.self="deviceModal.busy ? null : (deviceModal = null, restoreFocus())">
       <div class="bt-modal" role="dialog" aria-modal="true" aria-label="添加设备">
         <div class="bt-modal__head">
           <div class="bt-modal__title">添加设备（Mac / iPhone / Win）</div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="deviceModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="deviceModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
           <label class="bt-field"><span class="bt-field__label">设备名称</span>
             <input v-model="deviceModal.name" class="bt-input" type="text" placeholder="如 iPhone 15" @keyup.enter="createDevice" />
           </label>
           <p class="mesh-hint">面板生成密钥并热加入现役 hub；创建后点成员表「凭证 / QR」扫码导入。</p>
-          <div v-if="deviceModal.error" class="bt-text-danger mesh-hint" role="alert">{{ deviceModal.error }}</div>
+          <div v-if="deviceModal.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ deviceModal.error }}
+          </div>
         </div>
         <div class="mesh-modal-foot">
           <button class="bt-btn bt-btn--primary" type="button" :disabled="deviceModal.busy" @click="createDevice">
@@ -827,13 +909,15 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 设备凭证 / QR -->
+    <Transition name="modal">
     <div v-if="confModal" class="bt-modal-mask" @click.self="confModal = null">
       <div class="bt-modal" role="dialog" aria-modal="true" aria-label="设备凭证">
         <div class="bt-modal__head">
           <div class="bt-modal__title">凭证 · {{ confModal.peer.name }}</div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="confModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="confModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body mesh-conf">
           <div v-if="hubs.length > 1" class="mesh-conf-hubs">
@@ -847,7 +931,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           </div>
           <div v-if="confModal.loading" style="padding: 24px; text-align: center">生成中…</div>
           <template v-else-if="confModal.error">
-            <div class="bt-text-danger" role="alert">{{ confModal.error }}</div>
+            <div class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ confModal.error }}
+            </div>
           </template>
           <template v-else>
             <img :src="confModal.dataUrl" alt="WireGuard 配置二维码" class="mesh-qr" />
@@ -859,9 +945,11 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 任务进度 -->
-    <div v-if="taskModal" class="bt-modal-mask" @click.self="taskModal.task && taskModal.task.status !== 'running' ? (taskModal = null) : null">
+    <Transition name="modal">
+    <div v-if="taskModal" class="bt-modal-mask" @click.self="taskModal.task && taskModal.task.status !== 'running' ? closeTaskModal() : null">
       <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="任务进度">
         <div class="bt-modal__head">
           <div class="bt-modal__title">
@@ -870,7 +958,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               {{ taskModal.task.status === 'running' ? '执行中' : taskModal.task.status === 'done' ? '完成' : taskModal.task.status === 'partial' ? '部分成功' : '失败' }}
             </span>
           </div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="taskModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeTaskModal()">关闭</button>
         </div>
         <div class="bt-modal__body">
           <div v-for="st in taskModal.task?.steps || []" :key="st.id" class="mesh-step">
@@ -882,24 +970,30 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             </div>
             <pre v-if="st.log" class="mesh-step__log">{{ st.log }}</pre>
           </div>
-          <div v-if="taskModal.error" class="bt-text-danger mesh-hint" role="alert">{{ taskModal.error }}</div>
+          <div v-if="taskModal.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ taskModal.error }}
+          </div>
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 资产中转 -->
-    <div v-if="assetModal" class="bt-modal-mask" @click.self="assetModal.busy ? null : (assetModal = null)">
+    <Transition name="modal">
+    <div v-if="assetModal" class="bt-modal-mask" @click.self="assetModal.busy ? null : (assetModal = null, restoreFocus())">
       <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="资产中转">
         <div class="bt-modal__head">
           <div class="bt-modal__title">资产中转（GitHub 加速测速 · 面板缓存 · SSH 推送）</div>
-          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal = null">关闭</button>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
           <p class="mesh-hint">
             国内节点难以直连 GitHub 时，在此登记资产（官方直链 / 加速镜像 / 自有仓库 release），
             面板测速择优下载校验后缓存，再经 SSH 推送到节点（节点零外网依赖）。
           </p>
-          <div v-if="assetModal.error" class="bt-text-danger mesh-hint" role="alert">{{ assetModal.error }}</div>
+          <div v-if="assetModal.error" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ assetModal.error }}
+          </div>
           <div class="mesh-asset-head">
             <select v-model="assetServerId" class="bt-select" style="max-width: 220px">
               <option v-for="p in serverPeers" :key="p.server_id" :value="p.server_id">推送目标：{{ p.name }}</option>
@@ -955,6 +1049,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </div>
+    </Transition>
 
     <!-- 移出确认 -->
     <ConfirmDialog
@@ -1005,13 +1100,13 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 }
 .mesh-quota__bar {
   height: 100%;
-  background: #31b06d;
+  background: var(--bt-success-500, #10b981);
 }
 .mesh-quota__bar.is-warn {
-  background: #e0a23c;
+  background: var(--bt-warning-500, #f59e0b);
 }
 .mesh-quota__bar.is-full {
-  background: #d64545;
+  background: var(--bt-danger-500, #d64545);
 }
 .mesh-topo {
   height: 340px;

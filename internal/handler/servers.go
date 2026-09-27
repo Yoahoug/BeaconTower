@@ -386,6 +386,17 @@ func (a *App) DeleteServer(c *gin.Context) {
 		middleware.Fail(c, 1001, "本机节点不可删除（面板自身数据源）")
 		return
 	}
+	// WG 组网关联：成员须先移出（走 RemovePeer 清理节点配置）；hub 槽位随级联删除，
+	// 但若删的是现役 hub 需先清空指针，否则 active_hub_server_id 悬空导致组网误判
+	if peer, _ := a.DB.GetWGPeerByServer(id); peer != nil {
+		middleware.Fail(c, 1004, "该节点已加入 WG 组网，请先在「WG 组网」页面将其移出后再删除")
+		return
+	}
+	if hub, _ := a.DB.GetWGHub(id); hub != nil {
+		if netRow, _ := a.DB.GetWGNetwork(); netRow != nil && netRow.ActiveHubServerID == id {
+			_ = a.DB.SetActiveHub(0, nowUnix())
+		}
+	}
 	if err := a.DB.DeleteServer(id); err != nil {
 		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
 		return

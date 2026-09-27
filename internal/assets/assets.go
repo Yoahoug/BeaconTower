@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -174,7 +175,8 @@ func download(ctx context.Context, client *http.Client, url, dest string, maxSiz
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return 0, err
 	}
-	tmp := dest + ".part"
+	// 并发下载同一资产时避免共用 .part 临时文件（交错写入会损坏缓存）
+	tmp := dest + ".part." + strconv.FormatInt(time.Now().UnixNano(), 36)
 	f, err := os.Create(tmp)
 	if err != nil {
 		return 0, err

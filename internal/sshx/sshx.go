@@ -202,6 +202,12 @@ func Dial(ctx context.Context, cred *Cred, storedFP string, strict bool) (*Conn,
 	var client *ssh.Client
 	select {
 	case <-ctx.Done():
+		// ctx 取消时 dial goroutine 可能已建连成功：异步回收，避免连接泄漏
+		go func() {
+			if o := <-dch; o.client != nil {
+				_ = o.client.Close()
+			}
+		}()
 		return nil, fmt.Errorf("连接超时：主机不可达（%s 超时）", DialTimeout)
 	case o := <-dch:
 		if o.err != nil {

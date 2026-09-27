@@ -28,9 +28,9 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
 			case <-stop:
 				return
 			case <-cleanTick.C:
-				cleanup(db)
+				safeRun("cleanup", func() { cleanup(db) })
 			case <-aggTick.C:
-				aggregate(db)
+				safeRun("aggregate", func() { aggregate(db) })
 			case <-sessTick.C:
 				_ = db.CleanExpiredSessions(time.Now().Unix())
 			case <-wgTick.C:
@@ -39,16 +39,28 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
 				}
 			}
 			// 月翻转检查放在所有 case 之后统一做（ticker 周期远小于月份粒度）
-			if m := time.Now().Format("2006-01"); m != curMonth {
-				curMonth = m
-				if err := db.ResetAllMonthKwh(); err != nil {
-					log.Printf("[tasks] reset month kwh: %v", err)
-				} else {
-					log.Printf("[tasks] month rolled over to %s, month_kwh reset", m)
+			safeRun("month-roll", func() {
+				if m := time.Now().Format("2006-01"); m != curMonth {
+					curMonth = m
+					if err := db.ResetAllMonthKwh(); err != nil {
+						log.Printf("[tasks] reset month kwh: %v", err)
+					} else {
+						log.Printf("[tasks] month rolled over to %s, month_kwh reset", m)
+					}
 				}
-			}
+			})
 		}
 	}()
+}
+
+// safeRun 维护任务防 panic 停摆：任何周期任务 panic 只记日志，循环继续。
+func safeRun(name string, f func()) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[tasks] %s panic: %v", name, p)
+		}
+	}()
+	f()
 }
 
 func retentionOf(db *store.DB) (sampleDays int, hourlyDays int) {

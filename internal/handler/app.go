@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"sync"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/collector"
@@ -21,6 +22,10 @@ type App struct {
 	Blocker *middleware.LoginBlocker
 	SetupRL *middleware.RateLimiter
 	LoginRL *middleware.RateLimiter
+
+	// wgOpMu 串行化 WG 任务型操作：HasRunningWGTask 是 check-then-act，
+	// 进程内互斥防止双击/并发请求同时通过检查插入两个 running 任务
+	wgOpMu sync.Mutex
 }
 
 func nowUnix() int64 { return time.Now().Unix() }
