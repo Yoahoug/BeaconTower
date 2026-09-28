@@ -220,7 +220,7 @@
   padding: 8px 12px;
   border-radius: var(--bt-radius-md);
   border: 1px solid var(--bt-border-strong);
-  background: var(--bt-bg-input);
+  background-color: var(--bt-bg-input);
   color: var(--bt-text-1);
   font-size: var(--bt-font-md);
   font-family: inherit;
@@ -246,10 +246,24 @@
 .bt-textarea:focus,
 .bt-select:focus {
   border-color: var(--bt-brand-500);
-  background: #fff;
+  background-color: #fff;
   box-shadow:
     0 0 0 3px rgba(14, 165, 233, 0.16),
     0 2px 10px -2px rgba(14, 165, 233, 0.25);
+}
+
+/* 下拉框自绘箭头：原生箭头几乎贴住右边框，这里统一内缩 12px（与左内边距对齐）。
+   两点约束：stroke 只能写字面色值（data URI 用不了 CSS 变量），取 --bt-text-3；
+   上面 hover/focus 规则只能用 background-color，否则 background 简写会把箭头冲掉 */
+.bt-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2366708c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.2 6.2 8 10l3.8-3.8'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px 16px;
+  cursor: pointer;
 }
 
 .bt-textarea {
