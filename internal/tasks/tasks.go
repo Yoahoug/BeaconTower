@@ -131,15 +131,21 @@ func aggregateDailyTraffic(db *store.DB) {
 }
 
 // trafficDelta [from,to] 窗口流量：首个与最后一个样本的累计计数器差。
-// 样本不足 2 条、计数器未初始化（0）或发生回绕（重启归零）时返回 false（不写库）。
+// 样本不足 2 条、窗口内计数器从未初始化、或发生回绕（重启归零）时返回 false（不写库）。
 func trafficDelta(db *store.DB, serverID, from, to int64) (inTotal, outTotal int64, ok bool) {
 	samples, err := db.SamplesInRange(serverID, from, to, 0)
 	if err != nil || len(samples) < 2 {
 		return 0, 0, false
 	}
 	first, last := samples[0], samples[len(samples)-1]
+	// 窗口头部可能是 NULL/0 旧样本（列引入前或采集端未上报）：跳到首个非零样本，
+	// 否则凌晨新数据会把整天判成「未初始化」而永远不写（今日流量卡片空白的根因）
+	i := 0
+	for ; i < len(samples)-1 && (samples[i].NetInTotal <= 0 || samples[i].NetOutTotal <= 0); i++ {
+	}
+	first = samples[i]
 	if first.NetInTotal <= 0 || first.NetOutTotal <= 0 {
-		return 0, 0, false // 旧数据（schema v5 前无累计列）
+		return 0, 0, false // 整窗无有效计数
 	}
 	if last.NetInTotal < first.NetInTotal || last.NetOutTotal < first.NetOutTotal {
 		return 0, 0, false // 回绕/重启归零：窗口不可信，跳过
@@ -198,8 +204,11 @@ func aggregate(db *store.DB) {
 			}
 		}
 		n := float64(len(samples))
-		// 小时累计流量：首尾累计计数器差（非负；回绕/重启归零则该小时置 0）
-		first, last := samples[0], samples[len(samples)-1]
+		// 小时累计流量：首尾累计计数器差（首样本为 NULL/0 时跳到首个非零样本）
+		fi, lo := 0, len(samples)-1
+		for ; fi < lo && (samples[fi].NetInTotal <= 0 || samples[fi].NetOutTotal <= 0); fi++ {
+		}
+		first, last := samples[fi], samples[lo]
 		var inTot, outTot int64
 		if first.NetInTotal > 0 && last.NetInTotal >= first.NetInTotal {
 			inTot = last.NetInTotal - first.NetInTotal
