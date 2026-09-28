@@ -18,10 +18,12 @@ chown -R 10001:10001 /data/appdata/beacontower/data
 # 3. 拉镜像并启动
 cd /data/appdata/beacontower && docker compose pull && docker compose up -d
 
-# 4. 验证
+# 4. 验证（端口绑定组网地址 10.66.66.66，宿主 127.0.0.1 连不通）
 docker ps --filter name=beacontower --format "{{.Status}}"   # healthy
-curl -s http://127.0.0.1:8091/healthz                         # OK
-curl -s http://127.0.0.1:8091/api/v1/public/servers           # 本机节点 online
+curl -s http://10.66.66.66:8091/healthz                       # OK
+curl -s http://10.66.66.66:8091/api/v1/public/servers         # 本机节点 online
+# 前端是否已更新：入口 chunk hash 应变化，且包含新功能标记
+curl -s http://10.66.66.66:8091/ | grep -oE 'assets/index-[^"]+\.js'
 ```
 
 ## 日常更新（GitHub 构建 → 服务器拉取）
@@ -84,6 +86,7 @@ services:
 | 升级到新口径后，「今日流量」出现一次性巨幅跳变（如本机今日 +157 GB） | 日/小时聚合是「窗口首尾累计计数器差」，累计计数器口径切换（容器视图→宿主网卡）当天会形成一次巨幅跳变 | 仅影响升级当天：升级后把当天**旧口径样本**的累计字段置空，下一次聚合（≤10min）即按新基线重算。`TODAY=$(date -d "today 00:00" +%s)`；`NEW=$(sqlite3 $DB "SELECT min(ts) FROM metric_sample WHERE server_id=1 AND ts>=$TODAY AND net_in_total>1000000000")`；`sqlite3 $DB "UPDATE metric_sample SET net_in_total=NULL,net_out_total=NULL WHERE server_id=1 AND ts>=$TODAY AND ts<$NEW"`（先 `.backup` 热备份）。历史日行不受影响，次日自愈 |
 | 面板 CPU 使用率与网络速率**全部节点恒为 0**（内存/磁盘/负载正常） | `applySample` 漏写差分基线（`prevState` 的 ts/cpuTotal/netRx 从不回写），两级差分永不成立 | 已修（`diffMetrics` 统一算差值并写回基线，含回归单测）；升级到含该修复的镜像即可自愈，无需改数据 |
 | 任务永远「执行中」，所有组网按钮返回 1004 | 执行 goroutine 意外退出/早退漏收尾，`wg_task.status` 卡在 running | 启动清理 + **运行时看门狗**（5min ticker 回收超过 30min 的 running 任务）；早退路径已补 `FinishWGTask` |
+| 宿主 `curl 127.0.0.1:8091` 连接失败（healthz 000） | compose 端口绑定的是组网地址 `10.66.66.66:8091`，未绑 loopback（容器内 healthcheck 走 127.0.0.1:8080 不受影响） | 验证命令统一用 `http://10.66.66.66:8091/...`（见「验证」段） |
 
 ## 相关入口
 
