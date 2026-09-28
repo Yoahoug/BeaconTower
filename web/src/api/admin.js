@@ -40,6 +40,8 @@ const realAdmin = {
   wgPlan: (payload) => http.post('/v1/admin/wg/plan', payload, { timeoutMs: 60000, retries: 0 }),
   wgApply: (payload) => http.post('/v1/admin/wg/apply', payload, { timeoutMs: 30000, retries: 0 }),
   wgImport: (payload) => http.post('/v1/admin/wg/import', payload, { timeoutMs: 30000, retries: 0 }),
+  // 登记备援：只读目标节点 conf 建槽位，不改对方配置（MeshView「未纳管 → 准备为备援」）
+  wgRegisterStandby: (serverId) => http.post('/v1/admin/wg/hubs/standby', { server_id: serverId }, { timeoutMs: 60000, retries: 0 }),
   wgSwitchHub: (payload) => http.post('/v1/admin/wg/switch-hub', payload, { timeoutMs: 30000, retries: 0 }),
   wgPatrol: () => http.post('/v1/admin/wg/patrol', {}, { timeoutMs: 45000, retries: 0 }),
   wgTask: (id) => http.get(`/v1/admin/wg/tasks/${id}`, { retries: 0 }),
@@ -89,6 +91,7 @@ export const adminClient = {
   wgPlan: (payload) => withTimeout(realAdmin.wgPlan(payload), 70000),
   wgApply: (payload) => withTimeout(realAdmin.wgApply(payload), 35000),
   wgImport: (payload) => withTimeout(realAdmin.wgImport(payload), 35000),
+  wgRegisterStandby: (serverId) => withTimeout(realAdmin.wgRegisterStandby(serverId), 45000),
   wgSwitchHub: (payload) => withTimeout(realAdmin.wgSwitchHub(payload), 35000),
   wgPatrol: () => withTimeout(realAdmin.wgPatrol(), 50000),
   wgTask: (id) => realAdmin.wgTask(id),

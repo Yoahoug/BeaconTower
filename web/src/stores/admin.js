@@ -181,6 +181,13 @@ export const useAdminStore = defineStore('admin', {
       return r
     },
 
+    // 未纳管节点 → 备援槽位（只读对方 conf；成功后该节点即进网）
+    async registerStandby(serverId) {
+      const r = await adminClient.wgRegisterStandby(serverId)
+      await this.loadWg()
+      return r
+    },
+
     async patrolNow() {
       await adminClient.wgPatrol()
       await this.loadWg()

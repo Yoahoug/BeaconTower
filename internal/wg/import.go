@@ -21,6 +21,26 @@ type ImportInput struct {
 	Candidates      []int64 `json:"candidates"` // 参与匹配的 SSH 服务器（含 hub/standby 时自动跳过）
 }
 
+// RegisterStandby 把一台已配好 WG 的节点登记为备援 hub 槽位：
+// 只读取它的 conf/dump 取公钥、端口与端点，不推送任何配置（真正「校正备援」在切换任务里做）。
+// 用于「已经手工配好备源、只是面板不知道」的场景。
+func (r *Runner) RegisterStandby(ctx context.Context, serverID int64) (*store.WGHub, error) {
+	network, err := r.DB.GetWGNetwork()
+	if err != nil {
+		return nil, err
+	}
+	if network == nil {
+		return nil, errors.New("尚未组网：请先用组网向导或导入现有网络")
+	}
+	if network.ActiveHubServerID == serverID {
+		return nil, errors.New("该节点已是现役中心，无需登记为备援")
+	}
+	if err := r.importStandby(ctx, network, serverID); err != nil {
+		return nil, err
+	}
+	return r.DB.GetWGHub(serverID)
+}
+
 // hubPeerState 从现役 hub 读到的 peer 摘要。
 type hubPeerState struct {
 	PublicKey   string

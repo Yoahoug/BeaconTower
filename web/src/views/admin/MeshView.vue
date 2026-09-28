@@ -31,6 +31,11 @@ const hubs = computed(() => admin.wgOverview?.hubs || [])
 const peers = computed(() => admin.wgOverview?.peers || [])
 const servers = computed(() => admin.wgOverview?.servers || [])
 const activeHub = computed(() => hubs.value.find((h) => h.is_active) || null)
+const standbyHubs = computed(() => hubs.value.filter((h) => !h.is_active))
+// 中心区排序：现役永远排第一张卡（备援在后，未纳管垫底）
+const orderedHubs = computed(() => [...hubs.value].sort((a, b) => Number(b.is_active) - Number(a.is_active)))
+// 网外节点（未纳管，本机除外）：中心区第三段，带「准备为备援」入口
+const unmanagedServers = computed(() => servers.value.filter((s) => !s.is_self && !s.in_network))
 const runningTask = computed(() => !!admin.wgOverview?.running_task)
 const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'))
 const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
@@ -67,7 +72,7 @@ function buildTopoOption() {
       id: `hub-${h.server_id}`,
       name: `${h.is_active ? '★ ' : ''}${h.name || `节点${h.server_id}`}`,
       symbolSize: 54,
-      category: h.is_active ? '现役 hub' : '备胎 hub',
+      category: h.is_active ? '现役中心' : '备援中心',
       itemStyle: { color: h.is_active ? '#0EA5E9' : '#64748B' },
       label: { show: true, formatter: `${h.name}\n:${h.listen_port}` },
       tooltip: { formatter: `${h.endpoint || '端点未知'} · ${cat(h.status)}` },
@@ -95,7 +100,7 @@ function buildTopoOption() {
   }
   return {
     tooltip: {},
-    legend: { data: ['现役 hub', '备胎 hub', '在线', '离线', '待接入'], bottom: 0, textStyle: { fontSize: 11 } },
+    legend: { data: ['现役中心', '备援中心', '在线', '离线', '待接入'], bottom: 0, textStyle: { fontSize: 11 } },
     series: [{
       type: 'graph',
       layout: 'force',
@@ -316,6 +321,24 @@ async function runImport() {
   }
 }
 
+// ---------- 未纳管节点登记为备援 ----------
+// { [serverId]: { busy, error } }：错误就地展示（常见：节点上没有 /etc/wireguard/wg0.conf）
+const standbyReg = ref({})
+
+async function registerStandby(s) {
+  standbyReg.value = { ...standbyReg.value, [s.id]: { busy: true, error: '' } }
+  try {
+    const r = await admin.registerStandby(s.id)
+    ui.notify(`${s.name} 已登记为备援中心（${r.endpoint || '端点未知'}）`)
+  } catch (e) {
+    if (standbyReg.value[s.id]) {
+      standbyReg.value = { ...standbyReg.value, [s.id]: { busy: false, error: e?.message || '登记备援失败' } }
+    }
+    return
+  }
+  standbyReg.value = { ...standbyReg.value, [s.id]: { busy: false, error: '' } }
+}
+
 // ---------- hub 切换 ----------
 const switchModal = ref(null)
 const switchTargetId = ref(0)
@@ -324,7 +347,7 @@ const switchCandidates = computed(() => hubs.value.filter((h) => !h.is_active))
 
 function openSwitch(hub) {
   if (!switchCandidates.value.length) {
-    ui.notify('暂无备胎 hub：先把另一台公网节点加入为备援')
+    ui.notify('暂无备援中心：先在中心区把网外节点登记为备援')
     return
   }
   switchTargetId.value = hub?.server_id || switchCandidates.value[0].server_id
@@ -645,20 +668,20 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
 
-      <!-- hub 额度卡 -->
+      <!-- 中心节点：现役在前 / 备援在后 / 网外未纳管（可登记为备援） -->
       <div class="mesh-hubs">
-        <div v-for="h in hubs" :key="h.server_id" class="bt-card bt-card--hover">
+        <div v-for="h in orderedHubs" :key="h.server_id" class="bt-card bt-card--hover">
           <div class="bt-card__head">
             <div class="bt-card__title">
               {{ h.name }}
-              <span class="bt-tag" :class="h.is_active ? 'bt-tag--success' : ''">{{ h.is_active ? '现役' : '备胎' }}</span>
+              <span class="bt-tag" :class="h.is_active ? 'bt-tag--success' : ''">{{ h.is_active ? '现役' : '备援' }}</span>
               <span class="bt-tag" :class="statusTag(h.status).cls">{{ statusTag(h.status).text }}</span>
             </div>
           </div>
           <div class="bt-card__body">
             <div class="mesh-hub-line mono">{{ h.endpoint || '端点未知' }}</div>
             <div class="mesh-hub-line">
-              本月计费流量（出方向）<b class="tnum">{{ fmtBytes(h.month_billed) }}</b>
+              本月出向（计费）<b class="tnum">{{ fmtBytes(h.month_billed) }}</b>
               <span v-if="h.quota_gb" class="tnum">/ {{ h.quota_gb }} GB</span>
             </div>
             <div v-if="h.quota_gb" class="mesh-quota">
@@ -669,16 +692,44 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               />
             </div>
             <div class="mesh-hub-line mesh-hub-sub">
-              双向合计 {{ fmtBytes(h.month_rx + h.month_tx) }}（入方向不计费，仅供参考）
+              双向合计 {{ fmtBytes(h.month_rx + h.month_tx) }} · 入向不计费
             </div>
             <div v-if="h.last_error" class="mesh-hub-error" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ h.last_error }}
             </div>
             <div class="mesh-hub-actions">
-              <button v-if="!h.is_active" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openSwitch(h)">
+              <template v-if="h.is_active">
+                <span v-if="standbyHubs.length" class="bt-tag bt-tag--info">流量额度用完时切到备援</span>
+                <span v-else class="mesh-hub-sub">尚无备援：登记网外节点后即可一键切换</span>
+              </template>
+              <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openSwitch(h)">
                 <AppIcon name="pulse" aria-hidden="true" />切换为现役
               </button>
-              <span v-else class="bt-tag bt-tag--info">流量额度用完时切到备胎</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-for="s in unmanagedServers" :key="'idle-' + s.id" class="bt-card mesh-hub-idle">
+          <div class="bt-card__head">
+            <div class="bt-card__title">
+              {{ s.name }}
+              <span class="bt-tag">未纳管</span>
+            </div>
+          </div>
+          <div class="bt-card__body">
+            <div class="mesh-hub-line mesh-hub-sub">不在本网 · 登记只读取它的 WG 配置，不改动它</div>
+            <div class="mesh-hub-actions">
+              <button
+                class="bt-btn bt-btn--ghost bt-btn--sm"
+                type="button"
+                :disabled="runningTask || !activeHub || standbyReg[s.id]?.busy"
+                @click="registerStandby(s)"
+              >
+                <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '登记中…' : '准备为备援' }}
+              </button>
+            </div>
+            <div v-if="standbyReg[s.id]?.error" class="mesh-hub-error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ standbyReg[s.id].error }}
             </div>
           </div>
         </div>
@@ -793,7 +844,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <template v-else-if="wizard.step === 2 && wizard.plan">
             <div class="mesh-plan-hub">
               <b>★ {{ wizard.plan.hub.name }}</b>
-              <span class="bt-tag bt-tag--info">{{ wizard.plan.hub.role === 'hub' ? '现役中心' : '备胎中心' }} :{{ wizard.plan.hub.listen_port }}</span>
+              <span class="bt-tag bt-tag--info">{{ wizard.plan.hub.role === 'hub' ? '现役中心' : '备援中心' }} :{{ wizard.plan.hub.listen_port }}</span>
               <span v-for="(i, idx) in wizard.plan.hub.issues" :key="idx" class="bt-tag" :class="i.level === 'error' ? 'bt-tag--danger' : 'bt-tag--warning'">{{ i.msg }}</span>
             </div>
             <div v-for="s in wizard.plan.spokes" :key="s.server_id" class="mesh-plan-row">
@@ -950,7 +1001,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               class="bt-btn bt-btn--sm" :class="confModal.hubId === h.server_id ? 'bt-btn--primary' : 'bt-btn--ghost'"
               type="button" @click="openConf(confModal.peer, h.server_id)"
             >
-              {{ h.is_active ? 'A · 现役' : 'B · 备胎' }}（{{ h.name }}）
+              {{ h.is_active ? 'A · 现役' : 'B · 备援' }}（{{ h.name }}）
             </button>
           </div>
           <div v-if="confModal.loading" style="padding: 24px; text-align: center">生成中…</div>
@@ -1107,13 +1158,40 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 }
 .mesh-hubs {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 268px));
+  gap: 10px;
   margin-bottom: 12px;
+  align-items: start;
+}
+/* 中心区卡片刻意做小：信息密度高，不需要铺满整行 */
+.mesh-hubs > .bt-card .bt-card__title {
+  font-size: var(--bt-font-md);
+}
+.mesh-hubs > .bt-card .bt-card__head {
+  padding: var(--bt-space-3) var(--bt-space-4) 0;
+}
+.mesh-hubs > .bt-card .bt-card__body {
+  padding: var(--bt-space-2) var(--bt-space-4) var(--bt-space-4);
+}
+.mesh-hubs .mesh-hub-line {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.mesh-hubs .mesh-hub-actions {
+  margin-top: 6px;
 }
 .mesh-hub-line {
   font-size: 13px;
   margin-bottom: 6px;
+}
+/* 网外未纳管节点：虚框表示「还不属于这张网」 */
+.mesh-hub-idle {
+  border-style: dashed;
+  border-color: var(--bt-border-strong);
+  background: transparent;
+}
+.mesh-hub-idle .mesh-hub-sub {
+  line-height: 1.55;
 }
 .mesh-hub-error {
   color: var(--bt-danger, #d64545);

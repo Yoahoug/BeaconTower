@@ -1009,6 +1009,45 @@ func (a *App) WGImport(c *gin.Context) {
 	middleware.OK(c, gin.H{"task_id": taskID})
 }
 
+type wgStandbyInput struct {
+	ServerID int64 `json:"server_id"`
+}
+
+// WGRegisterStandby 把一台已配好 WG 的节点登记为备援 hub 槽位。
+// 场景：网外还有一台手工配好的备源，面板此前不知道它（导入时没选备援）。
+// 只读该节点的 conf/dump 取公钥、端口、端点后落库；不推送配置、不改对方任何文件。
+func (a *App) WGRegisterStandby(c *gin.Context) {
+	var in wgStandbyInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.ServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 server_id")
+		return
+	}
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
+		return
+	}
+	defer a.wgOpUnlock()
+	srv, _ := a.DB.GetServer(in.ServerID)
+	if srv == nil || srv.IsSelf {
+		middleware.Fail(c, 2010, "节点不存在或不支持（本机不参与组网）")
+		return
+	}
+	if netRow, _ := a.DB.GetWGNetwork(); netRow == nil {
+		middleware.Fail(c, 2010, "尚未初始化组网")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
+	defer cancel()
+	hub, err := a.WG.RegisterStandby(ctx, in.ServerID)
+	if err != nil {
+		middleware.Fail(c, 2010, "登记备援失败: "+err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_standby_register", srv.Name,
+		fmt.Sprintf("endpoint=%s port=%d", hub.Endpoint, hub.ListenPort), ipOf(c))
+	middleware.OK(c, gin.H{"server_id": hub.ServerID, "endpoint": hub.Endpoint,
+		"listen_port": hub.ListenPort, "status": hub.Status})
+}
+
 type wgSwitchInput struct {
 	TargetServerID int64 `json:"target_server_id"`
 	CanaryServerID int64 `json:"canary_server_id"`
