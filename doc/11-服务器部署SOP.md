@@ -53,9 +53,14 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data          # SQLite 库 + master.key
-      # 宿主 /proc 只读挂载：本机节点网络/进程数与 CPU/内存同口径（容器 netns 只见
-      # 面板容器自身流量/进程，与宿主 CPU/内存口径冲突）
+      # 宿主 /proc 只读挂载：本机节点网络/连接数/进程数与 CPU/内存同口径。注意 /proc/net
+      # 是 netns 维度的，采集侧经宿主 PID 1（/host/proc/1/net）读取宿主网卡计数
       - /proc:/host/proc:ro
+      # 宿主 /sys 只读挂载：容器内 /sys 只见容器自身网卡（netns 维度），挂载后才能按
+      # 「物理网卡」口径统计流量（排除 br0/veth/wg0/TUN 与物理网卡重复计数）。
+      # 须挂整个 /sys：class/net/<if>/device 是指向 /sys/devices/... 的符号链接，
+      # 只挂子目录会因链接悬空而判不出物理网卡。未挂载时退化为「流量最大的单接口」。
+      - /sys:/host/sys:ro
       # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
       # 只读挂到 /powercap-ro 兜底，采集脚本自动探测两种布局：
       - /sys/devices/virtual/powercap:/powercap-ro:ro
@@ -74,6 +79,8 @@ services:
 | 容器内读不到 RAPL（`/sys/class/powercap/intel-rapl:0` 符号链接失效） | Docker 默认 MaskedPaths 掩了 `/sys/devices/virtual/powercap` | compose 只读挂载宿主该目录到 `/powercap-ro`；采集脚本（v6503c8a+）自动探测标准路径与兜底路径两种布局 |
 | `/powercap-ro` 能看到目录但 `cat energy_uj` Permission denied | 宿主 energy_uj 权限 0400 root，非 root 容器不可读 | compose 加 `user: root`（i5-6300HQ 实测 total_w/cpu_w/temp/freq 全部出数） |
 | 本机节点网络速率/进程数明显偏小（与宿主对不上） | 容器 netns/pidns 隔离：`/proc/net/dev`、`/proc` 目录只见面板容器自身 | compose 只读挂宿主 `/proc` 到 `/host/proc`（v2026-09-27+ 采集自动优先读取），未挂载时回落容器视图（口径降级）。**线上 compose 若来自更早版本需手工补这一行并 `docker compose up -d` 重建容器** |
+| 本机上下行只有 1~2 KB/s，比宿主真实流量小几个数量级 | `/proc/net` 是 **netns 维度**的（等价 `/proc/self/net`，self＝读取进程）：挂了宿主 `/proc` 后读 `/host/proc/net/dev` 拿到的仍是**面板容器自己**的网卡计数（线上实测 989 KB，宿主 `enp3s0f1` 已 157 GB） | 采集改经宿主 PID 1 读取 `/host/proc/1/net/dev`，tcp/udp 连接数同目录（v2026-09-28+）。升级后本机累计收发计数器与宿主 `/proc/net/dev` 逐字节对齐 |
+| 本机/节点流量偏大或翻倍（桥接、隧道主机） | 原口径把 `/proc/net/dev` 全部非 lo 接口相加，而桥/隧道/veth 的字节数与物理网卡是同一份流量：`br0` 与成员 `enp3s0f1`、`eth0` 与 `wg0`/TUN 各计一次 | 只统计**物理网卡**（sysfs `class/net/<if>/device` 存在＝真实 PCI/USB 设备）；compose 加 `- /sys:/host/sys:ro`（须整目录，否则 device 符号链接悬空）；判据不可用时退化为「累计字节最多的单接口」。远端节点同口径（采集脚本内同一判据） |
 | 面板 CPU 使用率与网络速率**全部节点恒为 0**（内存/磁盘/负载正常） | `applySample` 漏写差分基线（`prevState` 的 ts/cpuTotal/netRx 从不回写），两级差分永不成立 | 已修（`diffMetrics` 统一算差值并写回基线，含回归单测）；升级到含该修复的镜像即可自愈，无需改数据 |
 | 任务永远「执行中」，所有组网按钮返回 1004 | 执行 goroutine 意外退出/早退漏收尾，`wg_task.status` 卡在 running | 启动清理 + **运行时看门狗**（5min ticker 回收超过 30min 的 running 任务）；早退路径已补 `FinishWGTask` |
 

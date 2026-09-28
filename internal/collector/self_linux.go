@@ -105,11 +105,11 @@ func collectSelfLinux(ctx context.Context) (*RawSample, error) {
 	// 网络 / tcp-udp / 进程数：容器部署时 /proc 的 netns/pidns 是面板容器自己的，
 	// 与「本机=宿主机」的 CPU/内存口径冲突。挂载了宿主 /proc（/host/proc）则优先，
 	// 保证本机节点全字段同口径（compose 需加 /proc:/host/proc:ro）。
-	hostProc := hostProcRoot()
-	s.NetRx, s.NetTx = netDevSumFile(filepath.Join(hostProc, "net/dev"))
-	s.TcpConns = connFileCount(filepath.Join(hostProc, "net/tcp")) + connFileCount(filepath.Join(hostProc, "net/tcp6"))
-	s.UdpConns = connFileCount(filepath.Join(hostProc, "net/udp")) + connFileCount(filepath.Join(hostProc, "net/udp6"))
-	s.Processes = pidCount(hostProc)
+	netDir, sysNetRoot := selfNetDir()
+	s.NetRx, s.NetTx = netCounters(filepath.Join(netDir, "dev"), sysNetRoot)
+	s.TcpConns = connFileCount(filepath.Join(netDir, "tcp")) + connFileCount(filepath.Join(netDir, "tcp6"))
+	s.UdpConns = connFileCount(filepath.Join(netDir, "udp")) + connFileCount(filepath.Join(netDir, "udp6"))
+	s.Processes = pidCount(hostProcessDir())
 	// 主机名 / os-release / 内核 / 架构
 	if h, err := os.Hostname(); err == nil {
 		s.Hostname = cleanTrim(h, 64)
@@ -221,22 +221,59 @@ func connFileCount(path string) int {
 	return procConnCount(b)
 }
 
-// netDevSumFile 读指定路径的 net/dev 并聚合（宿主 proc 优先时路径非 /proc/net/dev）。
-func netDevSumFile(path string) (rx, tx uint64) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, 0
+// selfNetDir 返回「本机＝宿主」口径的网络数据目录（含 dev/tcp/udp）与物理判据 sysfs 根。
+//
+// /proc/net 是 netns 维度的（等价 /proc/self/net，self 指读取进程）：把宿主 /proc 挂到
+// /host/proc 后直接读 /host/proc/net/dev 拿到的仍是面板容器自己的网卡计数——这正是
+// 本机上下行长期只有几百字节/秒的原因。宿主 PID 1 恒存在且位于宿主 netns，须经它的
+// 目录访问（/host/proc/1/net/…）。未挂宿主 /proc 时退回本进程 /proc（原生部署即宿主）。
+func selfNetDir() (netDir, sysNetRoot string) {
+	if root := hostProcRoot(); root != "" {
+		if d := filepath.Join(root, "1", "net"); fileExists(filepath.Join(d, "dev")) {
+			return d, hostSysNetRoot()
+		}
+		// 宿主 /proc 已挂但 PID 目录不可读：仍是容器 netns，接口名与宿主 sysfs 对不上，
+		// 不给物理判据（降级为「取流量最大的单接口」）。
+		return filepath.Join(root, "net"), ""
 	}
-	return netDevSum(b)
+	return "/proc/net", "/sys/class/net"
 }
 
-// hostProcRoot 宿主 /proc 挂载点：/host/proc 存在（compose 只读挂 /proc）则用之，
-// 否则用本命名空间 /proc（非容器或未挂载场景）。
+// localScriptEnv 本机（is_self）走脚本路径时的路径注入：容器内 /proc/net、/proc 目录、
+// /sys/class/net 都是面板容器自己的，须指向宿主视图，脚本口径才与原生采集一致。
+func localScriptEnv() []string {
+	netDir, sysNet := selfNetDir()
+	return []string{
+		"BT_NETBASE=" + netDir,
+		"BT_SYSNET=" + sysNet,
+		"BT_PROCDIR=" + hostProcessDir(),
+	}
+}
+
+// hostProcRoot 宿主 /proc 挂载点（compose 只读挂宿主 /proc 到 /host/proc），未挂载返回空。
 func hostProcRoot() string {
-	if _, err := os.Stat("/host/proc/net/dev"); err == nil {
+	if fileExists("/host/proc/1/stat") {
 		return "/host/proc"
 	}
+	return ""
+}
+
+// hostProcessDir 宿主进程目录（进程数口径＝宿主全部 PID），未挂载时退回本容器 /proc。
+func hostProcessDir() string {
+	if root := hostProcRoot(); root != "" {
+		return root
+	}
 	return "/proc"
+}
+
+// hostSysNetRoot 能看到「宿主网卡设备」的 sysfs 目录。
+// 容器内 /sys 是 netns 维度的（只见容器自身网卡），需 compose 只读挂宿主 /sys 到 /host/sys；
+// 未挂载时退回容器 /sys（此时物理判据必然不命中，退化为单接口口径）。
+func hostSysNetRoot() string {
+	if fileExists("/host/sys/class/net") {
+		return "/host/sys/class/net"
+	}
+	return "/sys/class/net"
 }
 
 // pidCount 统计指定 proc 根下的 PID 目录数。

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -17,9 +18,33 @@ import (
 
 // SSHCred 解密后的连接凭据（内存态，不落盘）。见文件底部 SSH 执行段说明。
 
+// collectScriptNet 网络/连接数/进程数采集段，单独成常量以便单测直接执行
+// （netdev_script_test.go 用临时目录经 BT_NETBASE/BT_SYSNET/BT_PROCDIR 注入假 proc 树）。
+const collectScriptNet = `bt_netbase=${BT_NETBASE:-/proc/net}
+bt_sysnet=${BT_SYSNET:-/sys/class/net}
+bt_procdir=${BT_PROCDIR:-/proc}
+# 流量口径（与面板原生采集一致）：只统计物理网卡（sysfs 有 device 链接＝真实 PCI/USB 网卡）。
+# 桥/隧道/veth 与物理网卡是同一份流量（br0 与成员 enp3s0f1 各计一次＝翻倍），故排除；
+# 拿不到判据（无 sysfs）时退化为「累计字节最多的单接口」——绝不重复计数。
+bt_phys=""
+for d in $bt_sysnet/*/device; do
+  [ -e "$d" ] || continue
+  i=${d%/device}; i=${i##*/}
+  [ "$i" = lo ] || bt_phys="$bt_phys $i"
+done
+echo bt_net=$( [ -r $bt_netbase/dev ] && awk -v phys="$bt_phys" '/:/{n=$1; sub(/:$/,"",n); if(n=="lo") next; if(phys!=""){if(index(" "phys" ", " "n" ")==0) next; rx+=$2; tx+=$10; next} if($2+$10>best){best=$2+$10; rx=$2; tx=$10}} END{print rx+0":"tx+0}' $bt_netbase/dev 2>/dev/null || echo 0:0 )
+echo bt_tcp=$( [ -r $bt_netbase/tcp ] && awk 'END{print NR-1+0}' $bt_netbase/tcp 2>/dev/null || echo 0 )
+echo bt_tcp6=$( [ -r $bt_netbase/tcp6 ] && awk 'END{print NR-1+0}' $bt_netbase/tcp6 2>/dev/null || echo 0 )
+echo bt_udp=$( [ -r $bt_netbase/udp ] && awk 'END{print NR-1+0}' $bt_netbase/udp 2>/dev/null || echo 0 )
+echo bt_udp6=$( [ -r $bt_netbase/udp6 ] && awk 'END{print NR-1+0}' $bt_netbase/udp6 2>/dev/null || echo 0 )
+echo bt_proc=$(ls $bt_procdir 2>/dev/null | grep -c '^[0-9]')
+`
+
 // collectScript 单次 exec 采集脚本（doc/02 §4.2 + doc/09 §2.2）。
 // 全部只读：/proc、df、uname、os-release、sysfs 功率/温度接口、出口 IP 回显。
 // 输出多行 key=value，面板侧按白名单键解析。
+// 网络段前缀的 bt_netbase/bt_sysnet/bt_procdir 可由环境变量覆盖：本机节点在容器内
+// 执行本脚本时注入宿主路径（见 RunCollectScript + localScriptEnv），远端节点用默认值。
 const collectScript = `echo bt_begin=1
 echo bt_up_s=$(cut -d. -f1 /proc/uptime 2>/dev/null)
 echo bt_load=$(cat /proc/loadavg 2>/dev/null)
@@ -32,13 +57,7 @@ echo bt_swap_t=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null)
 echo bt_swap_f=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null)
 echo bt_disk=$(df -kP / 2>/dev/null | awk 'END{print $2":"$4}')
 echo bt_disks=$(df -kP -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1{print $6"|"$2"|"$4}' | tr '\n' ';')
-echo bt_net=$(awk '/:/{gsub(/:/," "); if($1!="lo"){rx+=$2;tx+=$10}} END{print rx+0":"tx+0}' /proc/net/dev 2>/dev/null)
-echo bt_tcp=$(awk 'END{print NR-1+0}' /proc/net/tcp 2>/dev/null)
-echo bt_tcp6=$(awk 'END{print NR-1+0}' /proc/net/tcp6 2>/dev/null)
-echo bt_udp=$(awk 'END{print NR-1+0}' /proc/net/udp 2>/dev/null)
-echo bt_udp6=$(awk 'END{print NR-1+0}' /proc/net/udp6 2>/dev/null)
-echo bt_proc=$(ls /proc 2>/dev/null | grep -c '^[0-9]')
-echo bt_os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+` + collectScriptNet + `echo bt_os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 echo bt_hostname=$(hostname 2>/dev/null || uname -n 2>/dev/null || true)
 echo bt_os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 echo bt_os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
@@ -516,6 +535,12 @@ func darwinNetTotals() (rx, tx uint64) {
 	if err != nil {
 		return 0, 0
 	}
+	// 口径与 Linux 侧一致：优先物理接口（en*＝以太网/雷电/USB/无线统一命名），
+	// utun*/awdl*/llw*/bridge*/gif*/stf*/vmenet*/ap*/p2p* 与 en* 是同一份流量（重复计数）。
+	// 一个物理接口都没有时退化为「累计字节最多的单接口」。
+	var physRx, physTx uint64
+	var foundPhys bool
+	var bestRx, bestTx, bestSum uint64
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		// Link 行固定 11 列：<name> <mtu> <Link#n> <mac> Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
@@ -523,10 +548,22 @@ func darwinNetTotals() (rx, tx uint64) {
 		if len(f) != 11 || f[0] == "lo0" || !strings.HasPrefix(f[2], "<Link") {
 			continue
 		}
-		rx += uint64(clampInt(parseInt(f[6]), 0, 1<<60))
-		tx += uint64(clampInt(parseInt(f[9]), 0, 1<<60))
+		r := uint64(clampInt(parseInt(f[6]), 0, 1<<60))
+		t := uint64(clampInt(parseInt(f[9]), 0, 1<<60))
+		if strings.HasPrefix(f[0], "en") {
+			foundPhys = true
+			physRx += r
+			physTx += t
+			continue
+		}
+		if s := r + t; s > bestSum {
+			bestSum, bestRx, bestTx = s, r, t
+		}
 	}
-	return rx, tx
+	if foundPhys {
+		return physRx, physTx
+	}
+	return bestRx, bestTx
 }
 
 func parseU(v string) uint64 {
@@ -622,6 +659,9 @@ func RunCollectScript(ctx context.Context) (*RawSample, error) {
 	}
 	ech := make(chan execOut, 1)
 	cmd := exec.CommandContext(ctx, "sh", "-s")
+	// 本机节点：注入宿主路径（容器内 /proc/net、/sys/class/net 只见面板容器自身），
+	// 远端节点不经此路径，脚本用默认 /proc 视图。
+	cmd.Env = append(os.Environ(), localScriptEnv()...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

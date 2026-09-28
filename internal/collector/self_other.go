@@ -8,3 +8,6 @@ import "context"
 func collectSelfNative(ctx context.Context) (*RawSample, error) {
 	return nil, errNativeUnsupported
 }
+
+// localScriptEnv 本机脚本路径的路径覆盖：非 linux 无 /proc 口径问题（darwin 脚本自带）。
+func localScriptEnv() []string { return nil }

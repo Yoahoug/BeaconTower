@@ -11,9 +11,14 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data        # SQLite 库 + master.key
-      # 宿主 /proc 只读挂载：本机节点的网络/进程数与 CPU/内存同口径（否则容器 netns
-      # 里只统计到面板容器自身的流量与进程，与宿主 CPU/内存口径冲突）
+      # 宿主 /proc 只读挂载：本机节点的网络/连接数/进程数与 CPU/内存同口径。注意
+      # /proc/net 是 netns 维度的，采集侧经宿主 PID 1（/host/proc/1/net）读宿主网卡。
       - /proc:/host/proc:ro
+      # 宿主 /sys 只读挂载：容器内 /sys 只见容器自身网卡（netns 维度），挂载后按
+      # 「物理网卡」口径统计流量（排除 br0/veth/wg0/TUN 与物理网卡重复计数）。
+      # 须挂整个 /sys：class/net/<if>/device 指向 /sys/devices/... 的符号链接，
+      # 只挂子目录会因链接悬空判不出物理网卡。未挂载时退化为「流量最大的单接口」。
+      - /sys:/host/sys:ro
       # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
       # 只读挂到 /powercap-ro 兜底，采集逻辑自动探测两种布局
       - /sys/devices/virtual/powercap:/powercap-ro:ro

@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -48,25 +50,142 @@ func applyMemWiring(s *RawSample, total, avail, free, swapT, swapF int64) {
 	}
 }
 
-// netDevSum 聚合 /proc/net/dev 的 rx/tx 字节（排除 lo，跳过头部两行）。
-func netDevSum(data []byte) (rx, tx uint64) {
+// netDevEntry 单接口收发累计字节（/proc/net/dev 一行）。
+type netDevEntry struct {
+	Name string
+	Rx   uint64
+	Tx   uint64
+}
+
+// netDevEntries 解析 /proc/net/dev（跳过两行头部；含 lo，由调用方决定是否统计）。
+func netDevEntries(data []byte) []netDevEntry {
+	var out []netDevEntry
 	for _, line := range strings.Split(string(data), "\n") {
 		idx := strings.Index(line, ":")
 		if idx < 0 {
 			continue
 		}
 		name := strings.TrimSpace(line[:idx])
-		if name == "lo" || name == "" {
+		if name == "" {
 			continue
 		}
 		f := strings.Fields(line[idx+1:])
 		if len(f) < 10 {
 			continue
 		}
-		rx += parseU(f[0])
-		tx += parseU(f[8])
+		out = append(out, netDevEntry{Name: name, Rx: parseU(f[0]), Tx: parseU(f[8])})
+	}
+	return out
+}
+
+// netDevSum 汇总全部非回环接口的收发字节（无接口判据时的最粗口径，桥/隧道会重复计数）。
+func netDevSum(data []byte) (rx, tx uint64) {
+	for _, e := range netDevEntries(data) {
+		if e.Name == "lo" {
+			continue
+		}
+		rx += e.Rx
+		tx += e.Tx
 	}
 	return
+}
+
+// selectNetIfaces 挑选参与「本机流量」统计的接口，规避重复计数与虚拟接口污染。
+// 判据两级：
+//  1. isPhysical 命中（sysfs 有 device 链接＝真实 PCI/USB 网卡）：只统计物理网卡。
+//     宿主上桥/隧道/veth 的收发字节与物理网卡是同一份流量（br0 与成员 enp3s0f1
+//     各计一次＝翻倍），只算物理网卡既无重复，也覆盖 bond/桥成员分担的场景。
+//  2. 判据不可用（容器未挂宿主 sysfs）或一个都不命中：取累计字节最多的单个接口。
+//     单网卡主机结果一致；多网卡主机低估，但绝不会重复计数。
+//
+// 恒不含 lo；无可用接口返回 nil。
+func selectNetIfaces(entries []netDevEntry, isPhysical func(string) bool) []string {
+	var phys []string
+	var top string
+	var topBytes uint64
+	for _, e := range entries {
+		if e.Name == "lo" {
+			continue
+		}
+		if isPhysical != nil && isPhysical(e.Name) {
+			phys = append(phys, e.Name)
+			continue
+		}
+		if n := e.Rx + e.Tx; n > topBytes {
+			topBytes, top = n, e.Name
+		}
+	}
+	if len(phys) > 0 {
+		return phys
+	}
+	if top != "" {
+		return []string{top}
+	}
+	return nil
+}
+
+// sumNetIfaces 按接口名集合求收发字节之和（未出现的名字忽略）。
+func sumNetIfaces(entries []netDevEntry, names []string) (rx, tx uint64) {
+	if len(names) == 0 {
+		return 0, 0
+	}
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	for _, e := range entries {
+		if want[e.Name] {
+			rx += e.Rx
+			tx += e.Tx
+		}
+	}
+	return
+}
+
+// netCounters 读 net/dev 文件并按「物理网卡优先」口径汇总收发字节。
+// sysNetRoot 为可用于物理判据的 sysfs class/net 目录（空则不判物理，退化取单接口）。
+func netCounters(devFile, sysNetRoot string) (rx, tx uint64) {
+	b, err := os.ReadFile(devFile)
+	if err != nil {
+		return 0, 0
+	}
+	entries := netDevEntries(b)
+	names := selectNetIfaces(entries, func(name string) bool {
+		return isPhysicalNetIface(sysNetRoot, name)
+	})
+	if len(names) == 0 {
+		return netDevSum(b)
+	}
+	return sumNetIfaces(entries, names)
+}
+
+// isPhysicalNetIface 判据：<sysNetRoot>/<name>/device 存在 => 真实 PCI/USB 网卡。
+// 桥（br0/br-*/docker0/virbr0）、veth、隧道（wg0/tun 及自定义命名的 tun，如 SakuraiTunnel）、
+// bond、macvlan/vlan 均无该链接，从而被排除，避免与物理网卡重复计数。
+// sysNetRoot 为空时不做判定（返回 false，由 selectNetIfaces 退化取单接口）。
+func isPhysicalNetIface(sysNetRoot, name string) bool {
+	if sysNetRoot == "" || !validIfaceName(name) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(sysNetRoot, name, "device"))
+	return err == nil
+}
+
+// validIfaceName 接口名白名单字符集（内核允许的字符），同时挡住路径穿越。
+func validIfaceName(name string) bool {
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '.' || c == ':' || c == '@':
+		default:
+			return false
+		}
+	}
+	return name != "." && name != ".."
 }
 
 // procConnCount 统计 /proc/net/{tcp,tcp6,udp,udp6} 条目数（首行 header 不计）。
