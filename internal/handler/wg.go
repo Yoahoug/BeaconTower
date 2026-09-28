@@ -324,6 +324,9 @@ func (a *App) WGPlan(c *gin.Context) {
 	}
 	hubIssues := issuesByServer[hubID]
 	delete(issuesByServer, hubID)
+	if udpIss, _ := a.wgUDPProbeIssues(ctx, hubID, hubPort); len(udpIss) > 0 {
+		hubIssues = append(hubIssues, udpIss...)
+	}
 	middleware.OK(c, gin.H{
 		"network": gin.H{"subnet": netRow.Subnet, "hub_ip": netRow.HubIP, "iface": netRow.Iface,
 			"keepalive": netRow.Keepalive, "mtu": netRow.MTU},
@@ -332,6 +335,50 @@ func (a *App) WGPlan(c *gin.Context) {
 		"blocked": wg.HasErr(hubIssues),
 	})
 	a.audit(a.actorOf(c), "wg_plan", fmt.Sprintf("hub:%d", hubID), "预检探测", ipOf(c))
+}
+
+// wgUDPProbeIssues 面板侧 UDP 可达性预检，只产出 Warn 级提示（不阻断向导：探测受面板出口环境影响，
+// 一律阻断会误伤；硬门禁放在切换/接管这类会动成员的动作里）。
+// 手段：中心已有公钥且存在面板托管成员时发真握手（最准，通了不提示、不通才提示）；
+// 否则退化为 ICMP 粗判（区分「路径通但没监听」与「无法确认放行」）。
+// 第二个返回值是探测方式："handshake"（真握手，结论可靠）/ "reach"（粗判，仅提示）/ "none"（未探测）。
+func (a *App) wgUDPProbeIssues(ctx context.Context, hubID int64, port int) ([]wg.Issue, string) {
+	if port <= 0 {
+		return nil, "none"
+	}
+	hubRow, _ := a.DB.GetWGHub(hubID)
+	endpoint := ""
+	if hubRow != nil {
+		endpoint = wg.HubEndpointOnPort(hubRow.Endpoint, port)
+	}
+	if endpoint == "" {
+		endpoint = a.WG.ResolveEndpoint(hubID, port)
+	}
+	if endpoint == "" {
+		return nil, "none"
+	}
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 12*time.Second)
+	defer cancel()
+	// 已知公钥的中心：真握手
+	if hubRow != nil && wg.ValidKey(hubRow.PublicKey) {
+		out, err := a.WG.ProbeHubUDP(pctx, hubRow, 2500*time.Millisecond)
+		if err == nil && !out.Skipped {
+			if !out.Result.OK {
+				return []wg.Issue{{Level: wg.Warn, Msg: out.FailMessage(port)}}, "handshake"
+			}
+			return nil, "handshake"
+		}
+	}
+	// 首次组网 / 无托管私钥：粗判
+	hint, err := wg.ProbeUDPReach(pctx, endpoint, 2*time.Second)
+	if err != nil {
+		return nil, "none"
+	}
+	expectRunning := hubRow != nil && strings.TrimSpace(hubRow.Endpoint) != ""
+	if msg, need := wg.ReachHintMessage(port, endpoint, hint, expectRunning); need {
+		return []wg.Issue{{Level: wg.Warn, Msg: msg}}, "reach"
+	}
+	return nil, "reach"
 }
 
 // wgPlanHub 解析/校验 plan 的中心节点，返回 (hubID, port, blocked, 视图)。
@@ -1044,8 +1091,14 @@ func (a *App) WGRegisterStandby(c *gin.Context) {
 	}
 	a.audit(a.actorOf(c), "wg_standby_register", srv.Name,
 		fmt.Sprintf("endpoint=%s port=%d", hub.Endpoint, hub.ListenPort), ipOf(c))
+	// 面板侧 UDP 实测：登记成功后顺手验证「这台备援真的能被握手到吗」
+	iss, mode := a.wgUDPProbeIssues(ctx, hub.ServerID, hub.ListenPort)
+	udp := gin.H{"checked": mode != "none", "mode": mode, "ok": len(iss) == 0, "hint": ""}
+	if len(iss) > 0 {
+		udp["hint"] = iss[0].Msg
+	}
 	middleware.OK(c, gin.H{"server_id": hub.ServerID, "endpoint": hub.Endpoint,
-		"listen_port": hub.ListenPort, "status": hub.Status})
+		"listen_port": hub.ListenPort, "status": hub.Status, "udp": udp})
 }
 
 type wgSwitchInput struct {

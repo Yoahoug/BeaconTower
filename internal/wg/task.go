@@ -170,7 +170,12 @@ func (r *Runner) RunApply(taskID int64) {
 			log.Printf("[wg] task %d hub step %d 失败: %v", taskID, st.ID, err)
 		} else {
 			okN.Add(1)
-			_ = r.DB.FinishWGTaskStep(st.ID, "ok", "", time.Now().Unix())
+			// 配置完成即实测：面板侧对中心端点发真握手，结论写进步骤日志
+			note := ""
+			if hubRow, _ := r.DB.GetWGHub(st.ServerID.Int64); hubRow != nil {
+				note = r.HubUDPNote(context.Background(), hubRow, hubRow.ListenPort, false)
+			}
+			_ = r.DB.FinishWGTaskStep(st.ID, "ok", note, time.Now().Unix())
 		}
 	}
 	// 2) spokes 并行
@@ -201,6 +206,32 @@ func (r *Runner) RunApply(taskID int64) {
 		}(st)
 	}
 	runWG.Wait()
+
+	// 2.5) spoke 就位后再对中心补一次真握手实测：此时新成员密钥已入库，探针可用
+	//（hub 步骤刚开始时还没有任何面板托管成员，只能写「未实测」）。
+	cur, _ := r.DB.ListWGTaskSteps(taskID)
+	logByStep := map[int64]string{}
+	for _, st := range cur {
+		logByStep[st.ID] = st.Log
+	}
+	for _, st := range steps {
+		role := roleByServer[st.ServerID.Int64]
+		if role != string(RoleHub) && role != string(RoleStandby) {
+			continue
+		}
+		hubRow, _ := r.DB.GetWGHub(st.ServerID.Int64)
+		if hubRow == nil {
+			continue
+		}
+		note := r.HubUDPNote(context.Background(), hubRow, hubRow.ListenPort, true)
+		if note == "" {
+			continue
+		}
+		if prev := strings.TrimSpace(logByStep[st.ID]); prev != "" {
+			note = prev + "；" + note
+		}
+		_ = r.DB.FinishWGTaskStep(st.ID, "ok", note, time.Now().Unix())
+	}
 
 	// 3) 汇总
 	status := "done"

@@ -72,6 +72,15 @@ func ValidKey(s string) bool {
 	return err == nil && len(b) == 32
 }
 
+// decodeKey base64 → 32 字节密钥（探测/握手构造用）。
+func decodeKey(s string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+	if err != nil || len(b) != 32 {
+		return nil, errors.New("密钥格式无效（应为 32 字节 base64）")
+	}
+	return b, nil
+}
+
 // ---------- wg-quick 配置 ----------
 
 // Peer 单个 [Peer] 段。

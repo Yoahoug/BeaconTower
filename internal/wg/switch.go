@@ -68,6 +68,25 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 	canaryOK := false
 	rolledBack := false
 
+	// 0) 面板侧 UDP 硬门禁（切成员之前）：拿到「确定不通」的证据就中止，成员零改动。
+	// 旧流程只靠金丝雀试错——金丝雀挂掉后全网已有一台被改坏，这里把失败提前到改动之前。
+	targetHub, _ := r.DB.GetWGHub(in.TargetServerID)
+	tport := 0
+	if targetHub != nil {
+		tport = targetHub.ListenPort
+	}
+	if blocked, reason := r.ValidateHubUDP(context.Background(), targetHub, tport); blocked {
+		now := time.Now().Unix()
+		for _, st := range steps {
+			_ = r.DB.StartWGTaskStep(st.ID, now)
+			_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "UDP 预检未通过，未执行", now)
+		}
+		_ = r.DB.FinishWGTask(taskID, "failed",
+			"目标中心 UDP 预检未通过："+reason+"；成员未做任何改动（现役保持不变）", now)
+		log.Printf("[wg] switch task %d UDP 预检中止: %s", taskID, reason)
+		return
+	}
+
 	// 1) 目标 hub 校正（备胎已在网内，重配降级预检）
 	hubOK := true
 	for _, st := range hubSteps {
