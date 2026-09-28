@@ -73,10 +73,21 @@ function buildTopoOption() {
       name: `${h.is_active ? '★ ' : ''}${h.name || `节点${h.server_id}`}`,
       symbolSize: 54,
       category: h.is_active ? '现役中心' : '备援中心',
-      itemStyle: { color: h.is_active ? '#0EA5E9' : '#64748B' },
+      // 备援用品牌紫（原来是石板灰，和「待接入」撞色，看着像掉线）
+      itemStyle: { color: h.is_active ? '#0EA5E9' : '#8B5CF6' },
       label: { show: true, formatter: `${h.name}\n:${h.listen_port}` },
-      tooltip: { formatter: `${h.endpoint || '端点未知'} · ${cat(h.status)}` },
+      tooltip: {
+        formatter: `${h.endpoint || '端点未知'} · ${cat(h.status)}${h.is_active ? '' : ' · 备援待命，未承载流量'}`,
+      },
     })
+    // 主备关系用一条虚线表达（两台 hub 之间并不直接握手，别画成实线）
+    if (!h.is_active && activeHub.value) {
+      links.push({
+        source: `hub-${activeHub.value.server_id}`,
+        target: `hub-${h.server_id}`,
+        lineStyle: { color: '#8B5CF6', width: 1.4, type: 'dashed', opacity: 0.7 },
+      })
+    }
   }
   for (const p of peers.value) {
     if (p.status === 'left') continue
