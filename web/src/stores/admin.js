@@ -195,6 +195,29 @@ export const useAdminStore = defineStore('admin', {
       return r
     },
 
+    // 中心节点面板
+    async loadHub(id) {
+      return adminClient.wgHubDetail(id)
+    },
+
+    async hubProbe(id) {
+      const r = await adminClient.wgHubProbe(id)
+      await this.loadWg()
+      return r
+    },
+
+    async renamePeer(id, name) {
+      const r = await adminClient.wgPeerRename(id, name)
+      await this.loadWg()
+      return r
+    },
+
+    async syncPeerHubs(id) {
+      const r = await adminClient.wgPeerSyncHubs(id)
+      await this.loadWg()
+      return r
+    },
+
     async patrolNow() {
       await adminClient.wgPatrol()
       await this.loadWg()

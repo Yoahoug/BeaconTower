@@ -44,6 +44,11 @@ const realAdmin = {
   wgRegisterStandby: (serverId) => http.post('/v1/admin/wg/hubs/standby', { server_id: serverId }, { timeoutMs: 60000, retries: 0 }),
   // 纳管已手工配好 WG 的节点（含本机）：只读它的 conf，不改动它
   wgAdoptServer: (serverId) => http.post('/v1/admin/wg/adopt', { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
+  // 中心节点面板 + 凭证中心
+  wgHubDetail: (id) => http.get(`/v1/admin/wg/hubs/${id}`, { retries: 0 }),
+  wgHubProbe: (id) => http.post(`/v1/admin/wg/hubs/${id}/probe`, {}, { timeoutMs: 40000, retries: 0 }),
+  wgPeerRename: (id, name) => http.put(`/v1/admin/wg/peers/${id}`, { name }),
+  wgPeerSyncHubs: (id) => http.post(`/v1/admin/wg/peers/${id}/sync-hubs`, {}, { timeoutMs: 90000, retries: 0 }),
   wgSwitchHub: (payload) => http.post('/v1/admin/wg/switch-hub', payload, { timeoutMs: 30000, retries: 0 }),
   wgPatrol: () => http.post('/v1/admin/wg/patrol', {}, { timeoutMs: 45000, retries: 0 }),
   wgTask: (id) => http.get(`/v1/admin/wg/tasks/${id}`, { retries: 0 }),
@@ -95,6 +100,10 @@ export const adminClient = {
   wgImport: (payload) => withTimeout(realAdmin.wgImport(payload), 35000),
   wgRegisterStandby: (serverId) => withTimeout(realAdmin.wgRegisterStandby(serverId), 45000),
   wgAdoptServer: (serverId) => withTimeout(realAdmin.wgAdoptServer(serverId), 95000),
+  wgHubDetail: (id) => withTimeout(realAdmin.wgHubDetail(id), 20000),
+  wgHubProbe: (id) => withTimeout(realAdmin.wgHubProbe(id), 45000),
+  wgPeerRename: (id, name) => realAdmin.wgPeerRename(id, name),
+  wgPeerSyncHubs: (id) => withTimeout(realAdmin.wgPeerSyncHubs(id), 95000),
   wgSwitchHub: (payload) => withTimeout(realAdmin.wgSwitchHub(payload), 35000),
   wgPatrol: () => withTimeout(realAdmin.wgPatrol(), 50000),
   wgTask: (id) => realAdmin.wgTask(id),

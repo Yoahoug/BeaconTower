@@ -17,6 +17,7 @@ import StateError from '../../components/ui/StateError.vue'
 import StateSkeleton from '../../components/ui/StateSkeleton.vue'
 import { agoFromTs } from '../../api/auth'
 import { fmtBytes } from '../../utils/format'
+import { API_BASE } from '../../api/http'
 import { useAdminStore } from '../../stores/admin'
 import { useUiStore } from '../../stores/ui'
 
@@ -201,6 +202,7 @@ function onMeshKey(e) {
   if (e.key !== 'Escape') return
   if (taskModal.value) { closeTaskModal(); return }
   if (confModal.value) { confModal.value = null; restoreFocus(); return }
+  if (hubModal.value && !hubModal.value.busy) { hubModal.value = null; restoreFocus(); return }
   if (assetModal.value) { if (!assetModal.value.busy) { assetModal.value = null; restoreFocus() } return }
   if (deviceModal.value) { if (!deviceModal.value.busy) { deviceModal.value = null; restoreFocus() } return }
   if (switchModal.value) { if (!switchModal.value.busy) { switchModal.value = null; restoreFocus() } return }
@@ -402,6 +404,109 @@ async function runSwitch() {
   }
 }
 
+// ---------- 中心节点面板（概览 + 使用端凭证 + 成员） ----------
+// { hubId, data, loading, error, probing, probe, renamingId, renameText, syncingId }
+const hubModal = ref(null)
+
+async function openHub(h) {
+  hubModal.value = { hubId: h.server_id, data: null, loading: true, error: '', probing: false, probe: null, syncingId: 0, renamingId: 0, renameText: '' }
+  rememberFocus()
+  try {
+    const d = await admin.loadHub(h.server_id)
+    if (!hubModal.value || hubModal.value.hubId !== h.server_id) return
+    hubModal.value.data = d
+    hubModal.value.probe = null
+  } catch (e) {
+    if (hubModal.value) hubModal.value.error = e?.message || '中心详情加载失败'
+  } finally {
+    if (hubModal.value) hubModal.value.loading = false
+  }
+}
+
+async function reloadHub() {
+  const m = hubModal.value
+  if (!m) return
+  try {
+    m.data = await admin.loadHub(m.hubId)
+  } catch (e) {
+    m.error = e?.message || '刷新失败'
+  }
+}
+
+async function probeHub() {
+  const m = hubModal.value
+  if (!m) return
+  m.probing = true
+  m.error = ''
+  try {
+    m.probe = await admin.hubProbe(m.hubId)
+  } catch (e) {
+    m.error = e?.message || 'UDP 实测失败'
+  } finally {
+    if (hubModal.value) hubModal.value.probing = false
+  }
+}
+
+function startRename(p) {
+  if (!hubModal.value) return
+  hubModal.value.renamingId = p.id
+  hubModal.value.renameText = p.name
+}
+
+async function submitRename(p) {
+  const m = hubModal.value
+  if (!m) return
+  const name = (m.renameText || '').trim()
+  if (!name) { m.error = '名称不能为空'; return }
+  if (name === p.name) { m.renamingId = 0; return }
+  try {
+    await admin.renamePeer(p.id, name)
+    m.renamingId = 0
+    await reloadHub()
+    ui.notify('已重命名，导出文件名同步更新')
+  } catch (e) {
+    m.error = e?.message || '重命名失败'
+  }
+}
+
+async function syncPeerHubs(p) {
+  const m = hubModal.value
+  if (!m) return
+  m.syncingId = p.id
+  m.error = ''
+  try {
+    const r = await admin.syncPeerHubs(p.id)
+    const bad = (r.results || []).filter((x) => !x.ok)
+    if (bad.length) {
+      ui.notify(`${p.name}：${r.synced}/${r.total} 台中心下发成功，失败：${bad.map((b) => b.name || b.server_id).join('、')}`)
+    } else {
+      ui.notify(`${p.name} 已下发到全部 ${r.total} 台中心`)
+    }
+    await reloadHub()
+  } catch (e) {
+    m.error = e?.message || '同步失败'
+  } finally {
+    if (hubModal.value) hubModal.value.syncingId = 0
+  }
+}
+
+// 打包下载全部使用端原生 conf（A=现役 / B=备援）
+async function downloadCredsZip() {
+  try {
+    const res = await fetch(`${API_BASE}/v1/admin/wg/creds.zip`, { credentials: 'same-origin' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'beacontower-wg-creds.zip'
+    a.click()
+    URL.revokeObjectURL(a.href)
+    ui.notify('已打包下载（A=现役 / B=备援）')
+  } catch (e) {
+    if (hubModal.value) hubModal.value.error = '打包下载失败：' + (e?.message || e)
+  }
+}
+
 // ---------- 设备凭证 ----------
 const deviceModal = ref(null) // { name, busy, error }
 const confModal = ref(null) // { peer, hubId, conf, filename, dataUrl, error }
@@ -424,6 +529,7 @@ async function createDevice() {
     deviceModal.value = null
     restoreFocus()
     ui.notify(r.warn ? `设备已创建，但 ${r.warn}` : `设备已创建（${r.wg_ip}）`)
+    if (hubModal.value) await reloadHub()
   } catch (e) {
     if (deviceModal.value) deviceModal.value.error = e?.message || '创建失败'
   } finally {
@@ -719,13 +825,24 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 
       <!-- 中心节点：现役在前 / 备援在后 / 网外未纳管（可登记为备援） -->
       <div class="mesh-hubs">
-        <div v-for="h in orderedHubs" :key="h.server_id" class="bt-card bt-card--hover">
+        <div
+          v-for="h in orderedHubs"
+          :key="h.server_id"
+          class="bt-card bt-card--hover mesh-hub-card"
+          role="button"
+          tabindex="0"
+          :aria-label="`管理中心节点 ${h.name}`"
+          @click="openHub(h)"
+          @keydown.enter="openHub(h)"
+          @keydown.space.prevent="openHub(h)"
+        >
           <div class="bt-card__head">
             <div class="bt-card__title">
               {{ h.name }}
               <span class="bt-tag" :class="h.is_active ? 'bt-tag--success' : ''">{{ h.is_active ? '现役' : '备援' }}</span>
               <span class="bt-tag" :class="statusTag(h.status).cls">{{ statusTag(h.status).text }}</span>
             </div>
+            <span class="mesh-hub-manage">管理凭证 ›</span>
           </div>
           <div class="bt-card__body">
             <div class="mesh-hub-line mono">{{ h.endpoint || '端点未知' }}</div>
@@ -751,8 +868,11 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
                 <span v-if="standbyHubs.length" class="bt-tag bt-tag--info">流量额度用完时切到备援</span>
                 <span v-else class="mesh-hub-sub">尚无备援：登记网外节点后即可一键切换</span>
               </template>
-              <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openSwitch(h)">
+              <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click.stop="openSwitch(h)">
                 <AppIcon name="pulse" aria-hidden="true" />切换为现役
+              </button>
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click.stop="openHub(h)">
+                <AppIcon name="key" aria-hidden="true" />凭证
               </button>
             </div>
           </div>
@@ -859,6 +979,203 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         </div>
       </div>
     </template>
+
+    <!-- 中心节点面板：概览 / 使用端凭证 / 成员 -->
+    <Transition name="modal">
+    <div v-if="hubModal" class="bt-modal-mask" @click.self="hubModal.busy ? null : (hubModal = null, restoreFocus())">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="中心节点面板">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">
+            中心节点 · {{ hubModal.data?.hub?.name || '' }}
+            <span v-if="hubModal.data" class="bt-tag" :class="hubModal.data.hub.is_active ? 'bt-tag--success' : ''">
+              {{ hubModal.data.hub.is_active ? '现役' : '备援' }}
+            </span>
+          </div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="hubModal = null; restoreFocus()">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <StateSkeleton v-if="hubModal.loading" :rows="4" />
+          <div v-else-if="!hubModal.data" class="bt-alert bt-alert--error" role="alert">
+            <AppIcon name="warn" aria-hidden="true" />{{ hubModal.error || '加载失败' }}
+          </div>
+          <template v-else>
+            <!-- 概览 -->
+            <section class="hub-sec">
+              <h4 class="bt-card__title">概览</h4>
+              <dl class="hub-grid">
+                <div class="bt-def"><dt>端点</dt><dd class="mono">{{ hubModal.data.hub.endpoint || '未知' }}</dd></div>
+                <div class="bt-def"><dt>监听端口</dt><dd class="mono">UDP {{ hubModal.data.hub.listen_port }}</dd></div>
+                <div class="bt-def"><dt>公钥指纹</dt>
+                  <dd class="mono" :title="hubModal.data.hub.public_key">{{ hubModal.data.hub.key_fp || '—' }}</dd>
+                </div>
+                <div class="bt-def"><dt>本月出向（计费）</dt>
+                  <dd class="tnum">
+                    {{ fmtBytes(hubModal.data.hub.month_billed) }}
+                    <span v-if="hubModal.data.hub.quota_gb">/ {{ hubModal.data.hub.quota_gb }} GB</span>
+                  </dd>
+                </div>
+                <div class="bt-def"><dt>最近巡检</dt><dd class="tnum">{{ hubModal.data.hub.checked_at ? agoFromTs(hubModal.data.hub.checked_at) : '未巡检' }}</dd></div>
+                <div class="bt-def"><dt>面板持有私钥</dt>
+                  <dd>{{ hubModal.data.hub.can_render ? '是（可重渲染凭证）' : '否（导入的中心只能读）' }}</dd>
+                </div>
+              </dl>
+              <div v-if="hubModal.data.hub.quota_gb" class="mesh-quota" style="margin: 8px 0 4px">
+                <div
+                  class="mesh-quota__bar"
+                  :class="{ 'is-warn': hubModal.data.hub.month_billed / (hubModal.data.hub.quota_gb * 1e9) > 0.8, 'is-full': hubModal.data.hub.month_billed / (hubModal.data.hub.quota_gb * 1e9) >= 1 }"
+                  :style="{ width: Math.min(100, (hubModal.data.hub.month_billed / (hubModal.data.hub.quota_gb * 1e9)) * 100) + '%' }"
+                />
+              </div>
+              <div class="hub-actions">
+                <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="hubModal.probing" @click="probeHub">
+                  <AppIcon name="pulse" :class="{ 'is-spin': hubModal.probing }" aria-hidden="true" />
+                  {{ hubModal.probing ? '实测中…（面板侧握手）' : '实测 UDP 端口' }}
+                </button>
+                <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="hubModal.loading" @click="reloadHub">刷新</button>
+              </div>
+              <div v-if="hubModal.probe" class="bt-alert" :class="hubModal.probe.ok ? 'bt-alert--success' : 'bt-alert--error'" role="status">
+                <AppIcon :name="hubModal.probe.ok ? 'check' : 'warn'" aria-hidden="true" />
+                <span v-if="hubModal.probe.mode === 'handshake'">
+                  <template v-if="hubModal.probe.ok">
+                    UDP {{ hubModal.data.hub.listen_port }} 实测可达：面板侧握手成功（{{ hubModal.probe.rtt_ms }}ms，探针成员 {{ hubModal.probe.peer }}）
+                  </template>
+                  <template v-else>{{ hubModal.probe.hint || '握手无回应' }}</template>
+                </span>
+                <span v-else>
+                  {{ hubModal.probe.hint || `粗判结果：${hubModal.probe.reach}` }}
+                  <em class="bt-text-muted">（无面板托管成员私钥，只能粗判：{{ hubModal.probe.reason || '—' }}）</em>
+                </span>
+              </div>
+              <p v-if="!hubModal.data.hub.is_active" class="bt-modal__desc" style="margin-top: 8px">
+                想让这台接管现役？用卡片上的「切换为现役」（两阶段金丝雀）。
+              </p>
+            </section>
+
+            <!-- 双中心就绪度 -->
+            <section v-if="hubModal.data.hubs_readiness.length > 1" class="hub-sec">
+              <h4 class="bt-card__title">主备中心就绪度</h4>
+              <div v-for="r in hubModal.data.hubs_readiness" :key="r.server_id" class="hub-ready-row">
+                <span class="bt-tag" :class="r.is_active ? 'bt-tag--success' : ''">{{ r.is_active ? 'A · 现役' : 'B · 备援' }}</span>
+                <b>{{ r.name }}</b>
+                <span class="mono bt-text-muted">{{ r.endpoint || '端点未知' }}</span>
+                <span class="bt-tag" :class="r.ready ? 'bt-tag--success' : 'bt-tag--warning'">{{ r.ready ? '就绪' : r.missing }}</span>
+              </div>
+              <p class="bt-modal__desc">
+                两台都就绪时，使用端凭证有 A/B 两份：切换中心后导入另一份即可（密钥不变，只有端点一行不同）。
+              </p>
+            </section>
+
+            <!-- 使用端凭证 -->
+            <section class="hub-sec">
+              <div class="hub-sec__head">
+                <h4 class="bt-card__title">使用端凭证（{{ hubModal.data.creds.length }}）</h4>
+                <div class="hub-actions">
+                  <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click="openDevice">
+                    <AppIcon name="plus" aria-hidden="true" />新增使用端
+                  </button>
+                  <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="downloadCredsZip">
+                    <AppIcon name="download" aria-hidden="true" />下载全部（zip）
+                  </button>
+                </div>
+              </div>
+              <div class="bt-table-wrap">
+                <table class="bt-table mesh-table">
+                  <caption>设备凭证 · 一键下发到所有中心</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">名称</th><th scope="col">WG IP</th><th scope="col">状态</th>
+                      <th scope="col">最近握手</th><th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in hubModal.data.creds" :key="'cred-' + p.id">
+                      <td>
+                        <template v-if="hubModal.renamingId === p.id">
+                          <input v-model="hubModal.renameText" class="bt-input" style="max-width: 160px" @keydown.enter="submitRename(p)" />
+                        </template>
+                        <template v-else>
+                          {{ p.name }}
+                          <span v-if="!p.can_export" class="bt-tag" title="导入成员：面板没有私钥，无法导出凭证">导入</span>
+                        </template>
+                      </td>
+                      <td class="mono">{{ p.wg_ip }}</td>
+                      <td><span class="bt-tag pulse-dot" :class="statusTag(p.status).cls">{{ statusTag(p.status).text }}</span></td>
+                      <td class="tnum">{{ p.last_handshake ? agoFromTs(p.last_handshake) : '从未' }}</td>
+                      <td class="mesh-row-actions">
+                        <template v-if="hubModal.renamingId === p.id">
+                          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="submitRename(p)">保存</button>
+                          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="hubModal.renamingId = 0">取消</button>
+                        </template>
+                        <template v-else>
+                          <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, hubModal.hubId)">
+                            凭证 / QR
+                          </button>
+                          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="startRename(p)">
+                            <AppIcon name="edit" aria-hidden="true" />重命名
+                          </button>
+                          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="hubModal.syncingId === p.id" @click="syncPeerHubs(p)">
+                            {{ hubModal.syncingId === p.id ? '下发中…' : '同步到所有中心' }}
+                          </button>
+                          <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
+                            <AppIcon name="trash" aria-hidden="true" />移出
+                          </button>
+                        </template>
+                      </td>
+                    </tr>
+                    <tr v-if="!hubModal.data.creds.length">
+                      <td colspan="5" style="text-align: center; padding: 20px" class="bt-text-muted">
+                        暂无使用端。点「新增使用端」生成第一份凭证（手机/笔记本扫码即用）。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <!-- 成员（SSH 服务器） -->
+            <section v-if="hubModal.data.members.length" class="hub-sec">
+              <h4 class="bt-card__title">成员 · SSH 节点（{{ hubModal.data.members.length }}）</h4>
+              <div class="bt-table-wrap">
+                <table class="bt-table mesh-table">
+                  <caption>服务器成员由面板经 SSH 管理</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">名称</th><th scope="col">WG IP</th><th scope="col">状态</th>
+                      <th scope="col">收 / 发</th><th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in hubModal.data.members" :key="'mem-' + p.id">
+                      <td>{{ p.name }}</td>
+                      <td class="mono">{{ p.wg_ip }}</td>
+                      <td><span class="bt-tag pulse-dot" :class="statusTag(p.status).cls">{{ statusTag(p.status).text }}</span></td>
+                      <td class="tnum">{{ fmtBytes(p.rx_bytes) }} / {{ fmtBytes(p.tx_bytes) }}</td>
+                      <td class="mesh-row-actions">
+                        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="verifyingId === p.id" @click="verifyPeer(p)">
+                          {{ verifyingId === p.id ? '验证中…' : '验证' }}
+                        </button>
+                        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, hubModal.hubId)">凭证 / QR</button>
+                        <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
+                          <AppIcon name="trash" aria-hidden="true" />移出
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <div v-if="hubModal.error && hubModal.data" class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ hubModal.error }}
+            </div>
+          </template>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--ghost" type="button" @click="hubModal = null; restoreFocus()">关闭</button>
+        </div>
+      </div>
+    </div>
+    </Transition>
 
     <!-- 组网向导 -->
     <Transition name="modal">
@@ -1542,5 +1859,69 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+/* 中心卡：整卡可点开「中心节点面板」，卡上给一个明确的可点提示 */
+.mesh-hub-card {
+  cursor: pointer;
+}
+.mesh-hub-manage {
+  font-size: var(--bt-font-xs);
+  color: var(--bt-brand-600);
+  white-space: nowrap;
+}
+.mesh-hub-card:focus-visible {
+  outline: 2px solid var(--bt-brand-500);
+  outline-offset: 2px;
+}
+/* 中心节点面板 */
+.hub-sec + .hub-sec {
+  margin-top: var(--bt-space-4);
+  padding-top: var(--bt-space-3);
+  border-top: 1px solid var(--bt-border);
+}
+.hub-sec__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bt-space-2);
+  flex-wrap: wrap;
+}
+.hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 16px;
+  margin: 8px 0;
+}
+.hub-grid dt {
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-3);
+}
+.hub-grid dd {
+  margin: 2px 0 0;
+  font-size: var(--bt-font-md);
+}
+.hub-actions {
+  display: flex;
+  gap: var(--bt-space-2);
+  flex-wrap: wrap;
+}
+/* 面板里的表格列多，禁掉换行（窄屏交给 bt-table-wrap 横向滚动） */
+.hub-sec .mesh-table {
+  min-width: 560px;
+}
+.hub-sec .mesh-table th,
+.hub-sec .mesh-table td {
+  white-space: nowrap;
+}
+.hub-sec .mesh-table td:first-child {
+  white-space: normal;
+}
+.hub-ready-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--bt-font-md);
+  padding: 4px 0;
 }
 </style>

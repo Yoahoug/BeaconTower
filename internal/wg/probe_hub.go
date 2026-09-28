@@ -19,13 +19,15 @@ type HubProbeOutcome struct {
 	Result  ProbeUDPResult
 }
 
-// Err 探测到「不通」时的可读说明（云安全组 / 防火墙）。
+// FailMessage 探测到「不通」时的可读说明。
+// 两个可能原因都要说：端口没放行，或该中心还不认识探针成员（备援未同步过全量成员）。
 func (o HubProbeOutcome) FailMessage(port int) string {
 	p := port
 	if p == 0 {
 		p = endpointPort(o.Result.Target)
 	}
-	return fmt.Sprintf("UDP %d 从面板侧握手无回应：请在云安全组/服务器防火墙放行 UDP %d（目标 %s）", p, p, o.Result.Target)
+	return fmt.Sprintf("UDP %d 从面板侧握手无回应：请确认云安全组/防火墙已放行 UDP %d 入方向；"+
+		"若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, p, o.Result.Target)
 }
 
 // pickProbePeer 选一台面板托管成员当探针。

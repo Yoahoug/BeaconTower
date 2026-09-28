@@ -806,13 +806,27 @@ func (a *App) WGDeviceCreate(c *gin.Context) {
 		middleware.Fail(c, 2012, "设备写入失败（IP 冲突？）: "+err.Error())
 		return
 	}
-	// 立即热加到现役 hub（失败仅告警，设备状态留 pending，可在 hub 就绪后重试）
-	hub, _ := a.DB.GetWGHub(netRow.ActiveHubServerID)
+	// 立即热加到现役 hub + 各未退役备援（失败仅告警，设备状态留 pending，可稍后「同步到所有中心」）
 	warn := ""
-	if hub != nil {
+	added, failed := 0, 0
+	hubs, _ := a.DB.ListWGHub()
+	for _, hub := range hubs {
 		if err := a.wgHubAddOne(hub, netRow, kp.Public, psk, ip, name); err != nil {
-			warn = "hub 热加失败: " + err.Error()
+			failed++
+			if hub.ServerID == netRow.ActiveHubServerID {
+				warn = "hub 热加失败: " + err.Error()
+			} else if warn == "" {
+				warn = "备援热加失败: " + err.Error()
+			}
+		} else {
+			added++
 		}
+	}
+	if added == 0 && warn == "" {
+		warn = "当前没有可用的中心节点，设备已入库但尚未下发到任何中心"
+	}
+	if failed > 0 && added > 0 {
+		warn = fmt.Sprintf("已下发到 %d 台中心，%d 台失败：%s", added, failed, warn)
 	}
 	a.audit(a.actorOf(c), "wg_device_create", name, "ip="+ip+" "+warn, ipOf(c))
 	middleware.OK(c, gin.H{"id": id, "wg_ip": ip, "warn": warn})
@@ -865,50 +879,23 @@ func (a *App) WGPeerConf(c *gin.Context) {
 		}
 	}
 	hub, _ := a.DB.GetWGHub(hubID)
-	if hub == nil || !wg.ValidKey(hub.PublicKey) {
+	if hub == nil {
 		middleware.Fail(c, 2010, "目标中心节点未就绪")
 		return
 	}
-	endpoint := hub.Endpoint
-	if endpoint == "" {
-		endpoint = a.WG.ResolveEndpoint(hub.ServerID, hub.ListenPort)
-	}
-	if endpoint == "" {
-		middleware.Fail(c, 2010, "中心节点端点未知")
-		return
-	}
-	priv, err := a.WG.DecryptBlob(peer.PrivateKeyEnc)
-	if err != nil {
-		middleware.Fail(c, 5000, "私钥解密失败")
-		return
-	}
-	psk, err := a.WG.DecryptBlob(peer.PskEnc)
-	if err != nil {
-		middleware.Fail(c, 5000, "PSK 解密失败")
-		return
-	}
-	bits, err := wg.SubnetBits(netRow.Subnet)
+	conf, endpoint, err := a.wgRenderSpokeConf(netRow, peer, hub)
 	if err != nil {
 		middleware.Fail(c, 2010, err.Error())
 		return
 	}
-	conf, err := wg.SpokeConfFile(priv, peer.WgIP+"/"+strconv.Itoa(bits), hub.PublicKey,
-		endpoint, netRow.Subnet, psk, netRow.Keepalive, netRow.MTU)
-	if err != nil {
-		middleware.Fail(c, 5000, "配置渲染失败: "+err.Error())
-		return
-	}
-	tag := "B"
-	if hubID == netRow.ActiveHubServerID {
-		tag = "A"
-	}
+	tag := wgConfTag(netRow, hubID)
 	a.audit(a.actorOf(c), "wg_peer_conf_export", peer.Name,
 		"hub="+strconv.FormatInt(hubID, 10), ipOf(c))
 	// conf 含设备私钥与 PSK：禁止任何形式的缓存
 	c.Header("Cache-Control", "no-store")
 	middleware.OK(c, gin.H{
 		"conf": conf,
-		"filename": strings.ReplaceAll(peer.Name, " ", "_") + "-" + tag + ".conf",
+		"filename": wgConfFileName(peer.Name, tag),
 		"endpoint": endpoint, "wg_ip": peer.WgIP,
 	})
 }
