@@ -393,7 +393,9 @@ func (a *App) WGCredsZip(c *gin.Context) {
 	}
 	var items []item
 	for _, p := range peers {
-		if p.Status == "left" || len(p.PrivateKeyEnc) == 0 {
+		// 只打包「使用端」凭证：服务器成员（kind=server，如面板宿主）的配置由面板经
+		// SSH 下发，混进这个 zip 会和面板「使用端凭证」清单对不上号
+		if p.Status == "left" || p.Kind != "device" || len(p.PrivateKeyEnc) == 0 {
 			continue
 		}
 		for _, h := range hubs {
