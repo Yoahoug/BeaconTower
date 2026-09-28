@@ -208,8 +208,10 @@ type ProbeUDPResult struct {
 
 // ProbeUDP 向 endpoint（host:port）发握手发起包并等回应。
 // 收到合法回应即视为 UDP 通路可达；连发 attempts 次仍未果则判定不通。
-// timeout 是**整轮总预算**（不是每次尝试的等待上限）：三个握手包在预算内间隔发出、
-// 统一等到预算耗尽才判失败——失败判定更快（调用方只等一个预算），抗丢包能力不变。
+// timeout 是**整轮总预算**（不是每次尝试的等待上限）：三个握手包在预算前半段间隔发出，
+// 用完预算才判失败——失败判定从 3×预算降到 1×预算。
+// 每发一个包就立刻收一小段：回包通常在一个 RTT 内到达，这样报出的 RTT 才是真 RTT
+// （若统一等三个包发完再收，会退化成「发满间隔才读」的假高延迟）。
 func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv []byte, timeout time.Duration) (ProbeUDPResult, error) {
 	res := ProbeUDPResult{Target: endpoint}
 	raddr, err := net.ResolveUDPAddr("udp", endpoint)
@@ -230,10 +232,33 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
-	// 三个包均匀铺在预算前半段（首包立即发，成功路径仍是几十毫秒返回）
 	gap := timeout / time.Duration(2*attempts)
 	idxes := make(map[uint32]bool, attempts)
+	buf := make([]byte, 256)
 	start := time.Now()
+
+	// 收到属于本轮任一发起包的回应。返回 false 表示这一小段没等到（或收到 ICMP 拒绝，已置 Refused）。
+	drain := func(until time.Time) bool {
+		if err := conn.SetReadDeadline(until); err != nil {
+			return false
+		}
+		for {
+			n, rerr := conn.Read(buf)
+			if rerr != nil {
+				if errors.Is(rerr, syscall.ECONNREFUSED) {
+					res.Refused = true
+				}
+				return false
+			}
+			for idx := range idxes {
+				if IsHandshakeResponse(buf[:n], idx) {
+					res.OK, res.RTT = true, time.Since(start)
+					return true
+				}
+			}
+		}
+	}
+
 	for i := 1; i <= attempts; i++ {
 		if w := time.Until(start.Add(time.Duration(i-1) * gap)); w > 0 {
 			select {
@@ -255,26 +280,19 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 		}
 		idxes[idx] = true
 		res.Attempt = i
-	}
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return res, err
-	}
-	buf := make([]byte, 256)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			if errors.Is(err, syscall.ECONNREFUSED) {
-				res.Refused = true
-			}
-			return res, nil // 预算耗尽（或 ICMP 不可达），判定不通
+		// 收到即返回；最后一轮把剩余预算都用来收
+		until := start.Add(time.Duration(i) * gap)
+		if i == attempts || until.After(deadline) {
+			until = deadline
 		}
-		for idx := range idxes {
-			if IsHandshakeResponse(buf[:n], idx) {
-				res.OK, res.RTT = true, time.Since(start)
-				return res, nil
-			}
+		if drain(until) {
+			return res, nil
+		}
+		if res.Refused || ctx.Err() != nil {
+			return res, nil
 		}
 	}
+	return res, nil
 }
 
 // ---------- 无握手私钥时的粗判 ----------

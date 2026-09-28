@@ -236,7 +236,8 @@ func TestProbeUDPWithStubResponder(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := ProbeUDP(ctx, pc.LocalAddr().String(), resp.pub, priv, 2*time.Second)
+	budget := 2 * time.Second
+	out, err := ProbeUDP(ctx, pc.LocalAddr().String(), resp.pub, priv, budget)
 	if err != nil {
 		t.Fatalf("探测不应报错: %v", err)
 	}
@@ -245,6 +246,13 @@ func TestProbeUDPWithStubResponder(t *testing.T) {
 	}
 	if out.RTT <= 0 {
 		t.Fatal("RTT 应大于 0")
+	}
+	// 回包是即时的：应第一发就收到，且 RTT 是真 RTT，不能是「发满重试间隔才读」的假高延迟
+	if out.Attempt != 1 {
+		t.Fatalf("即时回包应第一发即成功，实际第 %d 发", out.Attempt)
+	}
+	if out.RTT >= budget/6 {
+		t.Fatalf("RTT 应为一个往返的量级（< %v），实际 %v", budget/6, out.RTT)
 	}
 }
 
