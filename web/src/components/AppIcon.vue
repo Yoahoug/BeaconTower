@@ -1,6 +1,9 @@
 <template>
   <!-- 线性界面符号：16 画布 / stroke 1.5 / currentColor，零 emoji -->
+  <!-- 兜底尺寸见 base.css 的 .app-icon：没有它，散落在普通 div 里的图标会按
+       「无宽高的内联 SVG」默认尺寸撑开成巨大一块（历史上踩过） -->
   <svg
+    class="app-icon"
     viewBox="0 0 16 16"
     fill="none"
     stroke="currentColor"

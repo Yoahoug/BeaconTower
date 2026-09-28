@@ -67,6 +67,14 @@ svg {
   vertical-align: middle;
 }
 
+/* AppIcon 兜底尺寸（16 画布 1:1）：无宽高的内联 SVG 会按默认尺寸撑开，
+   裸放在普通 div 里就是巨大一块（WG 卡片错误行踩过）。父级选择器
+   （.bt-btn svg / .bt-alert svg / .mesh-asset-empty svg …）特指度更高，仍可覆盖 */
+.app-icon {
+  width: 16px;
+  height: 16px;
+}
+
 /* 数字等宽，指标刷新时布局不抖动 */
 .tnum,
 .tnum * {

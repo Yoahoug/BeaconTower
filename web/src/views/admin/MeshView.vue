@@ -694,7 +694,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             <div class="mesh-hub-line mesh-hub-sub">
               双向合计 {{ fmtBytes(h.month_rx + h.month_tx) }} · 入向不计费
             </div>
-            <div v-if="h.last_error" class="mesh-hub-error" role="alert">
+            <div v-if="h.last_error" class="bt-alert bt-alert--error mesh-hub-alert" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ h.last_error }}
             </div>
             <div class="mesh-hub-actions">
@@ -728,7 +728,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
                 <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '登记中…' : '准备为备援' }}
               </button>
             </div>
-            <div v-if="standbyReg[s.id]?.error" class="mesh-hub-error" role="alert">
+            <div v-if="standbyReg[s.id]?.error" class="bt-alert bt-alert--error mesh-hub-alert" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ standbyReg[s.id].error }}
             </div>
           </div>
@@ -1193,10 +1193,15 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 .mesh-hub-idle .mesh-hub-sub {
   line-height: 1.55;
 }
-.mesh-hub-error {
-  color: var(--bt-danger, #d64545);
+/* 卡内错误：复用 .bt-alert 的图标尺寸与配色，只把间距收紧到卡片尺度 */
+.mesh-hub-alert {
+  padding: 6px 10px;
   font-size: 12px;
-  margin: 6px 0;
+  margin: 6px 0 0;
+}
+.mesh-hub-alert svg {
+  width: 13px;
+  height: 13px;
 }
 .mesh-hub-actions {
   margin-top: 8px;
