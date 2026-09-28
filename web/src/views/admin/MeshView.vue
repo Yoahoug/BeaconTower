@@ -1387,7 +1387,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               <AppIcon name="warn" aria-hidden="true" />
               本机还没录宿主 SSH（面板容器无法直接配置宿主机的 WG）：去
               <RouterLink to="/admin/servers">节点管理</RouterLink> 的本机卡片点「录宿主 SSH」，
-              地址填容器可达的宿主机地址（Docker 网关 172.17.0.1 或内网 IP），不要填 WG 地址。
+              地址已按容器默认网关预填（容器内 <code>ip route</code> 的 default 网关），不要填 WG 地址。
             </p>
           </template>
           <!-- 第 2 步：预检结果 -->

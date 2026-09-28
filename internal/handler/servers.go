@@ -41,6 +41,11 @@ func (a *App) ListServers(c *gin.Context) {
 		if cred != nil {
 			item["last_success_at"] = nullableInt(cred.LastSuccessAt)
 		}
+		// 本机节点：给出「容器可达的宿主机地址」建议（容器默认网关），
+		// 前端在本机 SSH 表单里预填，省得用户猜 Docker 网关地址
+		if s.IsSelf {
+			item["ssh_suggest_host"] = hostSuggestAddr()
+		}
 		out = append(out, item)
 	}
 	middleware.OK(c, out)

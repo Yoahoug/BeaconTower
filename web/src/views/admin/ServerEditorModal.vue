@@ -61,8 +61,12 @@ function draftForm() {
     note_public: props.server?.note_public || '',
     note_private: props.server?.note_private || '',
     hidden: props.server?.hidden || false,
-    // 本机节点的占位凭据 host=local 不当作真实地址（留空提示用户填写容器可达地址）
-    host: props.server?.ssh?.host === 'local' ? '' : props.server?.ssh?.host || '',
+    // 本机节点的占位凭据 host=local 不当作真实地址；尚无地址时预填后端探测到的
+    // 容器默认网关（容器可达的宿主地址），用户可改
+    host:
+      props.server?.ssh?.host === 'local'
+        ? props.server?.ssh_suggest_host || ''
+        : props.server?.ssh?.host || props.server?.ssh_suggest_host || '',
     port: props.server?.ssh?.port || 22,
     sshUsername: props.server?.ssh?.username || '',
     authType: props.server?.ssh?.auth_type || 'password',
@@ -295,7 +299,9 @@ onUnmounted(() => {
             凭据加密存储，读取接口永不回显；编辑时留空 = 保留原值
           </p>
           <p v-if="isSelf" class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
-            地址要填<strong>容器能连到的</strong>宿主机地址（Docker 网关 172.17.0.1 或内网 IP）；
+            地址要填<strong>容器能连到的</strong>宿主机地址——已按本容器的默认网关预填
+            （<code v-if="props.server?.ssh_suggest_host">{{ props.server.ssh_suggest_host }}</code><span v-else>如 192.168.240.1</span>，
+            容器内 <code>ip route</code> 的 default 网关）；也可填内网 IP。
             不要填 WG 地址（切网/重启 WG 时面板会把自己掐断）。
           </p>
           <div class="bt-form-grid">
