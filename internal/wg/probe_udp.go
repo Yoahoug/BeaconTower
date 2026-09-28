@@ -201,11 +201,16 @@ type ProbeUDPResult struct {
 	RTT     time.Duration
 	Target  string
 	Attempt int
+	// Refused = 收到 ICMP 端口不可达（写/读时报 ECONNREFUSED）：目标主机在线、路径通，
+	// 但该端口确实没有监听——与「安全组静默丢包」是完全不同的结论。
+	Refused bool
 }
 
 // ProbeUDP 向 endpoint（host:port）发握手发起包并等回应。
 // 收到合法回应即视为 UDP 通路可达；连发 attempts 次仍未果则判定不通。
-func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv []byte, perTry time.Duration) (ProbeUDPResult, error) {
+// timeout 是**整轮总预算**（不是每次尝试的等待上限）：三个握手包在预算内间隔发出、
+// 统一等到预算耗尽才判失败——失败判定更快（调用方只等一个预算），抗丢包能力不变。
+func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv []byte, timeout time.Duration) (ProbeUDPResult, error) {
 	res := ProbeUDPResult{Target: endpoint}
 	raddr, err := net.ResolveUDPAddr("udp", endpoint)
 	if err != nil {
@@ -218,39 +223,58 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 	defer conn.Close()
 
 	const attempts = 3
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	// 三个包均匀铺在预算前半段（首包立即发，成功路径仍是几十毫秒返回）
+	gap := timeout / time.Duration(2*attempts)
+	idxes := make(map[uint32]bool, attempts)
+	start := time.Now()
 	for i := 1; i <= attempts; i++ {
-		res.Attempt = i
+		if w := time.Until(start.Add(time.Duration(i-1) * gap)); w > 0 {
+			select {
+			case <-time.After(w):
+			case <-ctx.Done():
+				return res, nil
+			}
+		}
 		msg, idx, err := CraftHandshakeInit(initiatorPriv, responderPub)
 		if err != nil {
 			return res, err
 		}
-		start := time.Now()
 		if _, err := conn.Write(msg); err != nil {
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				res.Refused = true // ICMP 端口不可达：目标端口没监听
+				return res, nil
+			}
 			return res, fmt.Errorf("UDP 发送失败: %w", err)
 		}
-		deadline := start.Add(perTry)
-		if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
-			deadline = dl
-		}
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			return res, err
-		}
-		buf := make([]byte, 256)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				break // 本轮超时，下一轮
+		idxes[idx] = true
+		res.Attempt = i
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return res, err
+	}
+	buf := make([]byte, 256)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				res.Refused = true
 			}
+			return res, nil // 预算耗尽（或 ICMP 不可达），判定不通
+		}
+		for idx := range idxes {
 			if IsHandshakeResponse(buf[:n], idx) {
 				res.OK, res.RTT = true, time.Since(start)
 				return res, nil
 			}
 		}
-		if ctx.Err() != nil {
-			break
-		}
 	}
-	return res, nil
 }
 
 // ---------- 无握手私钥时的粗判 ----------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,27 +14,38 @@ import (
 
 // HubProbeOutcome 面板侧对某个 hub 端点的 UDP 可达性探测结果。
 type HubProbeOutcome struct {
-	Skipped bool   // 无法探测（无端点 / 无可用成员私钥）
-	Reason  string // 跳过原因（Skipped=true 时有意义）
-	Peer    string // 用作探针的成员名（透明起见写进日志）
+	Skipped bool     // 无法探测（无端点 / 无可用成员私钥）
+	Reason  string   // 跳过原因（Skipped=true 时有意义）
+	Peer    string   // 握手成功的探针成员名（透明起见写进日志/文案）
+	Peers   []string // 依次尝试过的探针成员（全失败时用于说明「换了几个身份都没回应」）
 	Result  ProbeUDPResult
 }
 
 // FailMessage 探测到「不通」时的可读说明。
-// 两个可能原因都要说：端口没放行，或该中心还不认识探针成员（备援未同步过全量成员）。
+// 两个可能原因都要说：端口没放行，或该中心还不认识这些探针成员（备援未同步过全量成员）。
 func (o HubProbeOutcome) FailMessage(port int) string {
 	p := port
 	if p == 0 {
 		p = endpointPort(o.Result.Target)
 	}
-	return fmt.Sprintf("UDP %d 从面板侧握手无回应：请确认云安全组/防火墙已放行 UDP %d 入方向；"+
-		"若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, p, o.Result.Target)
+	if o.Result.Refused {
+		return fmt.Sprintf("UDP %d 收到 ICMP 端口不可达（%s）：主机在线、路径通，但该端口没有监听——"+
+			"请确认该中心的 WireGuard 已启动且监听端口一致", p, o.Result.Target)
+	}
+	tried := ""
+	if n := len(o.Peers); n > 1 {
+		tried = fmt.Sprintf("（已依次用 %d 个成员身份尝试：%s）", n, strings.Join(o.Peers, "、"))
+	}
+	return fmt.Sprintf("UDP %d 从面板侧握手无回应%s：请确认云安全组/防火墙已放行 UDP %d 入方向；"+
+		"若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, tried, p, o.Result.Target)
 }
 
-// pickProbePeer 选一台面板托管成员当探针。
+// pickProbePeers 按「适合当探针」的优先级取前 n 台托管成员（n<=0 取全部）。
 // 优先离线设备（探测会把 hub 眼里该成员的端点临时指向面板出口，离线的没人受影响），
 // 其次离线服务器成员，最后取最近握手最旧的那台。私钥不可解密的（导入成员）跳过。
-func (r *Runner) pickProbePeer() (*store.WGPeer, error) {
+// 多取几台是为了探测的准确性：单个成员握手无回应可能只是「这台中心还不认识它」
+// （备援没同步过新成员），换一两个身份再试就能把「UDP 没放行」与「中心不认识该成员」分开。
+func (r *Runner) pickProbePeers(n int) ([]*store.WGPeer, error) {
 	peers, err := r.DB.ListWGPeers()
 	if err != nil {
 		return nil, err
@@ -48,17 +60,23 @@ func (r *Runner) pickProbePeer() (*store.WGPeer, error) {
 			return 2
 		}
 	}
-	var best *store.WGPeer
+	cands := make([]*store.WGPeer, 0, len(peers))
 	for _, p := range peers {
 		if p.Status == "left" || len(p.PrivateKeyEnc) == 0 {
 			continue
 		}
-		if best == nil || rank(p) < rank(best) ||
-			(rank(p) == rank(best) && p.LastHandshake.Int64 < best.LastHandshake.Int64) {
-			best = p
-		}
+		cands = append(cands, p)
 	}
-	return best, nil
+	sort.SliceStable(cands, func(i, j int) bool {
+		if rank(cands[i]) != rank(cands[j]) {
+			return rank(cands[i]) < rank(cands[j])
+		}
+		return cands[i].LastHandshake.Int64 < cands[j].LastHandshake.Int64
+	})
+	if n > 0 && len(cands) > n {
+		cands = cands[:n]
+	}
+	return cands, nil
 }
 
 // ProbeHubUDP 以面板托管的某个成员身份，向 hub 端点发一次真握手，判断 UDP 是否放行。
@@ -79,6 +97,8 @@ func (r *Runner) ProbeHubUDP(ctx context.Context, hub *store.WGHub, perTry time.
 
 // ProbeHubEndpoint 对「指定端点 + 指定中心公钥」发真握手。
 // 与 ProbeHubUDP 的区别：端点/公钥由调用方给定，供预检「计划中的端口/待生成密钥」场景使用。
+// 依次最多用 probePeerTries 台托管成员当探针：只要有**任一**身份握手成功，就说明端口通；
+// 全部无回应才判不通（此时两个原因都写进文案，避免把「中心不认识该成员」误报成「UDP 没放行」）。
 func (r *Runner) ProbeHubEndpoint(ctx context.Context, endpoint, hubPubB64 string, perTry time.Duration) (HubProbeOutcome, error) {
 	var out HubProbeOutcome
 	if strings.TrimSpace(endpoint) == "" {
@@ -93,30 +113,65 @@ func (r *Runner) ProbeHubEndpoint(ctx context.Context, endpoint, hubPubB64 strin
 	if err != nil {
 		return out, fmt.Errorf("中心公钥无效: %w", err)
 	}
-	peer, err := r.pickProbePeer()
+	peers, err := r.pickProbePeers(probePeerTries)
 	if err != nil {
 		return out, err
 	}
-	if peer == nil {
+	if len(peers) == 0 {
 		out.Skipped, out.Reason = true, udpProbeUnsupported
 		return out, nil
-	}
-	privB64 := r.decrypt(peer.PrivateKeyEnc)
-	if privB64 == "" {
-		out.Skipped, out.Reason = true, "探针成员私钥无法解密（可能是导入成员）"
-		return out, nil
-	}
-	priv, err := decodeKey(privB64)
-	if err != nil {
-		return out, fmt.Errorf("探针成员私钥无效: %w", err)
 	}
 	if perTry <= 0 {
 		perTry = 3 * time.Second
 	}
-	out.Peer = peer.Name
-	out.Result, err = ProbeUDP(ctx, endpoint, respPub, priv, perTry)
-	return out, err
+	usable := 0
+	for i, peer := range peers {
+		privB64 := r.decrypt(peer.PrivateKeyEnc)
+		if privB64 == "" {
+			continue // 导入成员：私钥不可解密，换下一个身份
+		}
+		priv, err := decodeKey(privB64)
+		if err != nil {
+			continue
+		}
+		usable++
+		out.Peers = append(out.Peers, peer.Name)
+		budget := perTry
+		if i > 0 {
+			// 回退身份只用来排除「中心不认识首个探针」，给更短的预算即可
+			if budget > probePeerFallbackBudget {
+				budget = probePeerFallbackBudget
+			}
+		}
+		res, err := ProbeUDP(ctx, endpoint, respPub, priv, budget)
+		if err != nil {
+			return out, err
+		}
+		out.Result = res
+		if res.OK {
+			out.Peer = peer.Name
+			return out, nil
+		}
+		if res.Refused {
+			// ICMP 端口不可达：换身份也没用（端口层面没监听），立即给结论
+			return out, nil
+		}
+		if ctx.Err() != nil {
+			break // 调用方预算用尽，如实返回已试过的身份
+		}
+	}
+	if usable == 0 {
+		out.Skipped, out.Reason = true, "探针成员私钥无法解密（可能是导入成员）"
+	}
+	return out, nil
 }
+
+// probePeerTries 一次探测最多换几个成员身份（首个 + 回退）。
+// probePeerFallbackBudget 回退身份的单次预算：只够证明「这台中心认识它」。
+const (
+	probePeerTries          = 3
+	probePeerFallbackBudget = 1500 * time.Millisecond
+)
 
 // HubEndpointOnPort 用 hub 行里的主机名/IP 拼出指定端口的端点（port<=0 时沿用行里的端口）。
 // 预检时目标端口可能尚未落库（首次组网用计划端口），故不能直接用 hub.Endpoint。
@@ -164,7 +219,7 @@ func udpHintFallback(port int) string {
 }
 
 // ValidateHubUDP 翻成员之前的硬门禁：只在拿到「确定不通」的证据时才阻断。
-//   - 真握手失败 → 阻断（成员零改动）；
+//   - 真握手失败 → 阻断（成员零改动）；收到 ICMP 端口不可达时结论更硬（端口确实没监听）；
 //   - 无托管私钥时退化为 ICMP 粗判：目标端口无监听 → 阻断；超时（安全组静默丢包与未监听不可分）→ 放行，交给金丝雀兜底；
 //   - 探测手段完全不可用（端点未知）→ 放行并在原因里说明。
 func (r *Runner) ValidateHubUDP(ctx context.Context, hub *store.WGHub, port int) (bool, string) {

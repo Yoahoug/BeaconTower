@@ -3,6 +3,7 @@ package wg
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/binary"
 	"net"
 	"path/filepath"
@@ -114,8 +115,109 @@ func TestValidateHubUDPBlocksWhenNoListener(t *testing.T) {
 	if !blocked {
 		t.Fatal("端口无监听应阻断切换")
 	}
-	if !contains(reason, "无监听") && !contains(reason, "握手无回应") {
+	if !contains(reason, "无监听") && !contains(reason, "没有监听") && !contains(reason, "握手无回应") {
 		t.Fatalf("原因应可执行（放行 UDP 或说明端口无监听）: %s", reason)
+	}
+}
+
+// 假中心（挑食版）：只回应「认识」的成员——初始包里的发起方静态公钥在 allowed 里才回包。
+// 真实内核 WG 正是这个行为（未知成员静默丢弃），用来复现「备援中心不认识某个成员」的场景。
+func startPickFakeHub(t *testing.T, allowed []string) (endpoint string, hubPub string, stop func()) {
+	t.Helper()
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("生成中心密钥: %v", err)
+	}
+	priv, _ := decodeKey(kp.Private)
+	pub, _ := decodeKey(kp.Public)
+	resp := testResponder{priv: priv, pub: pub}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听 UDP: %v", err)
+	}
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			initPub, _, ok := resp.open(buf[:n])
+			if !ok {
+				continue
+			}
+			known := false
+			for _, a := range allowed {
+				if a == base64.StdEncoding.EncodeToString(initPub) {
+					known = true
+				}
+			}
+			if !known {
+				continue // 不认识的成员：静默丢弃（与内核 WG 一致）
+			}
+			_, _ = pc.WriteTo(respPacket(binary.LittleEndian.Uint32(buf[4:8])), addr)
+		}
+	}()
+	return pc.LocalAddr().String(), kp.Public, func() { pc.Close() }
+}
+
+func TestProbeHubEndpointFallsBackToKnownPeer(t *testing.T) {
+	// 中心只认识第二台成员（备援没同步过新成员的真实场景）：
+	// 换身份再试应判定「端口通」，而不是误报「UDP 没放行」→ 误阻断切换。
+	kp2, _ := GenerateKeyPair()
+	endpoint, hubPub, stop := startPickFakeHub(t, []string{kp2.Public})
+	defer stop()
+	r, db, hubID := newProbeTestRunner(t, endpoint, hubPub)
+	now := time.Now().Unix()
+	// 库里第一台（排序在前）中心不认识；第二台才认识
+	if _, err := db.InsertWGPeer(&store.WGPeer{Kind: "device", Name: "新的手机",
+		WgIP: "10.66.66.14", PublicKey: kp2.Public, PrivateKeyEnc: r.Encrypt(kp2.Private),
+		Managed: true, Status: "offline", CreatedAt: now}); err != nil {
+		t.Fatalf("写成员: %v", err)
+	}
+	hub, _ := db.GetWGHub(hubID)
+	out, err := r.ProbeHubUDP(context.Background(), hub, 800*time.Millisecond)
+	if err != nil {
+		t.Fatalf("探测出错: %v", err)
+	}
+	if out.Skipped || !out.Result.OK {
+		t.Fatalf("中心认识第二个身份时应判定可达: skipped=%v ok=%v peers=%v", out.Skipped, out.Result.OK, out.Peers)
+	}
+	if out.Peer != "新的手机" {
+		t.Fatalf("应回退到「新的手机」才握手成功: %s（试过 %v）", out.Peer, out.Peers)
+	}
+	if len(out.Peers) != 2 {
+		t.Fatalf("应记录两个尝试过的身份: %v", out.Peers)
+	}
+}
+
+func TestProbeHubEndpointAllUnknownPeerReportsBothCauses(t *testing.T) {
+	// 所有身份都不被中心认识：文案必须同时给出「放行 UDP」与「同步成员」两条路，
+	// 并如实说明换了几个身份
+	stranger, _ := GenerateKeyPair() // 中心只认识这台无关成员，库里的探针成员它都不认识
+	endpoint, hubPub, stop := startPickFakeHub(t, []string{stranger.Public})
+	defer stop()
+	r, db, hubID := newProbeTestRunner(t, endpoint, hubPub)
+	now := time.Now().Unix()
+	kp3, _ := GenerateKeyPair()
+	if _, err := db.InsertWGPeer(&store.WGPeer{Kind: "device", Name: "新的手机",
+		WgIP: "10.66.66.14", PublicKey: kp3.Public, PrivateKeyEnc: r.Encrypt(kp3.Private),
+		Managed: true, Status: "offline", CreatedAt: now}); err != nil {
+		t.Fatalf("写成员: %v", err)
+	}
+	hub, _ := db.GetWGHub(hubID)
+	out, err := r.ProbeHubUDP(context.Background(), hub, 300*time.Millisecond)
+	if err != nil {
+		t.Fatalf("探测出错: %v", err)
+	}
+	if out.Result.OK || out.Skipped {
+		t.Fatalf("都不认识时应判不通: %+v", out)
+	}
+	msg := out.FailMessage(hub.ListenPort)
+	for _, want := range []string{"放行 UDP", "同步到所有中心", "2 个成员身份"} {
+		if !contains(msg, want) {
+			t.Fatalf("文案缺少 %q: %s", want, msg)
+		}
 	}
 }
 

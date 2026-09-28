@@ -249,7 +249,7 @@ func TestProbeUDPWithStubResponder(t *testing.T) {
 }
 
 func TestProbeUDPUnreachable(t *testing.T) {
-	// 无人应答的端口：应判不通且不报错（走超时分支）。
+	// 无人应答的端口：本机会回 ICMP 端口不可达 → 判不通，且不再白等重试
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -270,8 +270,46 @@ func TestProbeUDPUnreachable(t *testing.T) {
 	if out.OK {
 		t.Fatal("无回应不应判定可达")
 	}
+	if !out.Refused {
+		t.Fatal("回 ICMP 端口不可达时应标记 Refused（端口没监听，与静默丢包区分开）")
+	}
+}
+
+func TestProbeUDPSilentDropSpendsWholeBudget(t *testing.T) {
+	// 有监听者但从不回包（模拟安全组放行、但服务不认这个成员）：既非可达也非 ICMP 拒绝，
+	// 应把三个握手包都发出去，且总共只等一个预算（而不是每个包各等一个预算）。
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() { // 收下不答
+		buf := make([]byte, 256)
+		for {
+			if _, _, err := pc.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	kp, _ := GenerateKeyPair()
+	priv, _ := decodeKey(kp.Private)
+	resp := newTestResponder(t)
+	budget := 600 * time.Millisecond
+	start := time.Now()
+	out, err := ProbeUDP(context.Background(), pc.LocalAddr().String(), resp.pub, priv, budget)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("静默丢包不应报错: %v", err)
+	}
+	if out.OK || out.Refused {
+		t.Fatalf("静默丢包应判不通且不标 Refused: %+v", out)
+	}
 	if out.Attempt != 3 {
-		t.Fatalf("应重试 3 次，实际 %d", out.Attempt)
+		t.Fatalf("应发满 3 个握手包，实际 %d", out.Attempt)
+	}
+	if elapsed > 3*budget {
+		t.Fatalf("等待应受一个总预算约束（%v），实际 %v", budget, elapsed)
 	}
 }
 
