@@ -1017,3 +1017,9 @@
   gap: var(--bt-space-3);
   margin-top: var(--bt-space-3);
 }
+
+/* hub 卡副行：双向合计参考值 */
+.mesh-hub-sub {
+  font-size: 12px;
+  color: var(--bt-text-3);
+}

@@ -651,15 +651,18 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <div class="bt-card__body">
             <div class="mesh-hub-line mono">{{ h.endpoint || '端点未知' }}</div>
             <div class="mesh-hub-line">
-              本月 WG 流量 <b class="tnum">{{ fmtBytes(h.month_rx + h.month_tx) }}</b>
+              本月计费流量（出方向）<b class="tnum">{{ fmtBytes(h.month_billed) }}</b>
               <span v-if="h.quota_gb" class="tnum">/ {{ h.quota_gb }} GB</span>
             </div>
             <div v-if="h.quota_gb" class="mesh-quota">
               <div
                 class="mesh-quota__bar"
-                :class="{ 'is-warn': (h.month_rx + h.month_tx) / (h.quota_gb * 1e9) > 0.8, 'is-full': (h.month_rx + h.month_tx) / (h.quota_gb * 1e9) >= 1 }"
-                :style="{ width: Math.min(100, ((h.month_rx + h.month_tx) / (h.quota_gb * 1e9)) * 100) + '%' }"
+                :class="{ 'is-warn': h.month_billed / (h.quota_gb * 1e9) > 0.8, 'is-full': h.month_billed / (h.quota_gb * 1e9) >= 1 }"
+                :style="{ width: Math.min(100, (h.month_billed / (h.quota_gb * 1e9)) * 100) + '%' }"
               />
+            </div>
+            <div class="mesh-hub-line mesh-hub-sub">
+              双向合计 {{ fmtBytes(h.month_rx + h.month_tx) }}（入方向不计费，仅供参考）
             </div>
             <div v-if="h.last_error" class="mesh-hub-error" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ h.last_error }}

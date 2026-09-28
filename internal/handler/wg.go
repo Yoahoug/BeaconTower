@@ -201,8 +201,11 @@ func (a *App) WGOverview(c *gin.Context) {
 				"status": h.Status, "last_error": h.LastError,
 				"quota_gb": nullF64(h.QuotaGB),
 				"month_rx": rx, "month_tx": tx,
-				"is_active": h.ServerID == netRow.ActiveHubServerID,
-				"has_keys":  len(h.PrivateKeyEnc) > 0,
+				// 额度估算口径：云厂商（阿里云/腾讯云轻量等）只对出方向流量计费，
+				// 中转场景扣额度 ≈ 本 hub 的出方向累计（tx），rx 仅作参考展示
+				"month_billed": tx,
+				"is_active":    h.ServerID == netRow.ActiveHubServerID,
+				"has_keys":     len(h.PrivateKeyEnc) > 0,
 			})
 		}
 		// 成员
