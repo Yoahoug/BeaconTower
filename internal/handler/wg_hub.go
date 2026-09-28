@@ -169,6 +169,9 @@ func (a *App) WGHubDetail(c *gin.Context) {
 	}
 	readiness := []hubReady{}
 	for _, h := range hubs {
+		if h.Status == "retired" {
+			continue
+		}
 		hn := ""
 		if srv, _ := a.DB.GetServer(h.ServerID); srv != nil {
 			hn = srv.Name
@@ -205,6 +208,30 @@ func (a *App) WGHubDetail(c *gin.Context) {
 		"network": gin.H{"subnet": netRow.Subnet, "hub_ip": netRow.HubIP, "iface": netRow.Iface,
 			"active_hub_server_id": netRow.ActiveHubServerID},
 	})
+}
+
+// WGHubCleanup 删除退役中心槽位（只清记录：机器上的配置在退役时已被移走备份）。
+func (a *App) WGHubCleanup(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		middleware.Fail(c, 1001, "参数错误：id 非法")
+		return
+	}
+	hub, _ := a.DB.GetWGHub(id)
+	if hub == nil {
+		middleware.Fail(c, 2002, "该节点不是中心/备援槽位")
+		return
+	}
+	if hub.Status != "retired" {
+		middleware.Fail(c, 2010, "只有在退役状态的中心才能清理（在用的请先切换或接管）")
+		return
+	}
+	if err := a.DB.DeleteWGHub(id); err != nil {
+		middleware.Fail(c, 5000, "清理失败: "+err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_hub_cleanup", fmt.Sprintf("hub:%d", id), "清理退役中心", ipOf(c))
+	middleware.OK(c, gin.H{"ok": true})
 }
 
 // WGHubProbe 手动实测中心 UDP：真握手优先，无托管私钥时退化为 ICMP 粗判。
@@ -328,8 +355,12 @@ func (a *App) WGPeerSyncHubs(c *gin.Context) {
 	}
 	hubs, _ := a.DB.ListWGHub()
 	results := []gin.H{}
+	// 退役槽位不再下发（它的身份已经迁到别的机器上）
 	okN := 0
 	for _, h := range hubs {
+		if h.Status == "retired" {
+			continue
+		}
 		item := gin.H{"server_id": h.ServerID, "active": h.ServerID == netRow.ActiveHubServerID, "ok": false, "error": ""}
 		if srv, _ := a.DB.GetServer(h.ServerID); srv != nil {
 			item["name"] = srv.Name
@@ -366,6 +397,9 @@ func (a *App) WGCredsZip(c *gin.Context) {
 			continue
 		}
 		for _, h := range hubs {
+			if h.Status == "retired" {
+				continue // 退役槽位的身份已迁走，再出凭证会把人指到已停用的机器
+			}
 			if len(h.PrivateKeyEnc) == 0 && !wg.ValidKey(h.PublicKey) {
 				continue // 连公钥都没有的槽位渲染不出东西
 			}

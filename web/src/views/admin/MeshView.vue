@@ -37,6 +37,7 @@ const standbyHubs = computed(() => hubs.value.filter((h) => !h.is_active))
 const orderedHubs = computed(() => [...hubs.value].sort((a, b) => Number(b.is_active) - Number(a.is_active)))
 // 网外节点（未纳管，本机除外）：中心区第三段，带「准备为备援」入口
 const unmanagedServers = computed(() => servers.value.filter((s) => !s.in_network))
+const retiredHubs = computed(() => admin.wgOverview?.retired_hubs || [])
 const runningTask = computed(() => !!admin.wgOverview?.running_task)
 const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'))
 const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
@@ -202,6 +203,7 @@ function onMeshKey(e) {
   if (e.key !== 'Escape') return
   if (taskModal.value) { closeTaskModal(); return }
   if (confModal.value) { confModal.value = null; restoreFocus(); return }
+  if (takeoverModal.value && !takeoverModal.value.busy) { takeoverModal.value = null; restoreFocus(); return }
   if (hubModal.value && !hubModal.value.busy) { hubModal.value = null; restoreFocus(); return }
   if (assetModal.value) { if (!assetModal.value.busy) { assetModal.value = null; restoreFocus() } return }
   if (deviceModal.value) { if (!deviceModal.value.busy) { deviceModal.value = null; restoreFocus() } return }
@@ -504,6 +506,72 @@ async function downloadCredsZip() {
     ui.notify('已打包下载（A=现役 / B=备援）')
   } catch (e) {
     if (hubModal.value) hubModal.value.error = '打包下载失败：' + (e?.message || e)
+  }
+}
+
+// ---------- 新机接管（迁移中心身份） ----------
+// { targetId, port, canaryId, busy, error }
+const takeoverModal = ref(null)
+
+// 可作为接管目标：有可用 SSH 凭据，且不是现役中心；已在网内的「spoke 成员」要先移出，
+// 备援（standby）本身就是现成的接管目标（身份一迁、成员一翻即可）。
+const takeoverTargets = computed(() =>
+  (servers.value || []).filter(
+    (x) => x.ssh_ready && x.id !== activeHub.value?.server_id && (x.wg_role === 'standby' || !x.in_network),
+  ),
+)
+
+// 金丝雀候选：SSH 成员（server-kind）中排除本机（本机必须最后翻）
+const canaryCandidates = computed(() => {
+  const allowed = new Set(
+    (servers.value || []).filter((x) => x.wg_role === 'spoke' && !x.is_self).map((x) => x.id),
+  )
+  return peers.value.filter((p) => p.kind === 'server' && p.server_id && allowed.has(p.server_id))
+})
+
+function openTakeover() {
+  const curPort = activeHub.value?.listen_port || 51820
+  const first = takeoverTargets.value[0]
+  takeoverModal.value = {
+    targetId: first ? first.id : 0,
+    port: curPort,
+    canaryId: 0,
+    busy: false,
+    error: '',
+  }
+  rememberFocus()
+}
+
+async function runTakeover() {
+  const m = takeoverModal.value
+  if (!m) return
+  if (!m.targetId) { m.error = '请选择接管目标机（新机器）'; return }
+  m.busy = true
+  m.error = ''
+  try {
+    const r = await admin.takeover({
+      target_server_id: m.targetId,
+      port: Number(m.port) || 0,
+      canary_server_id: Number(m.canaryId) || 0,
+    })
+    takeoverModal.value = null
+    if (hubModal.value) hubModal.value = null
+    restoreFocus()
+    ui.notify('接管任务已启动：迁移身份 → 实测 → 翻转成员 → 停用旧中心')
+    watchTask(r.task_id)
+  } catch (e) {
+    if (takeoverModal.value) takeoverModal.value.error = e?.message || '接管启动失败'
+  } finally {
+    if (takeoverModal.value) takeoverModal.value.busy = false
+  }
+}
+
+async function cleanupRetired(h) {
+  try {
+    await admin.cleanupHub(h.server_id)
+    ui.notify(`已清理退役中心 ${h.name}`)
+  } catch (e) {
+    ui.notify(e?.message || '清理失败')
   }
 }
 
@@ -878,6 +946,24 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           </div>
         </div>
 
+        <div v-if="retiredHubs.length" class="bt-card mesh-hub-idle">
+          <div class="bt-card__head">
+            <div class="bt-card__title">
+              已退役中心
+              <span class="bt-tag">身份已迁走</span>
+            </div>
+          </div>
+          <div class="bt-card__body">
+            <div v-for="r in retiredHubs" :key="'ret-' + r.server_id" class="mesh-hub-line mesh-hub-sub">
+              {{ r.name }}
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click.stop="cleanupRetired(r)">
+                <AppIcon name="trash" aria-hidden="true" />清理记录
+              </button>
+            </div>
+            <div class="mesh-hub-line mesh-hub-sub">机器上的配置在退役时已按时间戳备份（.removed.*）</div>
+          </div>
+        </div>
+
         <div v-for="s in unmanagedServers" :key="'idle-' + s.id" class="bt-card mesh-hub-idle">
           <div class="bt-card__head">
             <div class="bt-card__title">
@@ -980,6 +1066,65 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
       </div>
     </template>
 
+    <!-- 新机接管（迁移中心身份） -->
+    <Transition name="modal">
+    <div v-if="takeoverModal" class="bt-modal-mask" @click.self="takeoverModal.busy ? null : (takeoverModal = null, restoreFocus())">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="迁移到新机">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">迁移到新机 · 接管现役身份</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="takeoverModal = null; restoreFocus()">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack">
+            <p class="bt-modal__desc">
+              流程：① 目标机装 WG 并<b>继承现役的密钥与端口</b>（身份不变）→ ② 面板侧真握手实测（不通即中止，成员零改动）
+              → ③ 金丝雀成员先翻端点验证 → ④ 其余成员翻转（本机最后）→ ⑤ 置现役并停用旧中心。
+            </p>
+            <p class="bt-modal__desc">
+              因为身份不变，<b>使用端只差 Endpoint 一行</b>：到中心面板重新下载凭证导入即可
+              （对比「切换为现役」＝目标机用自己的密钥，使用端要换一整套 A/B 凭证）。
+            </p>
+            <label class="bt-field">
+              <span class="bt-field__label">接管目标机（新机器/备援，需已录 SSH）</span>
+              <select v-model="takeoverModal.targetId" class="bt-select">
+                <option :value="0" disabled>请选择</option>
+                <option v-for="t in takeoverTargets" :key="t.id" :value="t.id">{{ t.name }}</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">监听端口（默认沿用现役；云安全组要放行）</span>
+              <input v-model.number="takeoverModal.port" class="bt-input" type="number" min="1" max="65535" />
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">金丝雀成员（先翻它验证，可选）</span>
+              <select v-model="takeoverModal.canaryId" class="bt-select">
+                <option :value="0">自动挑选</option>
+                <option v-for="p in canaryCandidates" :key="p.id" :value="p.server_id">{{ p.name }}</option>
+              </select>
+            </label>
+            <p class="bt-modal__desc">
+              注意：目标机若用 WG 网段地址做 SSH 会被跳过（翻转时重启接口会失联）；
+              本机成员会自动排在最后执行。
+            </p>
+            <div v-if="!takeoverTargets.length" class="bt-alert bt-alert--info" role="note">
+              <AppIcon name="warn" aria-hidden="true" />还没有可用的目标机：先去「节点管理」添加一台公网服务器并录入 SSH；
+              已在本网内的 ssh 成员要先在成员表移出（备援中心可直接作为目标）。
+            </div>
+            <div v-if="takeoverModal.error" class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ takeoverModal.error }}
+            </div>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--ghost" type="button" :disabled="takeoverModal.busy" @click="takeoverModal = null; restoreFocus()">取消</button>
+          <button class="bt-btn bt-btn--primary" type="button" :disabled="takeoverModal.busy || !takeoverModal.targetId" @click="runTakeover">
+            {{ takeoverModal.busy ? '提交中…' : '开始接管' }}
+          </button>
+        </div>
+      </div>
+    </div>
+    </Transition>
+
     <!-- 中心节点面板：概览 / 使用端凭证 / 成员 -->
     <Transition name="modal">
     <div v-if="hubModal" class="bt-modal-mask" @click.self="hubModal.busy ? null : (hubModal = null, restoreFocus())">
@@ -1049,6 +1194,19 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               <p v-if="!hubModal.data.hub.is_active" class="bt-modal__desc" style="margin-top: 8px">
                 想让这台接管现役？用卡片上的「切换为现役」（两阶段金丝雀）。
               </p>
+              <div v-else class="hub-actions" style="margin-top: 8px">
+                <button
+                  class="bt-btn bt-btn--default bt-btn--sm"
+                  type="button"
+                  :disabled="runningTask || !takeoverTargets.length"
+                  @click="openTakeover"
+                >
+                  <AppIcon name="refresh" aria-hidden="true" />迁移到新机（接管身份）
+                </button>
+                <span class="bt-text-muted" style="font-size: 12px">
+                  额度用完换机器：新机继承本中心的密钥与端口，使用端只改 Endpoint 一行
+                </span>
+              </div>
             </section>
 
             <!-- 双中心就绪度 -->

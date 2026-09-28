@@ -253,6 +253,11 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if err != nil || hub == nil {
 		return errors.New("中心节点槽位不存在")
 	}
+	// 退役槽位重新启用 = 新机器新身份：接管时它的密钥/端口被迁移给了目标机，
+	// 若沿用会把同一身份同时装在两台机器上（互相抢端点），必须先清掉再自愈生成。
+	if hub.Status == "retired" {
+		hub.PublicKey, hub.PrivateKeyEnc, hub.Endpoint = "", nil, ""
+	}
 	// 密钥自愈：槽位缺钥则补生成（正常由 apply 创建时生成）
 	if !ValidKey(hub.PublicKey) {
 		kp, err := GenerateKeyPair()

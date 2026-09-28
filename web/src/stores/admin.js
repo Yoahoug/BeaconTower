@@ -218,6 +218,18 @@ export const useAdminStore = defineStore('admin', {
       return r
     },
 
+    // 新机接管（身份迁移）
+    async takeover(payload) {
+      const r = await adminClient.wgTakeover(payload)
+      await this.loadWg()
+      return r
+    },
+
+    async cleanupHub(id) {
+      await adminClient.wgHubCleanup(id)
+      await this.loadWg()
+    },
+
     async patrolNow() {
       await adminClient.wgPatrol()
       await this.loadWg()

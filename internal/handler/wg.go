@@ -173,17 +173,45 @@ func (a *App) WGOverview(c *gin.Context) {
 	}
 	resp := gin.H{"network": nil, "hubs": []gin.H{}, "peers": []gin.H{},
 		"servers": []gin.H{}, "running_task": false}
-	// 服务器清单（向导/导入选择用；in_net 标记成员归属，未初始化时全为 false）
+	// 服务器清单（向导/导入选择用；未初始化时角色全为空）
 	servers, _ := a.DB.ListServers()
+	hubs, _ := a.DB.ListWGHub()
+	peers, _ := a.DB.ListWGPeers()
+	// 组网角色：hub=现役中心 / standby=备援 / spoke=普通成员（前端据此决定能否当接管目标等）
+	roleOf := map[int64]string{}
 	inNet := map[int64]bool{}
+	activeID := int64(0)
+	if netRow != nil {
+		activeID = netRow.ActiveHubServerID
+	}
+	for _, h := range hubs {
+		if h.Status == "retired" {
+			continue
+		}
+		role := "standby"
+		if h.ServerID == activeID {
+			role = "hub"
+		}
+		roleOf[h.ServerID] = role
+		inNet[h.ServerID] = true
+	}
+	for _, p := range peers {
+		if !p.ServerID.Valid || p.Status == "left" {
+			continue
+		}
+		inNet[p.ServerID.Int64] = true
+		if roleOf[p.ServerID.Int64] == "" {
+			roleOf[p.ServerID.Int64] = "spoke"
+		}
+	}
 	srvViews := []gin.H{}
 	for _, s := range servers {
 		cred, _ := a.DB.GetCredential(s.ID)
-		ready := sshReady(cred)
 		srvViews = append(srvViews, gin.H{
 			"id": s.ID, "name": s.Name, "is_self": s.IsSelf, "in_network": inNet[s.ID],
 			// 本机节点的 ssh_ready 决定它能否当成员（前端据此提示「先录宿主 SSH」）
-			"ssh_ready": ready,
+			"ssh_ready": sshReady(cred),
+			"wg_role":   roleOf[s.ID],
 		})
 	}
 	resp["servers"] = srvViews
@@ -191,9 +219,16 @@ func (a *App) WGOverview(c *gin.Context) {
 		now := time.Now()
 		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 		// hub 槽位
-		hubs, _ := a.DB.ListWGHub()
-		hubViews := []gin.H{}
+		hubViews, retiredViews := []gin.H{}, []gin.H{}
 		for _, h := range hubs {
+			if h.Status == "retired" {
+				sname := ""
+				if srv, _ := a.DB.GetServer(h.ServerID); srv != nil {
+					sname = srv.Name
+				}
+				retiredViews = append(retiredViews, gin.H{"server_id": h.ServerID, "name": sname})
+				continue
+			}
 			rx, tx, _ := a.DB.WGHubTrafficRange(h.ServerID, monthStart.Unix(), now.Unix())
 			name := ""
 			if srv, _ := a.DB.GetServer(h.ServerID); srv != nil {
@@ -213,9 +248,7 @@ func (a *App) WGOverview(c *gin.Context) {
 			})
 		}
 		// 成员
-		peers, _ := a.DB.ListWGPeers()
 		peerViews := []gin.H{}
-		inNet := map[int64]bool{}
 		for _, p := range peers {
 			peerViews = append(peerViews, gin.H{
 				"id": p.ID, "kind": p.Kind, "server_id": nullI64(p.ServerID),
@@ -225,12 +258,6 @@ func (a *App) WGOverview(c *gin.Context) {
 				"rx_bytes":       p.RxBytes, "tx_bytes": p.TxBytes,
 				"can_export": len(p.PrivateKeyEnc) > 0,
 			})
-			if p.ServerID.Valid {
-				inNet[p.ServerID.Int64] = p.Status != "left"
-			}
-		}
-		for _, h := range hubs {
-			inNet[h.ServerID] = true
 		}
 		resp["network"] = gin.H{
 			"subnet": netRow.Subnet, "hub_ip": netRow.HubIP, "iface": netRow.Iface,
@@ -238,19 +265,10 @@ func (a *App) WGOverview(c *gin.Context) {
 			"active_hub_server_id": netRow.ActiveHubServerID,
 		}
 		resp["hubs"] = hubViews
+		resp["retired_hubs"] = retiredViews
 		resp["peers"] = peerViews
 		running, _ := a.DB.HasRunningWGTask()
 		resp["running_task"] = running
-		// 补充成员归属标记（清单已在函数头部无条件返回）
-		for _, s := range servers {
-			if inNet[s.ID] {
-				for i := range srvViews {
-					if srvViews[i]["id"] == s.ID {
-						srvViews[i]["in_network"] = true
-					}
-				}
-			}
-		}
 	}
 	middleware.OK(c, resp)
 }
@@ -1135,6 +1153,162 @@ func (a *App) WGAdoptServer(c *gin.Context) {
 	middleware.OK(c, gin.H{"server_id": in.ServerID, "detail": detail})
 }
 
+type wgTakeoverInput struct {
+	TargetServerID int64 `json:"target_server_id"`
+	Port           int   `json:"port"`
+	CanaryServerID int64 `json:"canary_server_id"`
+}
+
+// WGTakeover 新机接管现役中心：目标机继承现役的密钥与端口，成员只改端点，
+// 使用端凭证只差 Endpoint 一行（vs「切换」要换一整套 A/B 凭证）。
+func (a *App) WGTakeover(c *gin.Context) {
+	var in wgTakeoverInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.TargetServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 target_server_id")
+		return
+	}
+	netRow, _ := a.DB.GetWGNetwork()
+	if netRow == nil || netRow.ActiveHubServerID == 0 {
+		middleware.Fail(c, 2010, "尚未初始化组网或缺少现役中心节点")
+		return
+	}
+	if in.TargetServerID == netRow.ActiveHubServerID {
+		middleware.Fail(c, 2010, "目标机已是现役中心")
+		return
+	}
+	target, _ := a.DB.GetServer(in.TargetServerID)
+	if target == nil {
+		middleware.Fail(c, 2002, "目标机不存在")
+		return
+	}
+	cred, _ := a.DB.GetCredential(in.TargetServerID)
+	if !sshReady(cred) {
+		msg := "目标机无可用 SSH 凭据：请先在节点管理里录入"
+		if target.IsSelf {
+			msg += "宿主 SSH（容器可达地址）"
+		}
+		middleware.Fail(c, 2010, msg)
+		return
+	}
+	// 目标机若已是本网成员（spoke），接管会把它变成中心并毁掉它的成员配置 → 先移出
+	if peer, _ := a.DB.GetWGPeerByServer(in.TargetServerID); peer != nil && peer.Status != "left" {
+		middleware.Fail(c, 2010, "目标机已是本网成员：请先在成员表把它移出，再执行接管")
+		return
+	}
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
+		return
+	}
+	defer a.wgOpUnlock()
+
+	// 目标槽位：不存在则创建（新机器就是这种情况）；已存在的备援直接升级
+	if hub, _ := a.DB.GetWGHub(in.TargetServerID); hub == nil {
+		port := in.Port
+		if port <= 0 {
+			if cur, _ := a.DB.GetWGHub(netRow.ActiveHubServerID); cur != nil {
+				port = cur.ListenPort
+			}
+		}
+		if port <= 0 {
+			port = 51820
+		}
+		if err := a.DB.UpsertWGHub(&store.WGHub{ServerID: in.TargetServerID, ListenPort: port,
+			Status: "pending"}); err != nil {
+			middleware.Fail(c, 5000, "目标槽位创建失败: "+err.Error())
+			return
+		}
+	}
+
+	// 金丝雀：优先指定；否则自动挑一台在线、且 SSH 不走 WG 网段的 SSH 成员
+	canaryID := in.CanaryServerID
+	if canaryID == 0 {
+		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid {
+			srv, _ := a.DB.GetServer(p.ServerID.Int64)
+			if srv == nil || !srv.IsSelf {
+				canaryID = p.ServerID.Int64
+			}
+		}
+	}
+	oldID := netRow.ActiveHubServerID
+	now := time.Now().Unix()
+	payload, _ := json.Marshal(wg.TakeoverInput{TargetServerID: in.TargetServerID,
+		OldServerID: oldID, Port: in.Port, CanaryServerID: canaryID})
+	taskID, err := a.DB.InsertWGTask(&store.WGTask{Kind: "takeover", Status: "running",
+		Payload: string(payload), CreatedAt: now})
+	if err != nil {
+		middleware.Fail(c, 5000, "任务创建失败: "+err.Error())
+		return
+	}
+	nameOf := func(id int64) string {
+		if s, _ := a.DB.GetServer(id); s != nil {
+			return s.Name
+		}
+		return strconv.FormatInt(id, 10)
+	}
+	addStep := func(seq int64, serverID int64, title string) bool {
+		_, err := a.DB.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: seq,
+			ServerID: sql.NullInt64{Int64: serverID, Valid: serverID > 0},
+			Title:    title, Status: "pending"})
+		if err != nil {
+			middleware.Fail(c, 5000, "步骤创建失败: "+err.Error())
+			return false
+		}
+		return true
+	}
+	if !addStep(0, in.TargetServerID, "准备目标机（迁移中心身份 + 安装）· "+nameOf(in.TargetServerID)) ||
+		!addStep(1, in.TargetServerID, "面板侧 UDP 实测 · "+nameOf(in.TargetServerID)) {
+		return
+	}
+	// 成员步骤：金丝雀最先；本机（面板宿主）排最后（翻转会重启它自己的接口）
+	peers, _ := a.DB.ListWGPeers()
+	seq := int64(2)
+	for _, p := range peers {
+		if p.Kind != "server" || !p.ServerID.Valid || p.Status == "left" {
+			continue
+		}
+		if p.ServerID.Int64 == in.TargetServerID {
+			continue
+		}
+		if p.ServerID.Int64 == canaryID {
+			continue
+		}
+		srv, _ := a.DB.GetServer(p.ServerID.Int64)
+		if srv != nil && srv.IsSelf {
+			continue
+		}
+		if !addStep(seq, p.ServerID.Int64, "翻转 · "+p.Name) {
+			return
+		}
+		seq++
+	}
+	if canaryID > 0 {
+		if !addStep(seq, canaryID, "金丝雀 · "+nameOf(canaryID)) {
+			return
+		}
+		seq++
+	}
+	// 本机最后（把上面跳过的本机成员补在这里）
+	for _, p := range peers {
+		if p.Kind != "server" || !p.ServerID.Valid || p.Status == "left" || p.ServerID.Int64 == in.TargetServerID {
+			continue
+		}
+		srv, _ := a.DB.GetServer(p.ServerID.Int64)
+		if srv == nil || !srv.IsSelf {
+			continue
+		}
+		if !addStep(seq, p.ServerID.Int64, "翻转 · "+p.Name+"（本机最后）") {
+			return
+		}
+		seq++
+	}
+	if !addStep(wg.TakeoverCommitSeq, in.TargetServerID, "提交并停用旧中心 · "+nameOf(oldID)) {
+		return
+	}
+	go a.WG.RunTakeover(taskID)
+	a.audit(a.actorOf(c), "wg_takeover", fmt.Sprintf("task:%d", taskID),
+		fmt.Sprintf("target=%d old=%d port=%d", in.TargetServerID, oldID, in.Port), ipOf(c))
+	middleware.OK(c, gin.H{"task_id": taskID})
+}
+
 type wgSwitchInput struct {
 	TargetServerID int64 `json:"target_server_id"`
 	CanaryServerID int64 `json:"canary_server_id"`
@@ -1159,6 +1333,10 @@ func (a *App) WGSwitchHub(c *gin.Context) {
 	target, _ := a.DB.GetWGHub(in.TargetServerID)
 	if target == nil {
 		middleware.Fail(c, 2010, "目标节点尚未纳管为 hub/备胎（请先导入或组网）")
+		return
+	}
+	if target.Status == "retired" {
+		middleware.Fail(c, 2010, "该中心已退役（身份已迁走）：请重新组网后再切换")
 		return
 	}
 	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {

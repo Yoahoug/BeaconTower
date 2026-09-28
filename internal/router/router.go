@@ -64,6 +64,8 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				// 中心节点面板 + 凭证中心
 				auth.GET("/wg/hubs/:id", app.WGHubDetail)
 				auth.POST("/wg/hubs/:id/probe", app.WGHubProbe)
+				auth.DELETE("/wg/hubs/:id", app.WGHubCleanup)
+				auth.POST("/wg/takeover", app.WGTakeover)
 				auth.PUT("/wg/peers/:id", app.WGPeerRename)
 				auth.POST("/wg/peers/:id/sync-hubs", app.WGPeerSyncHubs)
 				auth.GET("/wg/creds.zip", app.WGCredsZip)
