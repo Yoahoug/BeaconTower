@@ -1,7 +1,9 @@
 <!-- ============================================================
      节点详情页：公开只读 · 历史曲线（ECharts TrendChart 复用）
      - range 切换：1h/6h/24h/7d（7d 为小时聚合，或需登录）
-     - 三图：CPU / 内存+磁盘 / 吞吐（+ 功耗曲线，有 RAPL 才显示）
+     - 四图：CPU / 内存 / 吞吐 / 功耗（后者有 RAPL 才显示）
+     - 磁盘不入曲线：容量变化极慢，与内存也不在同一量级（同轴会把内存压成直线），
+       当前值看头部 NodeCard 的磁盘圆环即可
      - 头部复用 NodeCard 概要；a11y：图表 role=img 由 TrendChart 保障
      ============================================================ -->
 <script setup>
@@ -31,7 +33,7 @@ const error = ref('')
 const needLogin = ref(false)
 let ctrl = null
 
-const rangeLabel = computed(() => (RANGE_META.find((r) => r.key === range.value)?.label || '').replace('近 ', '近'))
+const rangeLabel = computed(() => RANGE_META.find((r) => r.key === range.value)?.label || '')
 
 function fmtClock(ts) {
   const d = new Date(ts * 1000)
@@ -43,15 +45,37 @@ function fmtClock(ts) {
 const xLabels = computed(() => points.value.map((p) => fmtClock(p.ts)))
 const hasPower = computed(() => points.value.some((p) => p.power != null))
 
+// 卡片头的静态参考值：磁盘只报当前占用、内存报总量，都不画曲线
+const memTotalText = computed(() => {
+  const t = server.value?.metrics?.memTotal
+  return t ? `总量 ${fmtSizeShort(t)}` : ''
+})
+const diskUsedText = computed(() => {
+  const m = server.value?.metrics
+  if (!m || m.diskUsed == null) return ''
+  return m.diskTotal ? `${fmtSizeShort(m.diskUsed)} / ${fmtSizeShort(m.diskTotal)}` : fmtSizeShort(m.diskUsed)
+})
+
 const cpuSeries = computed(() => [
   { name: 'CPU', color: '#0ea5e9', data: points.value.map((p) => p.cpu ?? 0), fill: true },
 ])
-// 磁盘：7d 走小时聚合，后端不聚合 disk_used → 该点为 null（而非 0）。
-// 保留 null 让曲线断开，别用 ?? 0 画一条贴着 0 的假线（会让人误判磁盘空了）。
+// 只画内存：单独成图才能看清波动范围。
+// 磁盘不画线（变化慢、且和内存同轴会被压平），当前值由头部 NodeCard 圆环给出。
 const memSeries = computed(() => [
-  { name: '内存已用', color: '#8b5cf6', data: points.value.map((p) => (p.memUsed ?? 0) / 1024 ** 3), fill: true },
-  { name: '磁盘已用', color: '#38bdf8', data: points.value.map((p) => (p.diskUsed == null ? null : p.diskUsed / 1024 ** 3)), fill: false },
+  {
+    name: '内存已用',
+    color: '#8b5cf6',
+    // 缺采样点保留 null 断线，别用 ?? 0 画一条砸到底的假线
+    data: points.value.map((p) => (p.memUsed == null ? null : p.memUsed / 1024 ** 3)),
+    fill: true,
+  },
 ])
+// 内存已用常在总量的一半上下小幅浮动：Y 轴 0 起会把波动压平，抬到「最小值向下取整再留 1G」
+const memYMin = computed(() => {
+  const gb = points.value.filter((p) => p.memUsed != null).map((p) => p.memUsed / 1024 ** 3)
+  if (!gb.length) return 0
+  return Math.max(0, Math.floor(Math.min(...gb)) - 1)
+})
 const netSeries = computed(() => [
   { name: '上行', color: '#0ea5e9', data: points.value.map((p) => p.netOut ?? 0), fill: true },
   { name: '下行', color: '#8b5cf6', data: points.value.map((p) => p.netIn ?? 0), fill: true },
@@ -210,12 +234,16 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="bt-card trend-panel bt-enter" style="--i: 2" aria-label="内存与磁盘历史">
+      <section class="bt-card trend-panel bt-enter" style="--i: 2" aria-label="内存历史">
         <div class="bt-card__head">
-          <div class="bt-card__title">内存 / 磁盘已用 · {{ rangeLabel }}</div>
+          <div class="bt-card__title">内存已用 · {{ rangeLabel }}</div>
+          <div class="trend-legend tnum">
+            <span v-if="memTotalText">{{ memTotalText }}</span>
+            <span v-if="diskUsedText">磁盘已用 {{ diskUsedText }}</span>
+          </div>
         </div>
         <div class="bt-card__body">
-          <TrendChart :series="memSeries" :x-labels="xLabels" :height="200" label="内存磁盘历史曲线" :y-formatter="(v) => fmtSizeShort(v)" />
+          <TrendChart :series="memSeries" :x-labels="xLabels" :height="200" label="内存历史曲线" :y-min="memYMin" :y-formatter="(v) => fmtSizeShort(v)" />
         </div>
       </section>
 

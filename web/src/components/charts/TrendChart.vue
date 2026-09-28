@@ -23,6 +23,9 @@ const props = defineProps({
   height: { type: Number, default: 240 },
   xLabels: { type: Array, default: null },
   yFormatter: { type: Function, default: null },
+  // 固定 Y 轴下界（不给则 0 起）：量级大、波动小的指标（内存已用）需要抬底，
+  // 否则波动被压平看不出变化；调用方负责选一个诚实的圆整下界
+  yMin: { type: Number, default: null },
   label: { type: String, default: '趋势图' },
 })
 
@@ -82,6 +85,7 @@ function render() {
       },
       yAxis: {
         type: 'value',
+        min: props.yMin ?? undefined,
         splitLine: { lineStyle: { color: 'rgba(23, 32, 64, 0.06)' } },
         axisLabel: {
           color: '#9aa3bc',
@@ -148,6 +152,7 @@ onUnmounted(() => {
 
 watch(() => props.series, render, { deep: true })
 watch(() => props.yFormatter, render)
+watch(() => props.yMin, render)
 </script>
 
 <template>
