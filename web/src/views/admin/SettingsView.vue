@@ -27,6 +27,13 @@ async function save() {
 
 <template>
   <div class="settings-stack">
+    <div class="page-head">
+      <div>
+        <h1>采集与展示</h1>
+        <p class="page-head__desc">采集间隔 / 功耗展示 / 公开页与 SSH 安全</p>
+      </div>
+    </div>
+
     <StateSkeleton v-if="admin.settingsLoading" :rows="5" />
     <StateError v-else-if="admin.settingsError && !admin.settings" :message="admin.settingsError" @retry="admin.loadSettings()" />
     <template v-else-if="admin.settings">

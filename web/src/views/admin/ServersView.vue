@@ -113,6 +113,13 @@ onMounted(() => {
 
 <template>
   <div>
+    <div class="page-head">
+      <div>
+        <h1>节点管理</h1>
+        <p class="page-head__desc">SSH 凭据与采集节点</p>
+      </div>
+    </div>
+
     <div class="bt-toolbar">
       <div class="bt-toolbar__info">
         共 {{ admin.servers.length }} 个节点 · 试连成功后自动回读系统画像、公网 IP 定位与 RAPL 功耗能力；IP 仅管理端可见

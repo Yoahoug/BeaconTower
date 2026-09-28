@@ -42,6 +42,13 @@ async function submit() {
 
 <template>
   <div class="settings-stack">
+    <div class="page-head">
+      <div>
+        <h1>安全与账号</h1>
+        <p class="page-head__desc">密码 / 会话 / 严格模式</p>
+      </div>
+    </div>
+
     <section class="bt-card bt-enter" style="--i: 0" aria-labelledby="sec-pw">
       <div class="bt-card__head"><div id="sec-pw" class="bt-card__title">修改管理员密码</div></div>
       <div class="bt-card__body">

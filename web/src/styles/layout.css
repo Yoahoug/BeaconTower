@@ -171,6 +171,23 @@
   white-space: nowrap;
 }
 
+/* 动作型导航项（如退出登录）：外观同导航项，但不参与选中态 */
+.app-nav__item--action {
+  width: 100%;
+  margin-top: 6px;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--bt-text-3);
+}
+
+.app-nav__item--action:hover {
+  color: var(--bt-text-1);
+  background: rgba(255, 255, 255, 0.65);
+}
+
 /* 底部实时状态卡 */
 .app-side-foot {
   flex-shrink: 0;
@@ -199,6 +216,32 @@
 
 .app-side-status strong.ok {
   color: var(--bt-success-600);
+}
+
+/* 管理端身份行：与状态卡同一玻璃块，弱化展示 */
+.app-side-user {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: var(--bt-space-2);
+  padding-bottom: var(--bt-space-2);
+  border-bottom: 1px solid var(--bt-border);
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-2);
+  min-width: 0;
+}
+
+.app-side-user svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--bt-text-3);
+}
+
+.app-side-user span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-side-ver {

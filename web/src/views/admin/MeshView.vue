@@ -99,7 +99,8 @@ function buildTopoOption() {
     series: [{
       type: 'graph',
       layout: 'force',
-      roam: true,
+      // 仅拖拽平移：滚轮/触摸滚动留给页面，避免上下滑动时被图表劫持；触屏设备干脆禁用
+      roam: window.matchMedia('(pointer: coarse)').matches ? false : 'move',
       force: { repulsion: 320, edgeLength: 110 },
       label: { position: 'bottom', fontSize: 11 },
       edgeSymbol: ['none', 'arrow'],
@@ -277,6 +278,11 @@ const importModal = ref(null)
 const importHubId = ref(0)
 const importStandbyId = ref(0)
 const importPicked = ref([])
+
+// 可勾选参与匹配的节点：排除已选 hub 与备援
+const importPickPool = computed(() =>
+  selectableServers.value.filter((x) => x.id !== importHubId.value && x.id !== importStandbyId.value),
+)
 
 function openImport() {
   importHubId.value = 0
@@ -801,7 +807,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             <AppIcon name="warn" aria-hidden="true" />{{ wizard.error }}
           </div>
         </div>
-        <div class="mesh-modal-foot">
+        <div class="bt-modal__foot">
           <button v-if="wizard.step === 1" class="bt-btn bt-btn--primary" type="button" :disabled="wizard.busy" @click="runPlan">
             {{ wizard.busy ? '预检中…（SSH 探测各节点）' : '下一步：预检' }}
           </button>
@@ -825,31 +831,39 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="importModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
-          <p class="mesh-hint">选择现役中心节点，面板将读取其配置与运行态，自动纳管网内成员（按公钥匹配；无法匹配的记为设备）。</p>
-          <label class="bt-field"><span class="bt-field__label">现役中心节点 ★</span>
-            <select v-model="importHubId" class="bt-select">
-              <option :value="0" disabled>请选择</option>
-              <option v-for="s in selectableServers" :key="s.id" :value="s.id">{{ s.name }}</option>
-            </select>
-          </label>
-          <label class="bt-field"><span class="bt-field__label">备援节点（可选，warm standby）</span>
-            <select v-model="importStandbyId" class="bt-select">
-              <option :value="0">无</option>
-              <option v-for="s in selectableServers.filter((x) => x.id !== importHubId)" :key="s.id" :value="s.id">{{ s.name }}</option>
-            </select>
-          </label>
-          <p class="mesh-hint">勾选参与匹配的节点（面板将 SSH 读取其 WG 配置）：</p>
-          <div class="mesh-pick-list">
-            <label v-for="s in selectableServers.filter((x) => x.id !== importHubId && x.id !== importStandbyId)" :key="s.id" class="bt-check mesh-pick">
-              <input v-model="importPicked" type="checkbox" :value="s.id" />
-              <span>{{ s.name }}</span>
+          <div class="bt-form-stack">
+            <p class="bt-modal__desc">
+              选择现役中心节点，面板将读取其配置与运行态，自动纳管网内成员（按公钥匹配；无法匹配的记为设备）。
+            </p>
+            <label class="bt-field"><span class="bt-field__label">现役中心节点 ★</span>
+              <select v-model="importHubId" class="bt-select">
+                <option :value="0" disabled>请选择</option>
+                <option v-for="s in selectableServers" :key="s.id" :value="s.id">{{ s.name }}</option>
+              </select>
             </label>
-          </div>
-          <div v-if="importModal.error" class="bt-alert bt-alert--error" role="alert">
-            <AppIcon name="warn" aria-hidden="true" />{{ importModal.error }}
+            <label class="bt-field"><span class="bt-field__label">备援节点（可选，warm standby）</span>
+              <select v-model="importStandbyId" class="bt-select">
+                <option :value="0">无</option>
+                <option v-for="s in selectableServers.filter((x) => x.id !== importHubId)" :key="s.id" :value="s.id">{{ s.name }}</option>
+              </select>
+            </label>
+            <div class="bt-field">
+              <span class="bt-field__label">参与匹配的节点（面板将 SSH 读取其 WG 配置）</span>
+              <div v-if="importPickPool.length" class="mesh-pick-list">
+                <label v-for="s in importPickPool" :key="s.id" class="bt-check mesh-pick">
+                  <input v-model="importPicked" type="checkbox" :value="s.id" />
+                  <span>{{ s.name }}</span>
+                </label>
+              </div>
+              <p v-else class="bt-hint">暂无可参与匹配的其他节点（先去掉 hub/备援选择，或在「节点管理」添加节点）</p>
+            </div>
+            <div v-if="importModal.error" class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ importModal.error }}
+            </div>
           </div>
         </div>
-        <div class="mesh-modal-foot">
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--ghost" type="button" :disabled="importModal.busy" @click="importModal = null; restoreFocus()">取消</button>
           <button class="bt-btn bt-btn--primary" type="button" :disabled="importModal.busy" @click="runImport">
             {{ importModal.busy ? '导入中…' : '开始导入' }}
           </button>
@@ -867,20 +881,23 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="switchModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
-          <p class="mesh-hint">
-            流程：校正备援 hub → 金丝雀节点先切换验证（失败自动回滚）→ 其余节点切换。
-            设备（Mac/iPhone）需在切换后重新扫码/导入对应凭证。
-          </p>
-          <label class="bt-field"><span class="bt-field__label">目标中心（切换后现役）</span>
-            <select v-model="switchTargetId" class="bt-select">
-              <option v-for="h in switchCandidates" :key="h.server_id" :value="h.server_id">{{ h.name }}（:{{ h.listen_port }}）</option>
-            </select>
-          </label>
-          <div v-if="switchModal.error" class="bt-alert bt-alert--error" role="alert">
-            <AppIcon name="warn" aria-hidden="true" />{{ switchModal.error }}
+          <div class="bt-form-stack">
+            <p class="bt-modal__desc">
+              流程：校正备援 hub → 金丝雀节点先切换验证（失败自动回滚）→ 其余节点切换。
+              设备（Mac/iPhone）需在切换后重新扫码/导入对应凭证。
+            </p>
+            <label class="bt-field"><span class="bt-field__label">目标中心（切换后现役）</span>
+              <select v-model="switchTargetId" class="bt-select">
+                <option v-for="h in switchCandidates" :key="h.server_id" :value="h.server_id">{{ h.name }}（:{{ h.listen_port }}）</option>
+              </select>
+            </label>
+            <div v-if="switchModal.error" class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ switchModal.error }}
+            </div>
           </div>
         </div>
-        <div class="mesh-modal-foot">
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--ghost" type="button" :disabled="switchModal.busy" @click="switchModal = null; restoreFocus()">取消</button>
           <button class="bt-btn bt-btn--danger" type="button" :disabled="switchModal.busy" @click="runSwitch">
             {{ switchModal.busy ? '提交中…' : '开始切换' }}
           </button>
@@ -898,15 +915,18 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="deviceModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
-          <label class="bt-field"><span class="bt-field__label">设备名称</span>
-            <input v-model="deviceModal.name" class="bt-input" type="text" placeholder="如 iPhone 15" @keyup.enter="createDevice" />
-          </label>
-          <p class="mesh-hint">面板生成密钥并热加入现役 hub；创建后点成员表「凭证 / QR」扫码导入。</p>
-          <div v-if="deviceModal.error" class="bt-alert bt-alert--error" role="alert">
-            <AppIcon name="warn" aria-hidden="true" />{{ deviceModal.error }}
+          <div class="bt-form-stack">
+            <label class="bt-field"><span class="bt-field__label">设备名称</span>
+              <input v-model="deviceModal.name" class="bt-input" type="text" placeholder="如 iPhone 15" @keyup.enter="createDevice" />
+            </label>
+            <p class="bt-modal__desc">面板生成密钥并热加入现役 hub；创建后点成员表「凭证 / QR」扫码导入。</p>
+            <div v-if="deviceModal.error" class="bt-alert bt-alert--error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ deviceModal.error }}
+            </div>
           </div>
         </div>
-        <div class="mesh-modal-foot">
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--ghost" type="button" :disabled="deviceModal.busy" @click="deviceModal = null; restoreFocus()">取消</button>
           <button class="bt-btn bt-btn--primary" type="button" :disabled="deviceModal.busy" @click="createDevice">
             {{ deviceModal.busy ? '创建中…' : '创建' }}
           </button>
@@ -991,16 +1011,17 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal = null; restoreFocus()">关闭</button>
         </div>
         <div class="bt-modal__body">
-          <p class="mesh-hint">
+          <p class="bt-modal__desc">
             国内节点难以直连 GitHub 时，在此登记资产（官方直链 / 加速镜像 / 自有仓库 release），
             面板测速择优下载校验后缓存，再经 SSH 推送到节点（节点零外网依赖）。
           </p>
-          <div v-if="assetModal.error" class="bt-alert bt-alert--error" role="alert">
+          <div v-if="assetModal.error" class="bt-alert bt-alert--error mesh-asset-alert" role="alert">
             <AppIcon name="warn" aria-hidden="true" />{{ assetModal.error }}
           </div>
-          <div class="mesh-asset-head">
-            <select v-model="assetServerId" class="bt-select" style="max-width: 220px">
-              <option v-for="p in serverPeers" :key="p.server_id" :value="p.server_id">推送目标：{{ p.name }}</option>
+          <div class="mesh-asset-toolbar">
+            <span class="mesh-asset-toolbar__label">推送目标</span>
+            <select v-model="assetServerId" class="bt-select mesh-asset-toolbar__select">
+              <option v-for="p in serverPeers" :key="p.server_id" :value="p.server_id">{{ p.name }}</option>
             </select>
             <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetRegisterForm">
               <AppIcon name="plus" aria-hidden="true" />登记资产
@@ -1017,7 +1038,7 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             <label class="bt-field"><span class="bt-field__label">下载源（每行一个，GitHub 链接自动测镜像）</span>
               <textarea v-model="assetModal.form.sources_text" class="bt-textarea mono" rows="3"
                 placeholder="https://github.com/owner/repo/releases/download/v1/xxx" /></label>
-            <div class="mesh-modal-foot" style="padding: 0">
+            <div class="mesh-form-actions">
               <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="assetModal.form = null">取消</button>
               <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="assetModal.busy" @click="saveAsset">保存</button>
             </div>
@@ -1049,7 +1070,14 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               </button>
             </div>
           </div>
-          <p v-if="!admin.assets.length && !assetModal.form" class="mesh-hint" style="text-align:center">暂无资产，点「登记资产」添加（如 wireguard-go 二进制、静态 wg 工具）</p>
+          <div v-if="admin.assetsLoading && !admin.assets.length && !assetModal.form" class="bt-hint" style="text-align: center; padding: 12px">
+            正在加载资产…
+          </div>
+          <div v-else-if="!admin.assets.length && !assetModal.form" class="mesh-asset-empty">
+            <AppIcon name="empty" aria-hidden="true" />
+            <p>暂无资产</p>
+            <span>点「登记资产」添加，如 wireguard-go 二进制、静态 wg 工具</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1142,24 +1170,33 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
   margin-right: 4px;
 }
 .mesh-hint {
-  font-size: 13px;
-  color: #778;
-  margin: 8px 0;
+  font-size: var(--bt-font-md);
+  color: var(--bt-text-3);
+  line-height: var(--bt-line-md);
+  margin: 0 0 var(--bt-space-3);
 }
 .mesh-pick-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--bt-space-2);
   max-height: 260px;
   overflow: auto;
+  padding: 2px;
 }
 .mesh-pick {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
-  padding: 6px 8px;
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: var(--bt-radius-md);
+  transition:
+    border-color var(--bt-duration-fast) ease,
+    background var(--bt-duration-fast) ease;
+}
+.mesh-pick:hover {
+  border-color: rgba(14, 165, 233, 0.45);
+  background: rgba(14, 165, 233, 0.05);
 }
 .mesh-wizard-params {
   display: grid;
@@ -1178,12 +1215,6 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
   border-radius: 8px;
   margin-bottom: 6px;
   font-size: 13px;
-}
-.mesh-modal-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
 }
 .mesh-conf {
   text-align: center;
@@ -1233,38 +1264,87 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
 .bt-text-muted {
   opacity: 0.6;
 }
-.mesh-asset-head {
+.mesh-asset-alert {
+  margin-top: var(--bt-space-4);
+}
+/* 顶部工具栏：推送目标（带标签）+ 登记按钮右对齐 */
+.mesh-asset-toolbar {
   display: flex;
-  gap: 8px;
   align-items: center;
-  justify-content: space-between;
-  margin: 10px 0;
+  gap: var(--bt-space-2);
+  margin: var(--bt-space-4) 0;
+}
+.mesh-asset-toolbar__label {
+  flex-shrink: 0;
+  font-size: var(--bt-font-sm);
+  font-weight: var(--bt-weight-medium);
+  color: var(--bt-text-2);
+}
+.mesh-asset-toolbar__select {
+  width: auto;
+  min-width: 150px;
+  max-width: 240px;
+}
+.mesh-asset-toolbar .bt-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.mesh-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bt-space-2);
+}
+.mesh-asset-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 26px 16px;
+  border: 1px dashed var(--bt-border-strong);
+  border-radius: var(--bt-radius-lg);
+  text-align: center;
+  color: var(--bt-text-3);
+}
+.mesh-asset-empty svg {
+  width: 26px;
+  height: 26px;
+  opacity: 0.55;
+  margin-bottom: 4px;
+}
+.mesh-asset-empty p {
+  margin: 0;
+  font-size: var(--bt-font-md);
+  font-weight: var(--bt-weight-semibold);
+  color: var(--bt-text-2);
+}
+.mesh-asset-empty span {
+  font-size: var(--bt-font-sm);
 }
 .mesh-asset-form {
-  border: 1px solid rgba(128, 128, 128, 0.25);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 10px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: var(--bt-radius-lg);
+  padding: var(--bt-space-4);
+  margin-bottom: var(--bt-space-3);
   display: grid;
-  gap: 8px;
+  gap: var(--bt-space-3);
 }
 .mesh-asset-row {
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
+  border: 1px solid var(--bt-border);
+  border-radius: var(--bt-radius-lg);
+  padding: var(--bt-space-3) var(--bt-space-4);
+  margin-bottom: var(--bt-space-2);
 }
 .mesh-asset-main {
   display: flex;
-  gap: 8px;
+  gap: var(--bt-space-2);
   align-items: center;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--bt-font-md);
 }
 .mesh-asset-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 6px;
+  gap: var(--bt-space-2);
+  margin-top: var(--bt-space-2);
 }
 .mesh-probe-results {
   display: flex;

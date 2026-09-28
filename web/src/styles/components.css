@@ -290,6 +290,20 @@
   grid-column: span 2;
 }
 
+/* 单列表单栈：连续字段统一 16px 间距（弹窗与窄栏表单用，替代字段零间距堆叠） */
+.bt-form-stack {
+  display: grid;
+  gap: var(--bt-space-4);
+}
+
+/* 辅助说明：弱化小字，随父级 gap 排布 */
+.bt-hint {
+  margin: 0;
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-3);
+  line-height: var(--bt-line-md);
+}
+
 @media (max-width: 640px) {
   .bt-form-grid {
     grid-template-columns: 1fr;
@@ -497,7 +511,13 @@
 
 .bt-modal {
   width: 100%;
-  max-width: 440px;
+  max-width: 460px;
+  /* 超高时主体独立滚动，不撑破视口（dvh 兜底 vh） */
+  max-height: calc(100vh - 2 * var(--bt-space-5));
+  max-height: calc(100dvh - 2 * var(--bt-space-5));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(28px) saturate(180%);
   -webkit-backdrop-filter: blur(28px) saturate(180%);
@@ -510,37 +530,50 @@
 }
 
 .bt-modal--lg {
-  max-width: 720px;
+  max-width: 760px;
 }
 
+/* 头部：标题 + 关闭；细分割线与主体分区 */
 .bt-modal__head {
+  flex-shrink: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: var(--bt-space-3);
-  padding: var(--bt-space-5) var(--bt-space-6) 0;
+  gap: var(--bt-space-4);
+  padding: var(--bt-space-5) var(--bt-space-5) var(--bt-space-4);
+  border-bottom: 1px solid var(--bt-border);
 }
 
 .bt-modal__title {
   font-size: var(--bt-font-lg);
   font-weight: var(--bt-weight-semibold);
+  line-height: 1.45;
+  padding-top: 1px;
+  min-width: 0;
 }
 
 .bt-modal__body {
-  padding: var(--bt-space-4) var(--bt-space-6);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--bt-space-5);
 }
 
 .bt-modal__desc {
+  margin: 0;
   font-size: var(--bt-font-md);
-  color: var(--bt-text-2);
+  color: var(--bt-text-3);
   line-height: var(--bt-line-md);
 }
 
 .bt-modal__foot {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: var(--bt-space-2);
-  padding: 0 var(--bt-space-6) var(--bt-space-5);
+  padding: var(--bt-space-4) var(--bt-space-5);
+  border-top: 1px solid var(--bt-border);
 }
 
 /* ================= 表格 ================= */

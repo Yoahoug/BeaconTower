@@ -38,6 +38,13 @@ onMounted(() => {
 
 <template>
   <div>
+    <div class="page-head">
+      <div>
+        <h1>审计日志</h1>
+        <p class="page-head__desc">管理操作留痕</p>
+      </div>
+    </div>
+
     <div class="bt-toolbar" role="search">
       <div class="bt-toolbar__info">共 {{ admin.auditTotal }} 条记录 · 来源 IP 仅以哈希存储展示（SHA-256）</div>
       <div class="bt-toolbar__actions">

@@ -3,20 +3,69 @@
      - 路由切换走 page 转场（淡入上滑），数据轮询不重播
      - 顶栏进度光线在数据刷新时点亮（is-busy）
      - 面包屑由路由 meta.breadcrumb 驱动
+     - 管理菜单并入主侧栏（v2.2）：仅登录后的 /admin 子页出现
+       「管理面板」分组与退出登录，公开页不暴露任何管理入口
      ============================================================ -->
 <script setup>
-import { computed, onMounted, onUnmounted, watch } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
+import { getCachedStatus, resetAuthCache } from '../api/auth'
 import { useMonitorStore } from '../stores/monitor'
 import { useUiStore } from '../stores/ui'
 import { agoText } from '../utils/format'
 
 const route = useRoute()
+const router = useRouter()
 const monitor = useMonitorStore()
 const ui = useUiStore()
 
 const crumbs = computed(() => route.meta.breadcrumb || [{ label: '总览' }])
+
+// ---------- 管理端导航（并入主侧栏；仅在登录后的 /admin 子页出现，公开页不暴露入口） ----------
+const adminNav = [
+  { to: '/admin/servers', label: '节点管理', icon: 'server' },
+  { to: '/admin/mesh', label: 'WG 组网', icon: 'layers' },
+  { to: '/admin/settings', label: '采集与展示', icon: 'sliders' },
+  { to: '/admin/security', label: '安全与账号', icon: 'key' },
+  { to: '/admin/audit', label: '审计日志', icon: 'log' },
+]
+
+const inAdmin = computed(() => route.meta.requiresAuth === true)
+const adminName = ref('')
+
+function isActiveAdmin(to) {
+  return route.path === to || route.path.startsWith(`${to}/`)
+}
+
+// 用户名复用守卫的 status 缓存（30s），进入管理端不额外打接口
+watch(
+  inAdmin,
+  async (on) => {
+    if (!on) {
+      adminName.value = ''
+      return
+    }
+    try {
+      adminName.value = (await getCachedStatus())?.username || ''
+    } catch {
+      adminName.value = ''
+    }
+  },
+  { immediate: true },
+)
+
+async function logout() {
+  try {
+    // 动态引入管理 store：公开首屏 bundle 不含管理代码
+    const { useAdminStore } = await import('../stores/admin')
+    await useAdminStore().logout()
+  } finally {
+    resetAuthCache()
+    ui.notify('已退出登录')
+    router.push('/admin/login')
+  }
+}
 
 function toggleDrawer() {
   ui.setDrawer(!ui.drawerOpen)
@@ -73,9 +122,34 @@ onUnmounted(() => {
           <AppIcon name="dashboard" aria-hidden="true" />
           <span>状态总览</span>
         </RouterLink>
+
+        <template v-if="inAdmin">
+          <div class="app-nav__group">管理面板</div>
+          <RouterLink
+            v-for="i in adminNav"
+            :key="i.to"
+            :to="i.to"
+            class="app-nav__item"
+            :class="{ 'is-active': isActiveAdmin(i.to) }"
+            :aria-current="isActiveAdmin(i.to) ? 'page' : undefined"
+            :title="i.label"
+            @click="closeDrawer"
+          >
+            <AppIcon :name="i.icon" aria-hidden="true" />
+            <span>{{ i.label }}</span>
+          </RouterLink>
+          <button class="app-nav__item app-nav__item--action" type="button" title="退出登录" @click="logout">
+            <AppIcon name="logout" aria-hidden="true" />
+            <span>退出登录</span>
+          </button>
+        </template>
       </nav>
 
       <div class="app-side-foot">
+        <div v-if="inAdmin" class="app-side-user">
+          <AppIcon name="user" aria-hidden="true" />
+          <span>{{ adminName || '管理员' }}</span>
+        </div>
         <div class="app-side-status" aria-label="全网实时状态">
           <span>节点在线</span>
           <strong class="ok tnum">{{ monitor.summary.online }} / {{ monitor.summary.total }}</strong>
