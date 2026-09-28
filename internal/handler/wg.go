@@ -164,6 +164,7 @@ func nullF64(n sql.NullFloat64) any {
 }
 
 // WGOverview 组网总览：网络 + hub 槽位（含月流量）+ 成员 + 服务器清单。
+// servers 无条件返回：导入/向导正是「未初始化→初始化」的入口，初始化前也要能选节点。
 func (a *App) WGOverview(c *gin.Context) {
 	netRow, err := a.DB.GetWGNetwork()
 	if err != nil {
@@ -172,6 +173,16 @@ func (a *App) WGOverview(c *gin.Context) {
 	}
 	resp := gin.H{"network": nil, "hubs": []gin.H{}, "peers": []gin.H{},
 		"servers": []gin.H{}, "running_task": false}
+	// 服务器清单（向导/导入选择用；in_net 标记成员归属，未初始化时全为 false）
+	servers, _ := a.DB.ListServers()
+	inNet := map[int64]bool{}
+	srvViews := []gin.H{}
+	for _, s := range servers {
+		srvViews = append(srvViews, gin.H{
+			"id": s.ID, "name": s.Name, "is_self": s.IsSelf, "in_network": inNet[s.ID],
+		})
+	}
+	resp["servers"] = srvViews
 	if netRow != nil {
 		now := time.Now()
 		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -223,15 +234,16 @@ func (a *App) WGOverview(c *gin.Context) {
 		resp["peers"] = peerViews
 		running, _ := a.DB.HasRunningWGTask()
 		resp["running_task"] = running
-		// 服务器清单（向导选择用）
-		servers, _ := a.DB.ListServers()
-		srvViews := []gin.H{}
+		// 补充成员归属标记（清单已在函数头部无条件返回）
 		for _, s := range servers {
-			srvViews = append(srvViews, gin.H{
-				"id": s.ID, "name": s.Name, "is_self": s.IsSelf, "in_network": inNet[s.ID],
-			})
+			if inNet[s.ID] {
+				for i := range srvViews {
+					if srvViews[i]["id"] == s.ID {
+						srvViews[i]["in_network"] = true
+					}
+				}
+			}
 		}
-		resp["servers"] = srvViews
 	}
 	middleware.OK(c, resp)
 }

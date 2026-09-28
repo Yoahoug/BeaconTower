@@ -68,6 +68,7 @@ const router = createRouter({
               name: 'admin-servers',
               component: ServersView,
               meta: {
+                title: '节点管理',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '节点管理' }],
               },
             },
@@ -76,6 +77,7 @@ const router = createRouter({
               name: 'admin-mesh',
               component: MeshView,
               meta: {
+                title: 'WG 组网',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: 'WG 组网' }],
               },
             },
@@ -84,6 +86,7 @@ const router = createRouter({
               name: 'admin-settings',
               component: SettingsView,
               meta: {
+                title: '采集与展示',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '采集与展示' }],
               },
             },
@@ -92,6 +95,7 @@ const router = createRouter({
               name: 'admin-security',
               component: SecurityView,
               meta: {
+                title: '安全与账号',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '安全与账号' }],
               },
             },
@@ -100,6 +104,7 @@ const router = createRouter({
               name: 'admin-audit',
               component: AuditView,
               meta: {
+                title: '审计日志',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '审计日志' }],
               },
             },
