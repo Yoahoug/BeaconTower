@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -45,73 +46,97 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 	}
 	steps, err := r.DB.ListWGTaskSteps(taskID)
 	if err != nil {
+		// 同 import：早退不收尾会把组网操作永久锁死（HasRunningWGTask 恒真）
+		_ = r.DB.FinishWGTask(taskID, "failed", "步骤读取失败: "+err.Error(), time.Now().Unix())
 		return
 	}
-	// 步骤分类：title 前缀约定（handler 创建）：备援/金丝雀/切换
+	// 步骤分两段：seq==0 为目标 hub 校正；其余是 SSH 成员，金丝雀必须最先执行。
+	// 金丝雀按载荷 canary_server_id 认定（旧实现按 seq==1 认定：成员表顺序与
+	// PickCanary 的挑选顺序不一致时，真正先切的是另一个节点，失败门控也挂错人）。
+	var hubSteps, memberSteps []*store.WGTaskStep
+	for _, st := range steps {
+		if st.Seq == 0 {
+			hubSteps = append(hubSteps, st)
+		} else {
+			memberSteps = append(memberSteps, st)
+		}
+	}
+	if ci := canaryIndex(memberSteps, in.CanaryServerID); ci > 0 {
+		memberSteps[0], memberSteps[ci] = memberSteps[ci], memberSteps[0]
+	}
 	okN, failN, skipN := 0, 0, 0
 	canaryOK := false
 	rolledBack := false
-	for _, st := range steps {
+
+	// 1) 目标 hub 校正（备胎已在网内，重配降级预检）
+	hubOK := true
+	for _, st := range hubSteps {
+		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
+		if err := r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby), true); err != nil {
+			hubOK = false
+			failN++
+			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())
+			log.Printf("[wg] switch task %d 备援校正 step %d 失败: %v", taskID, st.ID, err)
+		} else {
+			okN++
+			_ = r.DB.FinishWGTaskStep(st.ID, "ok", "", time.Now().Unix())
+		}
+	}
+	if len(memberSteps) == 0 {
+		// 纯设备网（无 SSH 成员）：没有可翻转的 spoke，跳过金丝雀阶段直接置现役
+		canaryOK = true
+	}
+
+	// 2) 金丝雀先行；3) 其余成员（金丝雀未通过一律跳过）
+	for i, st := range memberSteps {
 		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
 		now := time.Now().Unix()
-		var err error
-		logLine := ""
-		switch {
-		case st.Seq == 0: // 目标 hub 校正（备胎已在网内，重配降级预检）
-			err = r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby), true)
-		case st.Seq == 1: // 金丝雀
-			var canary *store.WGPeer
-			if st.ServerID.Valid {
-				canary, _ = r.DB.GetWGPeerByServer(st.ServerID.Int64)
-			}
-			if canary == nil {
-				skipN++
-				_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "无可用金丝雀成员", now)
-				continue
-			}
-			err = r.flipSpoke(context.Background(), network, canary, in.TargetServerID)
-			if err != nil {
-				// 自动回滚到原现役 hub
-				if rbErr := r.rollbackSpoke(context.Background(), network, canary); rbErr != nil {
+		if i == 0 && !hubOK {
+			skipN++
+			_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "目标 hub 校正失败，已中止切换", now)
+			continue
+		}
+		if i > 0 && !canaryOK {
+			skipN++
+			_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "金丝雀未通过，跳过", now)
+			continue
+		}
+		var peer *store.WGPeer
+		if st.ServerID.Valid {
+			peer, _ = r.DB.GetWGPeerByServer(st.ServerID.Int64)
+		}
+		if peer == nil {
+			skipN++
+			_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "成员不存在", now)
+			continue
+		}
+		err := r.flipSpoke(context.Background(), network, peer, in.TargetServerID)
+		if err != nil {
+			if i == 0 {
+				// 金丝雀失败：自动回滚到原现役 hub
+				if rbErr := r.rollbackSpoke(context.Background(), network, peer); rbErr != nil {
 					log.Printf("[wg] switch task %d 金丝雀回滚失败: %v", taskID, rbErr)
 				} else {
 					rolledBack = true
 				}
-			} else {
-				canaryOK = true
-				logLine = "金丝雀验证通过"
 			}
-		default: // 其余 SSH 成员
-			var peer *store.WGPeer
-			if st.ServerID.Valid {
-				peer, _ = r.DB.GetWGPeerByServer(st.ServerID.Int64)
-			}
-			if peer == nil {
-				skipN++
-				_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "成员不存在", now)
-				continue
-			}
-			if !canaryOK {
-				skipN++
-				_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "金丝雀未通过，跳过", now)
-				continue
-			}
-			err = r.flipSpoke(context.Background(), network, peer, in.TargetServerID)
-		}
-		now = time.Now().Unix()
-		if err != nil {
 			failN++
-			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), now)
+			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())
 			log.Printf("[wg] switch task %d step %d 失败: %v", taskID, st.ID, err)
-		} else {
-			okN++
-			_ = r.DB.FinishWGTaskStep(st.ID, "ok", logLine, now)
+			continue
 		}
+		logLine := ""
+		if i == 0 {
+			canaryOK = true
+			logLine = "金丝雀验证通过"
+		}
+		okN++
+		_ = r.DB.FinishWGTaskStep(st.ID, "ok", logLine, time.Now().Unix())
 	}
-	// 汇总：金丝雀通过才算切换成功（至少目标 hub + 金丝雀成功）
+	// 汇总：金丝雀通过且目标 hub 校正成功才算切换成功
 	status := "failed"
 	summary := fmt.Sprintf("成功 %d，失败 %d，跳过 %d", okN, failN, skipN)
-	if canaryOK {
+	if canaryOK && hubOK {
 		status = "done"
 		if failN > 0 {
 			status = "partial"
@@ -129,11 +154,29 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 		if devN > 0 {
 			summary += fmt.Sprintf("；%d 台设备请在组网页面切换凭证（重新扫码/导入）", devN)
 		}
+	} else if !hubOK {
+		// 备胎没配好就切过去会把全网带崩：已中止，现役保持不变
+		summary += "；目标 hub 校正失败，已中止切换（现役未变）"
 	} else if rolledBack {
 		summary += "；已回滚到原中心节点"
 	}
 	_ = r.DB.FinishWGTask(taskID, status, summary, time.Now().Unix())
 	log.Printf("[wg] switch task %d 结束: %s (%s)", taskID, status, summary)
+}
+
+// canaryIndex 在成员步骤里定位金丝雀：优先按载荷指定，缺省取第一个成员。
+func canaryIndex(steps []*store.WGTaskStep, canaryID int64) int {
+	if len(steps) == 0 {
+		return -1
+	}
+	if canaryID != 0 {
+		for i, st := range steps {
+			if st.ServerID.Valid && st.ServerID.Int64 == canaryID {
+				return i
+			}
+		}
+	}
+	return 0
 }
 
 // PickCanary 自动选择金丝雀：当前在线的 server 成员（非任何 hub）。
@@ -213,13 +256,13 @@ func (r *Runner) flipSpoke(ctx context.Context, network *store.WGNetwork, peer *
 		return fmt.Errorf("写入配置失败: %w", err)
 	}
 	hasSystemd := true
-	if probe, perr := ProbeNode(ctx2, conn, 0); perr == nil {
+	if probe, perr := ProbeNode(ctx2, conn, 0, network.Iface); perr == nil {
 		hasSystemd = probe.Systemd
 	}
 	if err := BringUp(ctx2, conn, network.Iface, hasSystemd); err != nil {
 		return fmt.Errorf("拉起接口失败: %w", err)
 	}
-	online, detail, err := VerifySpoke(ctx2, conn, network.HubIP, network.Iface)
+	online, detail, err := VerifySpoke(ctx2, conn, network.HubIP, network.Iface, target.PublicKey)
 	if err != nil {
 		return err
 	}
@@ -261,17 +304,53 @@ func (r *Runner) rewritePeerSection(ctx context.Context, conn *sshx.Conn, networ
 	if len(ifc.Peers) == 0 {
 		return "", errors.New("原 conf 无 [Peer] 段")
 	}
-	ifc.Peers[0].PublicKey = hubPub
-	ifc.Peers[0].Endpoint = endpoint
-	ifc.Peers[0].PersistentKeepalive = network.Keepalive
+	// 定位「当前指向现役 hub」的那一段再改写：节点 conf 里有多段 [Peer] 时
+	// （该机还连着别的网络），写死 Peers[0] 会把另一段换成新 hub，成员随即失联
+	curPub := ""
+	if cur, _ := r.DB.GetWGHub(network.ActiveHubServerID); cur != nil {
+		curPub = cur.PublicKey
+	}
+	idx := pickPeerIndex(ifc.Peers, curPub, network.HubIP)
+	if idx < 0 {
+		return "", fmt.Errorf("原 conf 有 %d 段 [Peer] 但无法定位指向现役 hub 的那一段，请手动核对", len(ifc.Peers))
+	}
+	ifc.Peers[idx].PublicKey = hubPub
+	ifc.Peers[idx].Endpoint = endpoint
+	ifc.Peers[idx].PersistentKeepalive = network.Keepalive
 	if psk != "" {
-		ifc.Peers[0].PresharedKey = psk
+		ifc.Peers[idx].PresharedKey = psk
 	}
 	// Address 缺失时以 DB 记录补齐
 	if len(ifc.Address) == 0 {
 		return "", errors.New("原 conf 缺少 Address")
 	}
 	return Render(ifc)
+}
+
+// pickPeerIndex 选出要改写的 [Peer]：先认当前现役 hub 的公钥，再退化为
+// 「AllowedIPs 覆盖本网 hub IP」（现役未知/密钥被外部改动时仍可定位），
+// 最后只剩单段 [Peer] 时直接取它；都无法确定返回 -1（宁可报错也不猜）。
+func pickPeerIndex(peers []Peer, curHubPub, hubIP string) int {
+	if curHubPub != "" {
+		for i := range peers {
+			if peers[i].PublicKey == curHubPub {
+				return i
+			}
+		}
+	}
+	if ip := net.ParseIP(strings.TrimSpace(hubIP)); ip != nil {
+		for i := range peers {
+			for _, a := range peers[i].AllowedIPs {
+				if _, n, err := net.ParseCIDR(strings.TrimSpace(a)); err == nil && n.Contains(ip) {
+					return i
+				}
+			}
+		}
+	}
+	if len(peers) == 1 {
+		return 0
+	}
+	return -1
 }
 
 func bits2(bits int) string { return strconv.Itoa(bits) }

@@ -35,7 +35,14 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
 				_ = db.CleanExpiredSessions(time.Now().Unix())
 			case <-wgTick.C:
 				if wgRunner != nil {
-					wgRunner.Patrol()
+					// 必须包 safeRun：Patrol 内 panic 若逃逸，整个 ticker goroutine 死掉，
+					// 采样清理/小时聚合/会话清理/月度清零会一起静默停摆
+					safeRun("wg-patrol", func() { wgRunner.Patrol() })
+					safeRun("wg-task-watchdog", func() {
+						if n, err := db.FailStaleRunningTasks(time.Now().Unix(), 1800); err == nil && n > 0 {
+							log.Printf("[tasks] 回收 %d 个超时未收尾的组网任务", n)
+						}
+					})
 				}
 			}
 			// 月翻转检查放在所有 case 之后统一做（ticker 周期远小于月份粒度）

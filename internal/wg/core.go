@@ -6,6 +6,7 @@ package wg
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -456,25 +457,30 @@ func (a *Allocator) Next() (string, error) {
 	if bits != 32 {
 		return "", errors.New("仅支持 IPv4 子网")
 	}
+	// 按整型递增（旧实现只改最后一个字节 ip[3] |= byte(i)，/23 及更宽的
+	// 子网里高位永不进位，可分配地址被截断在 x.x.x.1-254 且会重复）
+	baseV := binary.BigEndian.Uint32(base)
+	total := uint32(1) << uint(bits-ones)
 	if ones >= 31 {
-		for i := 0; i < 1<<(bits-ones); i++ {
-			ip := append([]byte{}, base...)
-			ip[3] |= byte(i)
-			if a.IsFree(net.IP(ip).String()) {
-				return net.IP(ip).String(), nil
+		for i := uint32(0); i < total; i++ {
+			if ip := uint32ToIP(baseV + i); a.IsFree(ip) {
+				return ip, nil
 			}
 		}
 		return "", errors.New("子网已无空闲 IP")
 	}
-	total := 1 << (bits - ones)
-	for i := 1; i < total-1; i++ { // 跳过 .0（网络）与 .255（广播）
-		ip := append([]byte{}, base...)
-		ip[3] |= byte(i)
-		if a.IsFree(net.IP(ip).String()) {
-			return net.IP(ip).String(), nil
+	for i := uint32(1); i < total-1; i++ { // 跳过网络地址与广播地址
+		if ip := uint32ToIP(baseV + i); a.IsFree(ip) {
+			return ip, nil
 		}
 	}
 	return "", errors.New("子网已无空闲 IP")
+}
+
+func uint32ToIP(v uint32) string {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
+	return net.IP(b[:]).String()
 }
 
 // ValidCIDR 校验 CIDR 格式。

@@ -1,9 +1,12 @@
 package wg
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Yoahoug/BeaconTower/internal/store"
 )
 
 func TestGenerateKeyPair(t *testing.T) {
@@ -377,3 +380,113 @@ func TestJudgeProbeError(t *testing.T) {
 		t.Fatalf("探测失败应单条 Err: %+v", issues)
 	}
 }
+
+// TestAllocatorWideSubnet 回归：旧实现只改最后一个字节（ip[3] |= byte(i)），
+// /23 及以上子网里高位永不进位，可用地址被截断在 x.x.x.1-254 且会重复分配。
+func TestAllocatorWideSubnet(t *testing.T) {
+	a, err := NewAllocator("10.66.66.0/23", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	first, err := a.Next()
+	if err != nil || first != "10.66.66.1" {
+		t.Fatalf("首个地址应为 10.66.66.1（跳过网络地址），得到 %s %v", first, err)
+	}
+	seen[first] = true
+	if err := a.Take(first); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < 300; i++ {
+		ip, err := a.Next()
+		if err != nil {
+			t.Fatalf("第 %d 次分配失败（/23 应有 510 个可用地址）: %v", i, err)
+		}
+		if seen[ip] {
+			t.Fatalf("地址重复分配: %s", ip)
+		}
+		seen[ip] = true
+		if err := a.Take(ip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 越过 .255 之后必须进入第二个 /24
+	if !seen["10.66.67.1"] {
+		t.Fatal("未跨入 10.66.67.0/24 网段（IP 分配没有进位）")
+	}
+}
+
+// TestPickPeerIndex 回归：节点 conf 有多段 [Peer] 时必须定位到指向现役 hub 的那段
+// （旧实现硬编码 Peers[0]，会把别的网络的 peer 换成新 hub → 成员失联）。
+func TestPickPeerIndex(t *testing.T) {
+	peers := []Peer{
+		{PublicKey: "OTHER-NET-KEY", AllowedIPs: []string{"10.9.9.0/24"}},
+		{PublicKey: "HUB-A-KEY", AllowedIPs: []string{"10.66.66.0/24"}},
+		{PublicKey: "HUB-B-KEY", AllowedIPs: []string{"172.20.0.0/24"}},
+	}
+	// 1) 现役 hub 公钥可精确命中
+	if i := pickPeerIndex(peers, "HUB-A-KEY", "10.66.66.2"); i != 1 {
+		t.Fatalf("应按公钥命中第 1 段，得到 %d", i)
+	}
+	// 2) 公钥未知（被外部改动）时按 AllowedIPs 覆盖 hub IP 兜底
+	if i := pickPeerIndex(peers, "", "10.66.66.2"); i != 1 {
+		t.Fatalf("应按 AllowedIPs 命中第 1 段，得到 %d", i)
+	}
+	// 3) 单段 [Peer] 直接取它
+	single := []Peer{{PublicKey: "HUB-A-KEY", AllowedIPs: []string{"0.0.0.0/0"}}}
+	if i := pickPeerIndex(single, "", ""); i != 0 {
+		t.Fatalf("单段应取 0，得到 %d", i)
+	}
+	// 4) 多段且无法判定 → -1（宁可报错也不猜）
+	if i := pickPeerIndex(peers, "", ""); i != -1 {
+		t.Fatalf("无法判定应返回 -1，得到 %d", i)
+	}
+}
+
+// TestCanaryIndex 金丝雀定位：按载荷指定优先，缺省回落第一个成员。
+func TestCanaryIndex(t *testing.T) {
+	steps := []*store.WGTaskStep{
+		{ServerID: sqlStepID(2)},
+		{ServerID: sqlStepID(3)},
+		{ServerID: sqlStepID(4)},
+	}
+	if i := canaryIndex(steps, 4); i != 2 {
+		t.Fatalf("应定位到指定成员（下标 2），得到 %d", i)
+	}
+	if i := canaryIndex(steps, 0); i != 0 {
+		t.Fatalf("未指定时应回落第一个成员，得到 %d", i)
+	}
+	if i := canaryIndex(steps, 999); i != 0 {
+		t.Fatalf("指定的成员不在步骤里时应回落第一个成员，得到 %d", i)
+	}
+	if i := canaryIndex(nil, 1); i != -1 {
+		t.Fatalf("空步骤应返回 -1，得到 %d", i)
+	}
+}
+
+// TestProbeScriptPortColumn 回归：ss 的输出列是
+// State Recv-Q Send-Q Local-Address:Port Peer-Address:Port，端口在第 4 列；
+// 旧实现取 $5（Peer-Address，UDP 恒为 0.0.0.0:*）导致占用永远探不出来。
+func TestProbeScriptPortColumn(t *testing.T) {
+	s := probeScript(51820, "wg0")
+	if !strings.Contains(s, "awk 'NR>1{print $4}'") {
+		t.Fatal("端口探测应取 ss/netstat 的第 4 列")
+	}
+	if strings.Contains(s, "print $5") {
+		t.Fatal("不得再取第 5 列（Peer-Address）")
+	}
+	// 本网接口正监听该端口时不算冲突（重配/warm standby 场景）
+	if !strings.Contains(s, `wg show "$i" listen-port`) {
+		t.Fatal("缺少「占用者即本网接口」豁免逻辑")
+	}
+	if !strings.Contains(s, "'wg0'") {
+		t.Fatal("应带上本网的接口名")
+	}
+	// 不探测端口时不应带上占用检测
+	if s0 := probeScript(0, "wg0"); strings.Contains(s0, "ss -uln") {
+		t.Fatal("listenPort=0 不应探测端口占用")
+	}
+}
+
+// sqlStepID 构造测试用的步骤 server_id。
+func sqlStepID(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }

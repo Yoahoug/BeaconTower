@@ -25,7 +25,10 @@ async function submit() {
     admin.markAuthed(username.value)
     ui.notify('登录成功')
     const rawRedirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/admin/servers'
-    const redirect = rawRedirect.startsWith('/admin') ? rawRedirect : '/admin/servers'
+    // 只接受站内相对路径（拒绝 //host 这类协议相对地址）；非 /admin 开头的
+    // 站内路径也要放行，否则「近 7 天 → 前往登录」登录后回不到源码节点页
+    const safe = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//')
+    const redirect = safe ? rawRedirect : '/admin/servers'
     router.push(redirect)
   } catch (e) {
     error.value = e?.message || '登录失败'

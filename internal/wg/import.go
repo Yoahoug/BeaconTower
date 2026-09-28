@@ -51,6 +51,9 @@ func (r *Runner) RunImport(taskID int64) {
 	_ = json.Unmarshal([]byte(task.Payload), &in)
 	network, err := r.DB.GetWGNetwork()
 	if err != nil {
+		// 早退也必须收尾：任务卡在 running 会让 HasRunningWGTask 永久为真，
+		// 之后所有组网操作都被 1004 挡住，只能重启进程解套
+		_ = r.DB.FinishWGTask(taskID, "failed", "组网配置读取失败: "+err.Error(), time.Now().Unix())
 		return
 	}
 	if network == nil {
@@ -58,6 +61,7 @@ func (r *Runner) RunImport(taskID int64) {
 	}
 	steps, err := r.DB.ListWGTaskSteps(taskID)
 	if err != nil {
+		_ = r.DB.FinishWGTask(taskID, "failed", "步骤读取失败: "+err.Error(), time.Now().Unix())
 		return
 	}
 	// 步骤按 title 前缀分类：中心/备援/匹配

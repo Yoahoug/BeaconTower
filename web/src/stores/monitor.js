@@ -12,7 +12,8 @@ const HISTORY_LEN = 40
 const SSE_RETRY_BASE_MS = 3000
 const SSE_RETRY_MAX_MS = 30000
 
-// 后端公开 metrics（bps/字节/秒）→ 卡片字段（GB/天/单数）的换算
+// 后端公开 metrics 速率字段（net_*_bps）实际是「字节/秒」（/proc/net/dev 字节
+// 计数器差分），前端按 B/s 展示 → 卡片字段（GB/天/单数）的换算见下
 const GB = 1024 ** 3
 const DAY_S = 86400
 
@@ -88,23 +89,25 @@ function adaptServer(raw, prev) {
       freqMhz: num(pw?.freq_mhz, 0),
       energy: rapl
         ? {
-            todayKwh: pw?.today_kwh ?? 0,
+            // 后端今日 kWh 尚未接入（恒为 null）→ 保持 null，卡片显示「—」，
+            // 不要兜成 0 让 RAPL 机器都写着「今日 0.000 kWh」
+            todayKwh: pw?.today_kwh ?? null,
             weekKwh: 0,
             monthKwh: num(pw?.month_kwh, 0),
             avgWatts: num(pw?.total_w, 0),
             estCostToday: 0,
-            estCostMonth: num(pw?.est_cost_month, 0),
+            // 关闭「公开页电费」时后端不下发该字段 → null（而非 ¥0.00）
+            estCostMonth: pw?.est_cost_month ?? null,
             pricePerKwh: 0,
           }
         : null,
     },
     powerHistory,
     cpuHistory,
-    // 今日流量（按日记录，字节；无记录或离线为 null）
-    trafficToday:
-      online && raw.traffic_today
-        ? { in: num(raw.traffic_today.in_total, 0), out: num(raw.traffic_today.out_total, 0) }
-        : null,
+    // 今日流量（按日记录，字节；无记录为 null。离线节点保留当日已累计值）
+    trafficToday: raw.traffic_today
+      ? { in: num(raw.traffic_today.in_total, 0), out: num(raw.traffic_today.out_total, 0) }
+      : null,
     offlineSince: online ? '' : '采集失联',
   }
 }
@@ -127,6 +130,7 @@ export const useMonitorStore = defineStore('monitor', {
     _sse: null,
     _sseRetryMs: SSE_RETRY_BASE_MS,
     _sseTimer: 0,
+    _lastEventAt: 0,
     _pollTimer: 0,
     _polling: false,
   }),
@@ -145,10 +149,12 @@ export const useMonitorStore = defineStore('monitor', {
         measuredCount: measured.length,
         monthKwh: measured.reduce((a, s) => a + (s.power.energy?.monthKwh ?? 0), 0),
         estCostMonth: measured.reduce((a, s) => a + (s.power.energy?.estCostMonth ?? 0), 0),
+        // 是否至少有一个节点下发了电费（关闭「公开页电费」时全部为 null → 不展示 ¥0.00）
+        costMeasured: measured.some((s) => s.power.energy?.estCostMonth != null),
         // 今日全网流量（字节；任一节点有按日记录即计）
-        dayIn: online.reduce((a, s) => a + (s.trafficToday?.in ?? 0), 0),
-        dayOut: online.reduce((a, s) => a + (s.trafficToday?.out ?? 0), 0),
-        dayMeasured: online.some((s) => s.trafficToday),
+        dayIn: state.servers.reduce((a, s) => a + (s.trafficToday?.in ?? 0), 0),
+        dayOut: state.servers.reduce((a, s) => a + (s.trafficToday?.out ?? 0), 0),
+        dayMeasured: state.servers.some((s) => s.trafficToday),
       }
     },
 
@@ -173,8 +179,11 @@ export const useMonitorStore = defineStore('monitor', {
       this.fetchAll(true)
       this._timer = window.setInterval(() => {
         if (document.hidden) return // 不可见标签页暂停，省电省请求
-        // SSE 存活时轮询退居二线（保底对齐）；SSE 断线才高频轮询
-        if (!this._sse) this.fetchAll()
+        // SSE 活着时轮询退居二线；但 SSE 经反代/中间设备被静默断流时
+        // EventSource 的 readyState 仍是 OPEN、onerror 也不触发，页面会停在
+        // 首屏数据不动，故用「多久没收到事件」判活，超时就补一次全量
+        const stale = Date.now() - this._lastEventAt > REFRESH_MS * 2.5
+        if (!this._sse || stale) this.fetchAll()
       }, REFRESH_MS)
       this._clock = window.setInterval(() => {
         this.secondsSinceUpdate += 1
@@ -270,6 +279,7 @@ export const useMonitorStore = defineStore('monitor', {
       }
       this._sse = es
       es.addEventListener('snapshot', (ev) => {
+        this._lastEventAt = Date.now()
         try {
           const list = JSON.parse(ev.data)
           if (Array.isArray(list)) this.applyList(list)
@@ -279,6 +289,7 @@ export const useMonitorStore = defineStore('monitor', {
         this._sseRetryMs = SSE_RETRY_BASE_MS
       })
       es.addEventListener('update', (ev) => {
+        this._lastEventAt = Date.now()
         try {
           const list = JSON.parse(ev.data)
           if (Array.isArray(list)) this.applyList(list)
@@ -286,6 +297,10 @@ export const useMonitorStore = defineStore('monitor', {
           /* 坏帧忽略 */
         }
       })
+      es.onopen = () => {
+        this._lastEventAt = Date.now()
+        this._sseRetryMs = SSE_RETRY_BASE_MS
+      }
       es.onerror = () => {
         this.closeSSE()
         window.clearTimeout(this._sseTimer)

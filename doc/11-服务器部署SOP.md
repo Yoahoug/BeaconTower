@@ -73,7 +73,9 @@ services:
 | `打开数据库失败: unable to open database file (14)` 循环重启 | 宿主 `data/` 为 root 属主，容器内 beacon(uid 10001) 不可写 | `chown -R 10001:10001 data/`；新镜像已在构建期 `mkdir + chown /app/data`，匿名卷首挂载继承镜像属主，全新部署不再需要手工 chown |
 | 容器内读不到 RAPL（`/sys/class/powercap/intel-rapl:0` 符号链接失效） | Docker 默认 MaskedPaths 掩了 `/sys/devices/virtual/powercap` | compose 只读挂载宿主该目录到 `/powercap-ro`；采集脚本（v6503c8a+）自动探测标准路径与兜底路径两种布局 |
 | `/powercap-ro` 能看到目录但 `cat energy_uj` Permission denied | 宿主 energy_uj 权限 0400 root，非 root 容器不可读 | compose 加 `user: root`（i5-6300HQ 实测 total_w/cpu_w/temp/freq 全部出数） |
-| 本机节点网络速率/进程数明显偏小（与宿主对不上） | 容器 netns/pidns 隔离：`/proc/net/dev`、`/proc` 目录只见面板容器自身 | compose 只读挂宿主 `/proc` 到 `/host/proc`（v2026-09-27+ 采集自动优先读取），未挂载时回落容器视图（口径降级） |
+| 本机节点网络速率/进程数明显偏小（与宿主对不上） | 容器 netns/pidns 隔离：`/proc/net/dev`、`/proc` 目录只见面板容器自身 | compose 只读挂宿主 `/proc` 到 `/host/proc`（v2026-09-27+ 采集自动优先读取），未挂载时回落容器视图（口径降级）。**线上 compose 若来自更早版本需手工补这一行并 `docker compose up -d` 重建容器** |
+| 面板 CPU 使用率与网络速率**全部节点恒为 0**（内存/磁盘/负载正常） | `applySample` 漏写差分基线（`prevState` 的 ts/cpuTotal/netRx 从不回写），两级差分永不成立 | 已修（`diffMetrics` 统一算差值并写回基线，含回归单测）；升级到含该修复的镜像即可自愈，无需改数据 |
+| 任务永远「执行中」，所有组网按钮返回 1004 | 执行 goroutine 意外退出/早退漏收尾，`wg_task.status` 卡在 running | 启动清理 + **运行时看门狗**（5min ticker 回收超过 30min 的 running 任务）；早退路径已补 `FinishWGTask` |
 
 ## 相关入口
 

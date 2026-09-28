@@ -248,7 +248,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	defer closer()
 	defer cancel()
 
-	probe, err := ProbeNode(dctx, conn, hub.ListenPort)
+	probe, err := ProbeNode(dctx, conn, hub.ListenPort, network.Iface)
 	if err != nil {
 		return fmt.Errorf("预检失败: %w", err)
 	}
@@ -265,8 +265,10 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if err := EnsureForward(dctx, conn); err != nil {
 		return fmt.Errorf("开启转发失败: %w", err)
 	}
+	// 非阻断：ufw 放行失败只记日志继续（云厂商安全组仍需人工放行，conf 该写还得写；
+	// 旧实现 return err 与注释相反，一次 ufw 抖动就让整个 hub 配置不被写入）
 	if err := EnsureUFWAllow(dctx, conn, hub.ListenPort); err != nil {
-		return err // 非阻断：安全组需人工放行，conf 仍会写入
+		log.Printf("[wg] hub %d ufw 放行 UDP %d 失败（继续写入配置）: %v", serverID, hub.ListenPort, err)
 	}
 	if err := BackupConf(dctx, conn, network.Iface); err != nil {
 		return err
@@ -336,7 +338,9 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if err != nil || peer == nil {
 		return false, errors.New("成员记录不存在")
 	}
-	if peer.Status == "online" {
+	// 已在线成员无需重配；但 reprovision（重下发/校正）必须真跑一遍，
+	// 否则「面板认为在线」的漂移配置永远校正不了
+	if peer.Status == "online" && !reprovision {
 		return true, errors.New("节点已在线")
 	}
 	hub, err := r.DB.GetWGHub(network.ActiveHubServerID)
@@ -356,7 +360,7 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	}
 	defer closer()
 
-	probe, err := ProbeNode(dctx, conn, 0)
+	probe, err := ProbeNode(dctx, conn, 0, network.Iface)
 	if err != nil {
 		return false, fmt.Errorf("预检失败: %w", err)
 	}
@@ -386,7 +390,7 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if err := BringUp(dctx, conn, network.Iface, probe.Systemd); err != nil {
 		return false, fmt.Errorf("拉起接口失败: %w", err)
 	}
-	online, detail, err := VerifySpoke(dctx, conn, network.HubIP, network.Iface)
+	online, detail, err := VerifySpoke(dctx, conn, network.HubIP, network.Iface, hub.PublicKey)
 	if err != nil {
 		return false, err
 	}
@@ -436,18 +440,21 @@ func (r *Runner) resolveEndpoint(serverID int64, port int) string {
 }
 
 // ProbeServer 对节点执行 WG 预检探测并给出判定（plan 接口 dry-run 用）。
-func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role, reprovision bool) (*Probe, []Issue, error) {
+func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role, reprovision bool, iface string) (*Probe, []Issue, error) {
+	if strings.TrimSpace(iface) == "" {
+		iface = "wg0"
+	}
 	strict := r.strictHostKey()
 	conn, closer, err := r.dial(ctx, serverID, strict)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer closer()
-	probe, err := ProbeNode(ctx, conn, listenPort)
+	probe, err := ProbeNode(ctx, conn, listenPort, iface)
 	if err != nil {
 		return nil, nil, err
 	}
-	issues := Judge(probe, role, "wg0", listenPort, reprovision)
+	issues := Judge(probe, role, iface, listenPort, reprovision)
 	return probe, issues, nil
 }
 

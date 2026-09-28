@@ -461,7 +461,8 @@ async function openAssets() {
   try {
     await admin.loadAssets()
   } catch (e) {
-    assetModal.value.error = e?.message || '资产列表加载失败'
+    // 加载期间用户可能已关闭弹窗（assetModal=null）→ 直接取值会抛 TypeError
+    if (assetModal.value) assetModal.value.error = e?.message || '资产列表加载失败'
   }
   if (serverPeers.value.length && !assetServerId.value) {
     assetServerId.value = serverPeers.value[0].server_id

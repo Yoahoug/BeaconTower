@@ -46,9 +46,11 @@ const hasPower = computed(() => points.value.some((p) => p.power != null))
 const cpuSeries = computed(() => [
   { name: 'CPU', color: '#0ea5e9', data: points.value.map((p) => p.cpu ?? 0), fill: true },
 ])
+// 磁盘：7d 走小时聚合，后端不聚合 disk_used → 该点为 null（而非 0）。
+// 保留 null 让曲线断开，别用 ?? 0 画一条贴着 0 的假线（会让人误判磁盘空了）。
 const memSeries = computed(() => [
   { name: '内存已用', color: '#8b5cf6', data: points.value.map((p) => (p.memUsed ?? 0) / 1024 ** 3), fill: true },
-  { name: '磁盘已用', color: '#38bdf8', data: points.value.map((p) => (p.diskUsed ?? 0) / 1024 ** 3), fill: false },
+  { name: '磁盘已用', color: '#38bdf8', data: points.value.map((p) => (p.diskUsed == null ? null : p.diskUsed / 1024 ** 3)), fill: false },
 ])
 const netSeries = computed(() => [
   { name: '上行', color: '#0ea5e9', data: points.value.map((p) => p.netOut ?? 0), fill: true },

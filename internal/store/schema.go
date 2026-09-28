@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -13,11 +14,10 @@ import (
 type DB struct {
 	SQL *sql.DB
 
-	// roundMu/roundTx 采集轮写缓冲：同一轮内所有采集写入合并为单个事务，
+	// roundMu/roundCmds 采集轮写缓冲：同一轮内所有采集写入合并为单个事务，
 	// 每轮一次 fsync（原为每节点 4~5 条独立 Exec 各自 fsync）。
+	// 缓冲只由采集器逐轮 flush（CommitRound），多节点 goroutine 并发登记。
 	roundMu   sync.Mutex
-	roundTx   *sql.Tx
-	roundErr  error
 	roundCmds []func(*sql.Tx) error
 }
 
@@ -40,8 +40,6 @@ func (db *DB) CommitRound() {
 	db.roundMu.Lock()
 	cmds := db.roundCmds
 	db.roundCmds = nil
-	db.roundErr = nil
-	db.roundTx = nil
 	db.roundMu.Unlock()
 	if len(cmds) == 0 {
 		return
@@ -50,13 +48,19 @@ func (db *DB) CommitRound() {
 	if err != nil {
 		return
 	}
+	var firstErr error
 	for _, fn := range cmds {
-		if err := fn(tx); err != nil && db.roundErr == nil {
-			db.roundErr = err
+		// 单条失败不中断整轮（SQLite 语句级隔离，其余写入照常提交，下轮重写自会覆盖），
+		// 但必须留痕：静默吞掉会让约束冲突/类型错误长期无人发现
+		if err := fn(tx); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	// 单条语句失败不回滚整轮：SQLite 语句级隔离，提交其余成功写入
+	// 单条语句失败不回滚整轮：提交其余成功写入
 	_ = tx.Commit()
+	if firstErr != nil {
+		log.Printf("[store] 采集轮写入有语句失败（其余已提交）: %v", firstErr)
+	}
 }
 
 // Open 打开数据库并执行建表 + 增量迁移。

@@ -1,6 +1,7 @@
 package sshx
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -314,5 +315,35 @@ func TestContextCancelMidRun(t *testing.T) {
 	_, err := RunScript(ctx, dialCred(srv.addr()), "", false, "sleep 5")
 	if err == nil {
 		t.Fatal("ctx 超时后应返回错误")
+	}
+}
+
+// TestTailWriterChunked 回归：后一块比当前缓冲大时旧实现 b[len(p):] 越界 panic
+// （panic 在 io.Copy goroutine 内，recover 捕不到，会打挂整个进程）。
+func TestTailWriterChunked(t *testing.T) {
+	var buf bytes.Buffer
+	w := &tailWriter{&buf, 8192}
+	// 先 1000B 再 7500B：1000+7500 > 8192 且 1000 < 7500（旧实现必 panic）
+	if _, err := w.Write(bytes.Repeat([]byte("a"), 1000)); err != nil {
+		t.Fatalf("write1: %v", err)
+	}
+	if _, err := w.Write(bytes.Repeat([]byte("b"), 7500)); err != nil {
+		t.Fatalf("write2: %v", err)
+	}
+	if got := buf.Len(); got != 8192 {
+		t.Fatalf("缓冲应恰好保留上限字节，实际 %d", got)
+	}
+	if !bytes.HasSuffix(buf.Bytes(), bytes.Repeat([]byte("b"), 7500)) {
+		t.Fatal("尾部应保留最新写入的块")
+	}
+	// 单块超过上限：整块替换为尾部
+	if _, err := w.Write(bytes.Repeat([]byte("c"), 9000)); err != nil {
+		t.Fatalf("write3: %v", err)
+	}
+	if got := buf.Len(); got != 8192 {
+		t.Fatalf("超限块应截断到上限，实际 %d", got)
+	}
+	if !bytes.Equal(buf.Bytes(), bytes.Repeat([]byte("c"), 8192)) {
+		t.Fatal("超限块应保留其尾部")
 	}
 }

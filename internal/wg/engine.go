@@ -14,19 +14,26 @@ import (
 // ---------- 预检探测 ----------
 
 // probeScript 预检脚本（只读）：输出白名单 key=value。listenPort>0 时额外探测
-// 该 UDP 端口占用（hub/standby 用）。
-func probeScript(listenPort int) string {
-	portPart := ""
+// 该 UDP 端口占用；iface 非空且本网接口正监听该端口时不算冲突（重配/warm standby）。
+func probeScript(listenPort int, iface string) string {
+	portPart := "\necho pf_port_busy=0"
 	if listenPort > 0 {
+		port := strconv.Itoa(listenPort)
+		// ss 列布局：State Recv-Q Send-Q Local-Address:Port Peer-Address:Port，
+		// 端口在第 4 列（旧实现取 $5 = Peer-Address，恒为 0.0.0.0:* → 永远探不出占用）
 		portPart = `
+busy=0
 if command -v ss >/dev/null 2>&1; then
-  ss -uln 2>/dev/null | awk '{print $5}' | grep -q ':` + strconv.Itoa(listenPort) + `$' && busy=1
+  ss -uln 2>/dev/null | awk 'NR>1{print $4}' | grep -q ':` + port + `$' && busy=1
 elif command -v netstat >/dev/null 2>&1; then
-  netstat -uln 2>/dev/null | awk '{print $4}' | grep -q ':` + strconv.Itoa(listenPort) + `$' && busy=1
+  netstat -uln 2>/dev/null | awk 'NR>1{print $4}' | grep -q ':` + port + `$' && busy=1
+fi
+if [ "$busy" = 1 ] && command -v wg >/dev/null 2>&1; then
+  for i in ` + ifaceOrLoop(iface) + `; do
+    [ "$(wg show "$i" listen-port 2>/dev/null)" = "` + port + `" ] && busy=0
+  done
 fi
 echo pf_port_busy=$busy`
-	} else {
-		portPart = "\necho pf_port_busy=0"
 	}
 	return `pf_busy=0
 echo pf_os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
@@ -55,6 +62,15 @@ echo pf_ufw=$pf_ufw
 command -v systemctl >/dev/null 2>&1 && pf_sd=1 || pf_sd=0
 echo pf_systemd=$pf_sd` + portPart + `
 echo pf_end=1`
+}
+
+// ifaceOrLoop 生成待排查的 wg 接口名列表：给了接口名就只查它，否则遍历全部
+// （避免「另一条网卡占着同一端口」被误判成本接口占用）。
+func ifaceOrLoop(iface string) string {
+	if strings.TrimSpace(iface) == "" {
+		return "$(wg show interfaces 2>/dev/null)"
+	}
+	return "'" + sanitizeIface(iface) + "'"
 }
 
 // parseProbe 解析预检输出（白名单键，宽松：缺失字段取零值）。
@@ -101,9 +117,10 @@ func parseProbe(out string) *Probe {
 	return p
 }
 
-// ProbeNode 对已建连节点执行预检探测。listenPort>0 时探测端口占用。
-func ProbeNode(ctx context.Context, conn *sshx.Conn, listenPort int) (*Probe, error) {
-	out, err := conn.Run(ctx, probeScript(listenPort))
+// ProbeNode 对已建连节点执行预检探测。listenPort>0 时探测端口占用，
+// iface 为该节点上属于本网的接口名（正监听该端口时不判为冲突）。
+func ProbeNode(ctx context.Context, conn *sshx.Conn, listenPort int, iface string) (*Probe, error) {
+	out, err := conn.Run(ctx, probeScript(listenPort, iface))
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +300,7 @@ func HubAddPeer(ctx context.Context, conn *sshx.Conn, iface string, peer Peer, i
 	if peer.PersistentKeepalive > 0 {
 		cmd.WriteString(" persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive))
 	}
-	if _, err := conn.Run(ctx, cmd.String()+"\nrm -f "+tmpPSK); err != nil {
+	if _, err := conn.Run(ctx, cmd.String()+"\nrc=$?\nrm -f "+tmpPSK+"\nexit $rc"); err != nil {
 		return err
 	}
 	// 2) conf 持久化：先查重，再以独立 exec 通道追加（cat >> 数据走 stdin）
@@ -320,16 +337,25 @@ func HubRemovePeer(ctx context.Context, conn *sshx.Conn, iface, publicKey string
 }
 
 // SyncConf 重载接口配置（不重启不断连）：strip → 临时文件 → wg syncconf。
+// 收尾的 rm 不能吞掉退出码（旧实现末尾 rm 恒成功，strip/syncconf 失败被当成成功）。
 func SyncConf(ctx context.Context, conn *sshx.Conn, iface string) error {
 	iface = sanitizeIface(iface)
-	_, err := conn.Run(ctx, `wg-quick strip `+iface+` > /tmp/.bt_sync.conf 2>/dev/null && wg syncconf `+
-		iface+` /tmp/.bt_sync.conf; rm -f /tmp/.bt_sync.conf`)
+	_, err := conn.Run(ctx, `wg-quick strip `+iface+` > /tmp/.bt_sync.conf 2>/dev/null
+rc=1
+if [ -s /tmp/.bt_sync.conf ]; then
+  wg syncconf `+iface+` /tmp/.bt_sync.conf
+  rc=$?
+fi
+rm -f /tmp/.bt_sync.conf
+exit $rc`)
 	return err
 }
 
 // VerifySpoke 从 spoke 侧验证入网：ping hub 虚拟 IP（重试若干轮），随后以
 // handshake 时间兜底判定（ICMP 被禁但 WG 隧道可用时 handshake 仍应新鲜）。
-func VerifySpoke(ctx context.Context, conn *sshx.Conn, hubIP string, iface string) (online bool, detail string, err error) {
+// hubPub 非空时只认该 hub 的握手——接口上还有别的 peer（旧 hub 残留）时，
+// 取「全接口最大握手」会把一次失败的切换误判为成功。
+func VerifySpoke(ctx context.Context, conn *sshx.Conn, hubIP string, iface string, hubPub string) (online bool, detail string, err error) {
 	iface = sanitizeIface(iface)
 	pingScript := `ok=0
 for i in 1 2 3 4 5; do
@@ -352,6 +378,9 @@ echo vf_ping=$ok`
 			continue
 		}
 		for _, p := range d.Peers {
+			if hubPub != "" && p.PublicKey != hubPub {
+				continue
+			}
 			if p.LastHandshakeA > hsA {
 				hsA = p.LastHandshakeA
 			}
@@ -363,6 +392,9 @@ echo vf_ping=$ok`
 	case hsA > 0:
 		return true, fmt.Sprintf("ping 不通但 handshake=%d（ICMP 可能被禁）", hsA), nil
 	default:
+		if hubPub != "" {
+			return false, fmt.Sprintf("ping %s 不通，且与目标 hub 无握手记录", hubIP), nil
+		}
 		return false, fmt.Sprintf("ping %s 不通且无握手记录", hubIP), nil
 	}
 }

@@ -1,10 +1,13 @@
 // 数值格式化工具：后端接入后继续复用
 
 export function fmtBps(bps) {
-  if (!bps || bps < 0) return '0 B/s'
+  const n = Number(bps)
+  // 无数据（7d 聚合缺该字段 / 节点离线）显式给「—」，别渲染成 0 B/s
+  if (bps == null || !Number.isFinite(n)) return '—'
+  if (n <= 0) return '0 B/s'
   const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
   let i = 0
-  let v = bps
+  let v = n
   while (v >= 1024 && i < units.length - 1) {
     v /= 1024
     i++

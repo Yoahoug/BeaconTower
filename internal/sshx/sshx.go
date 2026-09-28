@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -324,14 +325,8 @@ func (c *Conn) runBoth(ctx context.Context, cmd string, stdin io.Reader) (stdout
 	// stdout：超限即停读（连接仍会关闭，不留悬挂）
 	var outBuf, errBuf bytes.Buffer
 	copyDone := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(&limitedWriter{&outBuf, MaxOutputLen}, stdoutPipe)
-		copyDone <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(&tailWriter{&errBuf, 8 * 1024}, stderrPipe)
-		copyDone <- struct{}{}
-	}()
+	go copyGuarded(&limitedWriter{&outBuf, MaxOutputLen}, stdoutPipe, copyDone)
+	go copyGuarded(&tailWriter{&errBuf, 8 * 1024}, stderrPipe, copyDone)
 
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- sess.Wait() }()
@@ -357,6 +352,19 @@ func (c *Conn) runBoth(ctx context.Context, cmd string, stdin io.Reader) (stdout
 		}
 		return outBuf.Bytes(), errBuf.Bytes(), nil
 	}
+}
+
+// copyGuarded 把远端输出拷进有界缓冲，结束后通知等待方。
+// panic 就地 recover：本函数跑在独立 goroutine 里，上层 handler/runner 的
+// recover 捕不到同 goroutine 之外的 panic，一旦逃逸整个面板进程直接退出。
+func copyGuarded(dst io.Writer, src io.Reader, done chan<- struct{}) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[sshx] 输出拷贝异常（已忽略本轮读侧）: %v", p)
+		}
+		done <- struct{}{}
+	}()
+	_, _ = io.Copy(dst, src)
 }
 
 // limitedWriter 超限后丢弃后续写入（读侧停工，避免远端大输出撑爆内存）。
@@ -390,9 +398,14 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	if t.buf.Len()+len(p) > t.n {
+		// 新块比整个上限还大时上面已处理，故 len(p) < t.n。
+		// 只需保留「缓冲尾部 keep 字节 + 新块」凑满上限；旧实现写成 b[len(p):]
+		// 且不判长度，后一块比缓冲大时切片越界 panic（panic 发生在 io.Copy
+		// goroutine 内，recover 捕不到，直接整进程退出）。
 		b := t.buf.Bytes()
+		keep := t.n - len(p)
 		t.buf.Reset()
-		t.buf.Write(b[len(p):])
+		t.buf.Write(b[len(b)-keep:])
 	}
 	t.buf.Write(p)
 	return len(p), nil

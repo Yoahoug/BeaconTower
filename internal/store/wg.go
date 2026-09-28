@@ -448,6 +448,19 @@ func (db *DB) FailStaleWGTasks(now int64) error {
 	return err
 }
 
+// FailStaleRunningTasks 运行超过 maxAge 秒的任务判为异常中断并收尾。
+// 启动清理只覆盖「进程重启」这一种情况；执行 goroutine 意外退出（panic 逃逸、
+// 早退漏收尾）同样会留下 running 任务把组网锁死，故运行时也要有兜底。
+func (db *DB) FailStaleRunningTasks(now, maxAge int64) (int64, error) {
+	res, err := db.SQL.Exec(`UPDATE wg_task SET status='failed',
+		result='任务超时未收尾（执行中断），请核对节点实况后重试', finished_at=?
+		WHERE status='running' AND created_at < ?`, now, now-maxAge)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetCredentialFP 回写 host key 指纹（TOFU 记录/非严格更新；不动 last_error）。
 func (db *DB) SetCredentialFP(serverID int64, fp string) error {
 	_, err := db.SQL.Exec(`UPDATE server_credential SET host_key_fp = ? WHERE server_id = ?`, fp, serverID)
@@ -526,7 +539,7 @@ func (db *DB) GetWGAsset(id int64) (*WGAsset, error) {
 }
 
 func (db *DB) UpsertWGAsset(a *WGAsset) (int64, error) {
-	res, err := db.SQL.Exec(`INSERT INTO wg_asset
+	_, err := db.SQL.Exec(`INSERT INTO wg_asset
 		(name, version, arch, sha256, sources, path, size, note, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET version=excluded.version, arch=excluded.arch,
@@ -537,13 +550,14 @@ func (db *DB) UpsertWGAsset(a *WGAsset) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if id, err := res.LastInsertId(); err == nil && id > 0 {
-		return id, nil
-	}
-	// ON CONFLICT 更新时拿不到 rowid：按 name 回查
+	// 不能信 LastInsertId：ON CONFLICT 走更新分支时不产生新的 rowid，
+	// 返回的是同连接上一条无关 INSERT 的 id（会指向别的资产）
 	row, err := db.GetWGAssetByName(a.Name)
-	if err != nil || row == nil {
+	if err != nil {
 		return 0, err
+	}
+	if row == nil {
+		return 0, nil
 	}
 	return row.ID, nil
 }

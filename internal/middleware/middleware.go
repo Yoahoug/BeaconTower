@@ -27,15 +27,19 @@ func ClientIP(cfg *config.Config) gin.HandlerFunc {
 		if host, _, err := net.SplitHostPort(ip); err == nil {
 			ip = host
 		}
+		// 只有「直连对端本身」落在可信代理网段时才采信转发头。
+		// 旧实现是拿 X-Real-IP 的**取值**去匹配可信网段，等于任何来源
+		// 自报一个内网地址就能改写面板记录的客户端 IP（审计与限流都受影响）。
 		if len(cfg.TrustedProxies) > 0 {
-			if real := strings.TrimSpace(c.GetHeader("X-Real-IP")); real != "" {
-				if parsed := net.ParseIP(real); parsed != nil {
-					for _, n := range cfg.TrustedProxies {
-						if n.Contains(parsed) {
-							ip = real
-							break
-						}
+			if peer := net.ParseIP(ip); peer != nil {
+				for _, n := range cfg.TrustedProxies {
+					if !n.Contains(peer) {
+						continue
 					}
+					if real := net.ParseIP(strings.TrimSpace(c.GetHeader("X-Real-IP"))); real != nil {
+						ip = real.String()
+					}
+					break
 				}
 			}
 		}

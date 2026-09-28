@@ -139,7 +139,7 @@ const powerHistory = computed(() =>
     <div
       v-if="hasPower"
       class="node-power"
-      :title="`整机 ${fmtWatts(server.power.watts.total)}（CPU ${fmtWatts(server.power.watts.cpu)} + 基础 ${fmtWatts(server.power.baseLoadW)}）`"
+      :title="`整机 ${fmtWatts(server.power.watts.total)}（CPU ${fmtWatts(server.power.watts.cpu)}）`"
     >
       <div class="node-power__main">
         <AppIcon name="bolt" aria-hidden="true" />
@@ -151,7 +151,7 @@ const powerHistory = computed(() =>
       </div>
       <div class="node-power__sub">
         <span>{{ fmtGhz(server.power.freqMhz) }}</span>
-        <span v-if="server.power.energy">今日 {{ fmtKwh(server.power.energy.todayKwh) }} · 月 {{ fmtKwh(server.power.energy.monthKwh) }} ≈ {{ fmtCost(server.power.energy.estCostMonth) }}</span>
+        <span v-if="server.power.energy">今日 {{ fmtKwh(server.power.energy.todayKwh) }} · 月 {{ fmtKwh(server.power.energy.monthKwh) }}<template v-if="server.power.energy.estCostMonth != null"> ≈ {{ fmtCost(server.power.energy.estCostMonth) }}</template></span>
       </div>
     </div>
     <div v-else-if="server.power?.enabled" class="node-power--na" :title="powerNoReason">

@@ -133,7 +133,9 @@ const powerSeries = computed(() => [
             <template v-else>—</template>
           </div>
           <div class="kpi-card__sub">
-            {{ monitor.summary.measuredCount ? `≈ ${fmtCost(monitor.summary.estCostMonth)}` : '暂无可测机型' }}
+            <template v-if="!monitor.summary.measuredCount">暂无可测机型</template>
+            <template v-else-if="monitor.summary.costMeasured">≈ {{ fmtCost(monitor.summary.estCostMonth) }}</template>
+            <template v-else>电费未公开</template>
           </div>
         </div>
       </section>

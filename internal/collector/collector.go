@@ -29,17 +29,17 @@ type Snapshot struct {
 
 // Collector 采集器：每节点 goroutine + Ticker + jitter（doc/02 §4.3）。
 type Collector struct {
-	cfg     *config.Config
-	db      *store.DB
-	master  []byte
-	mu      sync.RWMutex
-	snap    *Snapshot
-	subs    map[chan *Snapshot]struct{}
-	subsMu  sync.Mutex
-	prevMu  sync.Mutex
-	prev    map[int64]*prevState // 面板侧差分基线（cpu/net/rapl）；节点 goroutine 并发读写，须持 prevMu
-	stop    chan struct{}
-	stopped chan struct{}
+	cfg      *config.Config
+	db       *store.DB
+	master   []byte
+	mu       sync.RWMutex
+	snap     *Snapshot
+	subs     map[chan *Snapshot]struct{}
+	subsMu   sync.Mutex
+	prevMu   sync.Mutex
+	prev     map[int64]*prevState // 面板侧差分基线（cpu/net/rapl）；节点 goroutine 并发读写，须持 prevMu
+	stop     chan struct{}
+	stopped  chan struct{}
 	interval atomic.Int64 // 采集间隔秒；SaveSettings 热更新，loop 每轮重读
 }
 
@@ -74,6 +74,20 @@ func (c *Collector) SetInterval(sec int64) {
 	if sec >= 5 {
 		c.interval.Store(sec)
 	}
+}
+
+// maxDeltaSec 差分窗口上限：采集间隔的 3 倍与 300s 取大者。
+// 超过说明节点刚离线归来或进程被暂停过，此时字节差除以巨大间隔只会得到
+// 一条假曲线，故本轮只重建基线、不产出速率。
+func (c *Collector) maxDeltaSec() float64 {
+	iv := float64(c.interval.Load())
+	if iv < 5 {
+		iv = 5
+	}
+	if m := iv * 3; m > 300 {
+		return m
+	}
+	return 300
 }
 
 // SnapshotNow 返回当前内存快照（公开 API 直接读内存）。
@@ -229,7 +243,8 @@ func (c *Collector) collectOne(srv *store.Server, now int64, settings map[string
 	c.applySample(srv, cred, res, now)
 }
 
-func (c *Collector) markFail(serverID int64, reason string, now int64) {	_ = c.db.QueueCollectResult(serverID, "", reason, nil)
+func (c *Collector) markFail(serverID int64, reason string, now int64) {
+	_ = c.db.QueueCollectResult(serverID, "", reason, nil)
 	m := &store.Metric{ServerID: serverID, Ts: now, Status: "offline"}
 	_ = c.db.QueueLatest(m)
 	// offline 不写 sample（曲线自然断点，前端显示离线）
@@ -273,24 +288,7 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		c.prev[srv.ID] = p
 	}
 	m := &store.Metric{ServerID: srv.ID, Ts: now, Status: "online"}
-
-	// CPU：两次 /proc/stat 差值；darwin 本机路径 CpuIdle 即窗口 idle%（无累计计数器）
-	if p.ts > 0 && raw.CpuTotal > p.cpuTotal {
-		dTotal := float64(raw.CpuTotal - p.cpuTotal)
-		dIdle := float64(raw.CpuIdle - p.cpuIdle)
-		if dTotal > 0 {
-			m.CpuPct = clampPct((1 - dIdle/dTotal) * 100)
-		}
-	} else if p.ts > 0 && raw.CpuTotal > 0 && raw.CpuTotal == p.cpuTotal && srv.IsSelf {
-		// 本机节点（darwin）：CpuTotal 恒为 1000，CpuIdle 直接是窗口 idle%
-		m.CpuPct = clampPct(100 - float64(raw.CpuIdle)/10)
-	}
-	// 网速：字节差 ÷ 实际间隔
-	dt := float64(now - p.ts)
-	if p.ts > 0 && dt > 0 && raw.NetRx >= p.netRx && raw.NetTx >= p.netTx {
-		m.NetInBps = float64(raw.NetRx-p.netRx) * 8 / dt
-		m.NetOutBps = float64(raw.NetTx-p.netTx) * 8 / dt
-	}
+	c.diffMetrics(p, raw, srv, now, m)
 	// 画像（低频字段）：每次采集都写回画像（开销小，保证画像新鲜；region 自动定位仅 auto 时覆盖）
 	var prof *store.Profile
 	if c.db != nil {
@@ -354,6 +352,34 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 		_ = c.db.QueueSample(m)
 		_ = c.db.QueueCollectResult(srv.ID, "", "", now)
 	}
+}
+
+// diffMetrics 用上一轮基线（p）与本轮原始值算 CPU 使用率与网络速率，
+// 并把本轮值写回基线供下一轮差分。调用方须持 prevMu。
+// 缺了基线写回这一步，CPU/网速会恒为 0（线上「资源信息读取不到」的根因）。
+func (c *Collector) diffMetrics(p *prevState, raw *RawSample, srv *store.Server, now int64, m *store.Metric) {
+	havePrev := p.ts > 0
+	dt := float64(now - p.ts)
+	switch {
+	case havePrev && raw.CpuTotal > p.cpuTotal:
+		// CPU：两次 /proc/stat 累计 tick 差值
+		dTotal := float64(raw.CpuTotal - p.cpuTotal)
+		dIdle := float64(raw.CpuIdle - p.cpuIdle)
+		if dTotal > 0 {
+			m.CpuPct = clampPct((1 - dIdle/dTotal) * 100)
+		}
+	case havePrev && raw.CpuTotal > 0 && raw.CpuTotal == p.cpuTotal && srv.IsSelf:
+		// 本机节点（darwin）：CpuTotal 恒为 1000，CpuIdle 直接是窗口 idle%
+		m.CpuPct = clampPct(100 - float64(raw.CpuIdle)/10)
+	}
+	// 网速：字节差 ÷ 实际间隔 = 字节/秒（与 /proc/net/dev 计数器和前端 B/s 展示同口径）。
+	// 间隔超限（节点刚离线归来/进程被暂停）时差分会退化成长时间平均，本轮只重建基线。
+	if havePrev && dt > 0 && dt <= c.maxDeltaSec() && raw.NetRx >= p.netRx && raw.NetTx >= p.netTx {
+		m.NetInBps = float64(raw.NetRx-p.netRx) / dt
+		m.NetOutBps = float64(raw.NetTx-p.netTx) / dt
+	}
+	p.cpuTotal, p.cpuIdle, p.ts = raw.CpuTotal, raw.CpuIdle, now
+	p.netRx, p.netTx = raw.NetRx, raw.NetTx
 }
 
 // powerFor RAPL 功率计算：package+core+uncore 取 package 域；dram 独立；整机 = package + base。

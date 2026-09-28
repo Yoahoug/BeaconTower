@@ -268,7 +268,8 @@ func (a *App) WGPlan(c *gin.Context) {
 		middleware.Fail(c, 2010, hubView["error"].(string))
 		return
 	}
-	alloc, issuesByServer, fatal := a.wgAllocate(netRow, in.Spokes)
+	spokes := dedupSpokes(in.Spokes, hubID)
+	alloc, issuesByServer, fatal := a.wgAllocate(netRow, spokes)
 	if fatal != "" {
 		middleware.Fail(c, 2012, fatal)
 		return
@@ -309,7 +310,7 @@ func (a *App) WGPlan(c *gin.Context) {
 			if id == hubID {
 				port = hubPort
 			}
-			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id], reprovision[id])
+			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id], reprovision[id], netRow.Iface)
 			if err != nil {
 				issues = []wg.Issue{{Level: wg.Err, Msg: err.Error()}}
 			}
@@ -327,7 +328,7 @@ func (a *App) WGPlan(c *gin.Context) {
 		"network": gin.H{"subnet": netRow.Subnet, "hub_ip": netRow.HubIP, "iface": netRow.Iface,
 			"keepalive": netRow.Keepalive, "mtu": netRow.MTU},
 		"hub":     hubViewWithIssues(hubView, hubIssues),
-		"spokes":  a.wgSpokesView(in.Spokes, alloc, issuesByServer),
+		"spokes":  a.wgSpokesView(spokes, alloc, issuesByServer),
 		"blocked": wg.HasErr(hubIssues),
 	})
 	a.audit(a.actorOf(c), "wg_plan", fmt.Sprintf("hub:%d", hubID), "预检探测", ipOf(c))
@@ -373,6 +374,21 @@ func wgRoleText(netRow *store.WGNetwork, hubID int64) string {
 		return string(wg.RoleHub)
 	}
 	return string(wg.RoleStandby)
+}
+
+// dedupSpokes 去重并剔除 hub：hub 由「中心节点」步骤配置，若同时出现在 spokes 里，
+// 任务载荷中它的 role 会被后写的 spoke 覆盖，导致 hub 侧配置被整段跳过。
+func dedupSpokes(spokes []wgSpokeInput, hubID int64) []wgSpokeInput {
+	seen := map[int64]bool{hubID: true}
+	out := make([]wgSpokeInput, 0, len(spokes))
+	for _, s := range spokes {
+		if s.ServerID == 0 || seen[s.ServerID] {
+			continue
+		}
+		seen[s.ServerID] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // wgAllocate 校验/分配成员 IP（不入库）。
@@ -528,7 +544,16 @@ func (a *App) WGApply(c *gin.Context) {
 		_ = a.DB.SetActiveHub(hubID, now)
 		netRow.ActiveHubServerID = hubID
 	}
-	alloc, issues, fatal := a.wgAllocate(netRow, in.Spokes)
+	// 入参去重；hub 不可同时作为成员（避免给 hub 再分配 spoke IP）——
+	// 必须在 wgAllocate 之前，否则 hub 会被写成 spoke，任务里 hub 一步都不执行
+	names := map[int64]string{hubID: hubSrv.Name}
+	spokes := dedupSpokes(in.Spokes, hubID)
+	for _, s := range spokes {
+		if srv, _ := a.DB.GetServer(s.ServerID); srv != nil {
+			names[s.ServerID] = srv.Name
+		}
+	}
+	alloc, issues, fatal := a.wgAllocate(netRow, spokes)
 	if fatal != "" {
 		middleware.Fail(c, 2012, fatal)
 		return
@@ -541,27 +566,12 @@ func (a *App) WGApply(c *gin.Context) {
 			}
 		}
 	}
-	names := map[int64]string{hubID: hubSrv.Name}
-	seen := map[int64]bool{hubID: true}
-	// 入参去重；hub 不可同时作为成员（避免给 hub 再分配 spoke IP）
-	dedupSpokes := make([]wgSpokeInput, 0, len(in.Spokes))
-	for _, s := range in.Spokes {
-		if seen[s.ServerID] {
-			continue
-		}
-		seen[s.ServerID] = true
-		dedupSpokes = append(dedupSpokes, s)
-		if srv, _ := a.DB.GetServer(s.ServerID); srv != nil {
-			names[s.ServerID] = srv.Name
-		}
-	}
-	in.Spokes = dedupSpokes
 	// 确保成员记录（已存在则复用 IP/密钥并重置状态）
 	allocByServer := map[int64]store.WGAlloc{}
 	for _, al := range alloc {
 		allocByServer[al.ServerID] = al
 	}
-	for _, s := range in.Spokes {
+	for _, s := range spokes {
 		al, ok := allocByServer[s.ServerID]
 		if !ok {
 			continue
@@ -1280,7 +1290,9 @@ func (a *App) WGAssetPush(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：需要 server_id")
 		return
 	}
-	if _, err := a.DB.GetWGPeerByServer(in.ServerID); err != nil {
+	// GetWGPeerByServer 无记录时返回 (nil, nil)：必须判 nil，否则任意节点都能被推送
+	peer, err := a.DB.GetWGPeerByServer(in.ServerID)
+	if err != nil || peer == nil {
 		middleware.Fail(c, 2002, "目标节点不是网内成员")
 		return
 	}
