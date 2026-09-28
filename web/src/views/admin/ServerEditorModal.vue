@@ -61,7 +61,8 @@ function draftForm() {
     note_public: props.server?.note_public || '',
     note_private: props.server?.note_private || '',
     hidden: props.server?.hidden || false,
-    host: props.server?.ssh?.host || '',
+    // 本机节点的占位凭据 host=local 不当作真实地址（留空提示用户填写容器可达地址）
+    host: props.server?.ssh?.host === 'local' ? '' : props.server?.ssh?.host || '',
     port: props.server?.ssh?.port || 22,
     sshUsername: props.server?.ssh?.username || '',
     authType: props.server?.ssh?.auth_type || 'password',
@@ -150,12 +151,15 @@ async function runProbe() {
 async function save() {
   saveError.value = ''
   if (!form.value.name) return (saveError.value = '请填写节点名称')
-  if (!isSelf.value) {
+  // 本机节点允许留空（纯本地采集）；填了地址就按普通节点校验
+  const sshFilled = !isSelf.value || !!form.value.host
+  if (sshFilled) {
     if (!form.value.host || !form.value.sshUsername) return (saveError.value = '请填写 SSH 地址与用户名')
-    if (!isEdit.value && form.value.authType === 'password' && !form.value.password) {
+    const hadCred = !!props.server?.ssh?.has_password || !!props.server?.ssh?.has_key
+    if (!hadCred && form.value.authType === 'password' && !form.value.password) {
       return (saveError.value = '请填写 SSH 密码')
     }
-    if (!isEdit.value && form.value.authType === 'key' && !form.value.privateKey) {
+    if (!hadCred && form.value.authType === 'key' && !form.value.privateKey) {
       return (saveError.value = '请粘贴 SSH 私钥')
     }
   }
@@ -169,7 +173,7 @@ async function save() {
       note_private: form.value.note_private,
       hidden: form.value.hidden,
     }
-    if (!isSelf.value) {
+    if (!isSelf.value || form.value.host) {
       payload.ssh = {
         host: form.value.host,
         port: Number(form.value.port) || 22,
@@ -242,7 +246,8 @@ onUnmounted(() => {
       <div class="bt-modal__body">
         <div v-if="isSelf" class="bt-alert bt-alert--info" style="margin-bottom: 16px" role="note">
           <AppIcon name="check" aria-hidden="true" />
-          本机节点：面板所在服务器，通过本地进程自动采集，无需 SSH 凭据，不可删除。
+          本机节点：面板所在服务器，采集走本地进程（不依赖 SSH），不可删除。
+          若要让它加入 WG 组网，请在下方录入宿主 SSH —— 面板容器没有 NET_ADMIN，配置需要经宿主机施加。
         </div>
         <Transition name="page-sub">
           <div v-if="restoredFromDraft" class="bt-alert bt-alert--info" style="margin-bottom: 16px" role="status">
@@ -282,10 +287,16 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-if="!isSelf" style="margin-bottom: 20px">
-          <h4 class="bt-card__title" style="margin-bottom: 4px">SSH 连接</h4>
+        <section style="margin-bottom: 20px">
+          <h4 class="bt-card__title" style="margin-bottom: 4px">
+            SSH 连接<span v-if="isSelf"> · 宿主（用于本机入网）</span>
+          </h4>
           <p class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
             凭据加密存储，读取接口永不回显；编辑时留空 = 保留原值
+          </p>
+          <p v-if="isSelf" class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
+            地址要填<strong>容器能连到的</strong>宿主机地址（Docker 网关 172.17.0.1 或内网 IP）；
+            不要填 WG 地址（切网/重启 WG 时面板会把自己掐断）。
           </p>
           <div class="bt-form-grid">
             <label class="bt-field">

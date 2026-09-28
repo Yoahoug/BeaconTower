@@ -360,6 +360,25 @@ func (r *Runner) importCandidate(ctx context.Context, network *store.WGNetwork, 
 	return "已纳管 · WG IP " + st.WgIP, nil
 }
 
+// AdoptServer 把一台「已手工配好 WG」的节点纳管为受管成员：只读它的 conf
+// （取公钥/私钥/PSK）并与现役中心的 peer 列表匹配，命中已有成员则保留 WG IP 与流量历史。
+// 不推送任何文件、不改动对方配置——用于「手工配过的那台要纳入面板管理」（含本机节点）。
+func (r *Runner) AdoptServer(ctx context.Context, serverID int64) (string, error) {
+	network, err := r.DB.GetWGNetwork()
+	if err != nil || network == nil {
+		return "", errors.New("尚未初始化组网")
+	}
+	hubID := network.ActiveHubServerID
+	if hubID == 0 {
+		return "", errors.New("尚未指定现役中心节点")
+	}
+	states, err := r.importHub(ctx, network, hubID)
+	if err != nil {
+		return "", fmt.Errorf("读取中心节点失败: %w", err)
+	}
+	return r.importCandidate(ctx, network, serverID, states)
+}
+
 // importStandby 读取备援 hub conf 建/更新槽位（warm standby）。
 func (r *Runner) importStandby(ctx context.Context, network *store.WGNetwork, serverID int64) error {
 	strict := r.strictHostKey()

@@ -47,10 +47,12 @@ func (a *App) ListServers(c *gin.Context) {
 }
 
 // sshView 凭据不回显：只返回 has_password/has_key 标记。
+// ssh_ready 表示「可用于 SSH 管理」（host 非占位、端口有效、有密码或私钥）——
+// 本机节点的凭据默认是占位（host=local），录了宿主 SSH 之后本机也能参与 WG 组网。
 func sshView(cred *store.Credential) any {
 	if cred == nil {
 		// 本机节点无凭据：采集走本地进程
-		return map[string]any{"local": true}
+		return map[string]any{"local": true, "ssh_ready": false}
 	}
 	return map[string]any{
 		"host": cred.Host, "port": cred.Port, "username": cred.Username,
@@ -58,7 +60,18 @@ func sshView(cred *store.Credential) any {
 		"has_password": len(cred.PasswordEnc) > 0,
 		"has_key":      len(cred.PrivateKeyEnc) > 0,
 		"host_key_fp":  cred.HostKeyFP,
+		"ssh_ready":    sshReady(cred),
 	}
+}
+
+// sshReady 凭据是否可用于 SSH 管理（占位凭据 host=local/port=0 不算）。
+func sshReady(cred *store.Credential) bool {
+	if cred == nil {
+		return false
+	}
+	h := strings.TrimSpace(cred.Host)
+	return h != "" && h != "local" && cred.Port > 0 &&
+		(len(cred.PasswordEnc) > 0 || len(cred.PrivateKeyEnc) > 0)
 }
 
 func profileView(p *store.Profile) any {
@@ -267,13 +280,9 @@ func (a *App) UpdateServer(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
 		return
 	}
-	// 本机节点：名称/备注等基本信息可改，SSH 凭据不可改（采集走本地进程）
-	if srv.IsSelf {
-		if _, ok := in["ssh"]; ok {
-			middleware.Fail(c, 1001, "本机节点通过本地进程采集，无需 SSH 凭据")
-			return
-		}
-	}
+	// 本机节点：名称/备注等基本信息可改；SSH 凭据也允许录入——
+	// 采集仍走本地进程，这份凭据只用于让本机（宿主机）参与 WG 组网。
+	// 注意提示用户填容器可达地址（网关/内网 IP），不要填 WG 地址。
 	if v, ok := in["name"]; ok {
 		if s := strings.TrimSpace(toStr(v)); s != "" {
 			if len(s) > 64 {
@@ -367,7 +376,7 @@ func (a *App) UpdateServer(c *gin.Context) {
 		return
 	}
 	a.audit(a.actorOf(c), "server_update", "server:"+itoa(id), "编辑节点 "+srv.Name, ipOf(c))
-	middleware.OK(c, gin.H{"ok": true})
+	middleware.OK(c, gin.H{"ok": true, "ssh_ready": sshReady(cred), "is_self": srv.IsSelf})
 }
 
 // DELETE /api/v1/admin/servers/:id

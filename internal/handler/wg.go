@@ -178,8 +178,12 @@ func (a *App) WGOverview(c *gin.Context) {
 	inNet := map[int64]bool{}
 	srvViews := []gin.H{}
 	for _, s := range servers {
+		cred, _ := a.DB.GetCredential(s.ID)
+		ready := sshReady(cred)
 		srvViews = append(srvViews, gin.H{
 			"id": s.ID, "name": s.Name, "is_self": s.IsSelf, "in_network": inNet[s.ID],
+			// 本机节点的 ssh_ready 决定它能否当成员（前端据此提示「先录宿主 SSH」）
+			"ssh_ready": ready,
 		})
 	}
 	resp["servers"] = srvViews
@@ -457,8 +461,14 @@ func (a *App) wgAllocate(netRow *store.WGNetwork, spokes []wgSpokeInput) ([]stor
 			continue
 		}
 		if srv.IsSelf {
-			issues[s.ServerID] = append(issues[s.ServerID], wg.Issue{Level: wg.Err, Msg: "本机节点暂不支持经 SSH 管理 WG"})
-			continue
+			// 本机（宿主机）可以作为成员入网：容器本身没有 NET_ADMIN，配置经由宿主 SSH 施加。
+			// 需要先在节点管理里录入宿主 SSH（容器可达地址），占位凭据（host=local）不算。
+			cred, _ := a.DB.GetCredential(s.ServerID)
+			if !sshReady(cred) {
+				issues[s.ServerID] = append(issues[s.ServerID], wg.Issue{Level: wg.Err,
+					Msg: "本机节点要先录宿主 SSH（节点管理 → 本机 → 录宿主 SSH，填容器可达地址）才能接入组网"})
+				continue
+			}
 		}
 		existing, _ := a.DB.GetWGPeerByServer(s.ServerID)
 		if existing != nil && existing.Status != "left" {
@@ -1099,6 +1109,43 @@ func (a *App) WGRegisterStandby(c *gin.Context) {
 	}
 	middleware.OK(c, gin.H{"server_id": hub.ServerID, "endpoint": hub.Endpoint,
 		"listen_port": hub.ListenPort, "status": hub.Status, "udp": udp})
+}
+
+// WGAdoptServer 纳管一台已手工配好 WG 的节点为受管成员（只读它的 conf，不改动它）。
+// 本机节点（宿主机手工配过、面板还没管的那台）也走这条路：录了宿主 SSH 之后即可纳管。
+func (a *App) WGAdoptServer(c *gin.Context) {
+	var in wgStandbyInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.ServerID == 0 {
+		middleware.Fail(c, 1001, "参数错误：需要 server_id")
+		return
+	}
+	if !a.wgOpLock(c, "已有组网任务在执行，请等待完成") {
+		return
+	}
+	defer a.wgOpUnlock()
+	srv, _ := a.DB.GetServer(in.ServerID)
+	if srv == nil {
+		middleware.Fail(c, 2010, "节点不存在")
+		return
+	}
+	cred, _ := a.DB.GetCredential(in.ServerID)
+	if !sshReady(cred) {
+		middleware.Fail(c, 2010, "该节点无可用 SSH 凭据：请先在节点管理里录入"+map[bool]string{true: "宿主 SSH（容器可达地址）", false: " SSH 凭据"}[srv.IsSelf])
+		return
+	}
+	if netRow, _ := a.DB.GetWGNetwork(); netRow == nil {
+		middleware.Fail(c, 2010, "尚未初始化组网")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	detail, err := a.WG.AdoptServer(ctx, in.ServerID)
+	if err != nil {
+		middleware.Fail(c, 2010, "纳管失败: "+err.Error())
+		return
+	}
+	a.audit(a.actorOf(c), "wg_adopt", srv.Name, detail, ipOf(c))
+	middleware.OK(c, gin.H{"server_id": in.ServerID, "detail": detail})
 }
 
 type wgSwitchInput struct {

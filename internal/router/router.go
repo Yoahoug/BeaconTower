@@ -60,6 +60,7 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.POST("/wg/apply", app.WGApply)
 				auth.POST("/wg/import", app.WGImport)
 				auth.POST("/wg/hubs/standby", app.WGRegisterStandby)
+				auth.POST("/wg/adopt", app.WGAdoptServer)
 				auth.POST("/wg/switch-hub", app.WGSwitchHub)
 				auth.POST("/wg/patrol", app.WGPatrol)
 				auth.GET("/wg/tasks", app.WGTaskList)

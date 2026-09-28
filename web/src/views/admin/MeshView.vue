@@ -35,7 +35,7 @@ const standbyHubs = computed(() => hubs.value.filter((h) => !h.is_active))
 // 中心区排序：现役永远排第一张卡（备援在后，未纳管垫底）
 const orderedHubs = computed(() => [...hubs.value].sort((a, b) => Number(b.is_active) - Number(a.is_active)))
 // 网外节点（未纳管，本机除外）：中心区第三段，带「准备为备援」入口
-const unmanagedServers = computed(() => servers.value.filter((s) => !s.is_self && !s.in_network))
+const unmanagedServers = computed(() => servers.value.filter((s) => !s.in_network))
 const runningTask = computed(() => !!admin.wgOverview?.running_task)
 const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'))
 const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
@@ -225,7 +225,12 @@ const wizardHubPort = ref(51820)
 const wizardSubnet = ref('10.66.66.0/24')
 const wizardHubIp = ref('10.66.66.2')
 
+// 中心/备援候选：本机不能当中心（面板容器无 NET_ADMIN，WG 只能在宿主机上跑）
 const selectableServers = computed(() => (servers.value || []).filter((s) => !s.is_self))
+// 成员候选：含本机（家用场景就是「公网机上云 + 本机入网」）；
+// 本机没录宿主 SSH 时不可选（后端也会拒），前端取之前先提示。
+const pickableServers = computed(() => servers.value || [])
+const selfServer = computed(() => (servers.value || []).find((s) => s.is_self) || null)
 
 function openWizard() {
   selectedIds.value = []
@@ -335,6 +340,21 @@ async function runImport() {
 // ---------- 未纳管节点登记为备援 ----------
 // { [serverId]: { busy, error } }：错误就地展示（常见：节点上没有 /etc/wireguard/wg0.conf）
 const standbyReg = ref({})
+
+// 本机/手工配好的节点 → 纳管为受管成员（只读它的 conf，不改动它）
+async function adoptServer(s) {
+  standbyReg.value = { ...standbyReg.value, [s.id]: { busy: true, error: '' } }
+  try {
+    const r = await admin.adoptServer(s.id)
+    ui.notify(`${s.name} 已纳管：${r.detail || '完成'}`)
+  } catch (e) {
+    if (standbyReg.value[s.id]) {
+      standbyReg.value = { ...standbyReg.value, [s.id]: { busy: false, error: e?.message || '纳管失败' } }
+    }
+    return
+  }
+  standbyReg.value = { ...standbyReg.value, [s.id]: { busy: false, error: '' } }
+}
 
 async function registerStandby(s) {
   standbyReg.value = { ...standbyReg.value, [s.id]: { busy: true, error: '' } }
@@ -655,6 +675,24 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
         <p style="color: var(--bt-text-2, #667); margin: 0 0 20px">
           已有现网（如 wg1/wg2 星型组网）可直接导入纳管；也可以用向导从零组一张新网。
         </p>
+        <ol class="mesh-guide">
+          <li>
+            <b>先备一台公网服务器</b>：在
+            <RouterLink to="/admin/servers">节点管理</RouterLink> 录入（要能 SSH 登录），
+            并在云安全组/防火墙放行它的 UDP 端口（默认 51820 入方向）。
+          </li>
+          <li>
+            <b>组网向导</b>：把它选为「★ 中心」，勾上「本机（本机）」一起接入。
+            本机需要先在节点管理里录一次宿主 SSH（容器可达地址）。
+          </li>
+          <li>
+            <b>预检会替你验端口</b>：修好 UDP 之前不会往下走；跑完本机就能通过中心访问
+            （手机/笔记本再用面板发的原生凭证接入）。
+          </li>
+        </ol>
+        <p v-if="selfServer && !selfServer.ssh_ready" class="mesh-hint mesh-hint--warn" style="justify-content: center">
+          <AppIcon name="warn" aria-hidden="true" />本机尚未录宿主 SSH：向导里会不可选，点上方「节点管理」补录即可。
+        </p>
         <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap">
           <button class="bt-btn bt-btn--primary" type="button" @click="openImport">
             <AppIcon name="download" aria-hidden="true" />导入现有网络（推荐）
@@ -728,9 +766,20 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
             </div>
           </div>
           <div class="bt-card__body">
-            <div class="mesh-hub-line mesh-hub-sub">不在本网 · 登记只读取它的 WG 配置，不改动它</div>
+            <div v-if="s.is_self" class="mesh-hub-line mesh-hub-sub">本机（面板宿主）· 采集走本地进程，组网需经宿主 SSH</div>
+            <div v-else class="mesh-hub-line mesh-hub-sub">不在本网 · 登记只读取它的 WG 配置，不改动它</div>
             <div class="mesh-hub-actions">
               <button
+                v-if="s.is_self"
+                class="bt-btn bt-btn--ghost bt-btn--sm"
+                type="button"
+                :disabled="runningTask || !activeHub || !s.ssh_ready || standbyReg[s.id]?.busy"
+                @click="adoptServer(s)"
+              >
+                <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '纳管中…' : '纳管本机入网' }}
+              </button>
+              <button
+                v-else
                 class="bt-btn bt-btn--ghost bt-btn--sm"
                 type="button"
                 :disabled="runningTask || !activeHub || standbyReg[s.id]?.busy"
@@ -738,6 +787,9 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               >
                 <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '登记中…' : '准备为备援' }}
               </button>
+            </div>
+            <div v-if="s.is_self && !s.ssh_ready" class="mesh-hub-line mesh-hub-sub">
+              先在<RouterLink to="/admin/servers">节点管理</RouterLink>录宿主 SSH（容器可达地址）后即可纳管
             </div>
             <div v-if="standbyReg[s.id]?.error" class="bt-alert bt-alert--error mesh-hub-alert" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ standbyReg[s.id].error }}
@@ -827,29 +879,41 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               <label class="bt-field"><span class="bt-field__label">hub 监听端口</span>
                 <input v-model.number="wizardHubPort" class="bt-input" type="number" min="1" max="65535" /></label>
             </div>
-            <p class="mesh-hint">中心节点（★）：须公网 UDP 端口可达（云服务器）；再勾选要接入的节点。</p>
+            <p class="mesh-hint">
+              中心节点（★）：须公网 UDP 端口可达（云服务器）；再勾选要接入的节点——
+              家用场景通常就是「公网服务器当中心 + 本机入网」。
+            </p>
             <div class="mesh-pick-list">
-              <div v-for="s in selectableServers" :key="s.id" class="bt-check mesh-pick">
+              <div v-for="s in pickableServers" :key="s.id" class="bt-check mesh-pick">
                 <input
                   :id="'wg-hub-' + s.id"
                   type="radio"
                   name="wg-hub"
                   :checked="wizardHubId === s.id"
+                  :disabled="s.is_self"
                   @change="wizardHubId = s.id"
                 />
-                <label :for="'wg-hub-' + s.id" title="设为中心节点">★ 中心</label>
+                <label :for="'wg-hub-' + s.id" :title="s.is_self ? '本机不能当中心（WG 只能在宿主机上跑，面板容器无 NET_ADMIN）' : '设为中心节点'">★ 中心</label>
                 <input
                   :id="'wg-mem-' + s.id"
                   type="checkbox"
                   :checked="selectedIds.includes(s.id)"
-                  :disabled="wizardHubId === s.id"
+                  :disabled="wizardHubId === s.id || (s.is_self && !s.ssh_ready)"
                   @change="togglePick(s.id)"
                 />
                 <label :for="'wg-mem-' + s.id">
-                  {{ s.name }} · {{ wizardHubId === s.id ? '作为中心' : s.in_network ? '已在网' : '接入' }}
+                  {{ s.name }}{{ s.is_self && !s.name.includes('本机') ? '（本机）' : '' }} ·
+                  {{ s.is_self && !s.ssh_ready ? '需先录宿主 SSH'
+                    : wizardHubId === s.id ? '作为中心' : s.in_network ? '已在网' : '接入' }}
                 </label>
               </div>
             </div>
+            <p v-if="selfServer && !selfServer.ssh_ready" class="mesh-hint mesh-hint--warn">
+              <AppIcon name="warn" aria-hidden="true" />
+              本机还没录宿主 SSH（面板容器无法直接配置宿主机的 WG）：去
+              <RouterLink to="/admin/servers">节点管理</RouterLink> 的本机卡片点「录宿主 SSH」，
+              地址填容器可达的宿主机地址（Docker 网关 172.17.0.1 或内网 IP），不要填 WG 地址。
+            </p>
           </template>
           <!-- 第 2 步：预检结果 -->
           <template v-else-if="wizard.step === 2 && wizard.plan">
@@ -1268,6 +1332,39 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
   color: var(--bt-text-3);
   line-height: var(--bt-line-md);
   margin: 0 0 var(--bt-space-3);
+}
+/* 需要动手才能继续的提示（缺宿主 SSH / UDP 未放行）：带图标、用警示色 */
+.mesh-hint--warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--bt-warning-600);
+}
+.mesh-hint--warn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+}
+.mesh-hint a {
+  color: var(--bt-brand-600);
+  text-decoration: underline;
+}
+/* 首次组网引导（家用场景三步） */
+.mesh-guide {
+  max-width: 560px;
+  margin: 0 auto 18px;
+  padding-left: 1.6em;
+  text-align: left;
+  color: var(--bt-text-2);
+  font-size: var(--bt-font-md);
+  line-height: 1.7;
+}
+.mesh-guide li + li {
+  margin-top: 6px;
+}
+.mesh-guide b {
+  color: var(--bt-text-1);
 }
 .mesh-pick-list {
   display: flex;

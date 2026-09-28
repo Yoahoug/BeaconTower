@@ -188,6 +188,13 @@ export const useAdminStore = defineStore('admin', {
       return r
     },
 
+    // 已手工配好的节点（含本机）→ 纳管为受管成员（保留 WG IP 与流量历史）
+    async adoptServer(serverId) {
+      const r = await adminClient.wgAdoptServer(serverId)
+      await this.loadWg()
+      return r
+    },
+
     async patrolNow() {
       await adminClient.wgPatrol()
       await this.loadWg()

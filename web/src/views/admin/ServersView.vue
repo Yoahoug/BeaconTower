@@ -153,15 +153,19 @@ onMounted(() => {
           <div class="server-row__titles">
             <div class="server-row__name">
               {{ s.name }}
-              <span v-if="s.is_self" class="bt-tag bt-tag--info">本机</span>
+              <span v-if="s.is_self && !s.name.includes('本机')" class="bt-tag bt-tag--info">本机</span>
+              <span v-if="s.is_self && s.ssh?.ssh_ready" class="bt-tag bt-tag--success">可入网</span>
+              <span v-else-if="s.is_self" class="bt-tag bt-tag--warning">未录宿主 SSH</span>
               <span v-if="s.hidden" class="bt-tag">隐藏</span>
               <span v-if="!s.enabled" class="bt-tag bt-tag--warning">已暂停</span>
             </div>
             <div class="server-row__sub">
-              <span class="mono">{{ s.is_self ? '本机进程采集 · 免 SSH' : `${s.ssh.username}@${s.ssh.host}:${s.ssh.port}` }}</span>
+              <span class="mono">{{ s.is_self ? (s.ssh?.ssh_ready ? `本机进程采集 · 宿主 ${s.ssh.username}@${s.ssh.host}:${s.ssh.port}` : '本机进程采集 · 未录宿主 SSH') : `${s.ssh.username}@${s.ssh.host}:${s.ssh.port}` }}</span>
               <span aria-hidden="true">·</span>
-              <span v-if="!s.is_self">{{ s.ssh.auth_type === 'key' ? '密钥登录' : '密码登录' }}</span>
-              <span v-if="!s.is_self" aria-hidden="true">·</span>
+              <template v-if="!s.is_self || s.ssh?.ssh_ready">
+                <span>{{ s.ssh.auth_type === 'key' ? '密钥登录' : '密码登录' }}</span>
+                <span aria-hidden="true">·</span>
+              </template>
               <span>{{ s.profile ? `${s.profile.os_name} ${s.profile.os_version} · ${s.profile.arch} · ${s.profile.cpu_cores}核` : '画像未回读' }}</span>
             </div>
           </div>
@@ -183,7 +187,7 @@ onMounted(() => {
               {{ expandedId === s.id ? '收起' : '详情' }}
             </button>
             <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openEdit(s)">
-              <AppIcon name="edit" aria-hidden="true" />编辑
+              <AppIcon name="edit" aria-hidden="true" />{{ s.is_self && !s.ssh?.ssh_ready ? '录宿主 SSH' : '编辑' }}
             </button>
             <button v-if="!s.is_self" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="relocatingId === s.id" @click="relocate(s)">
               <AppIcon name="refresh" :class="{ 'is-spin': relocatingId === s.id }" aria-hidden="true" />{{ relocatingId === s.id ? '定位中…' : '重定位' }}
