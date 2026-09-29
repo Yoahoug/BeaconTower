@@ -600,7 +600,45 @@ func (r *Runner) RemovePeer(peer *store.WGPeer) (detail string, err error) {
 	if e := r.rebuildHubConf(ctx, network, hub, conn, peer.ID); e != nil {
 		return detail, fmt.Errorf("hub 配置重写失败: %w", e)
 	}
-	return detail, nil
+	// 3) 备援中心一并移除（尽力而为）：成员是热加到所有中心的，只清现役会留下
+	// 孤儿 peer——它的 AllowedIP 还占着，下次同一 IP 发给新设备时可能撞车
+	return detail + r.removePeerFromStandbys(network, peer, strict), nil
+}
+
+// removePeerFromStandbys 把已删除的成员从各未退役备援中心移除并重写其 conf。
+// 失败只写进 detail（这类清理不该阻断「移出成员」这个主操作），下次备援重配会兜底。
+func (r *Runner) removePeerFromStandbys(network *store.WGNetwork, peer *store.WGPeer, strict bool) string {
+	hubs, err := r.DB.ListWGHub()
+	if err != nil {
+		return "；备援清理跳过: " + err.Error()
+	}
+	note := ""
+	for _, h := range hubs {
+		if h.Status == "retired" || h.ServerID == network.ActiveHubServerID {
+			continue
+		}
+		name := fmt.Sprintf("#%d", h.ServerID)
+		if srv, _ := r.DB.GetServer(h.ServerID); srv != nil {
+			name = srv.Name
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		conn, closer, derr := r.dial(ctx, h.ServerID, strict)
+		if derr != nil {
+			cancel()
+			note += fmt.Sprintf("；备援 %s 不可达，未清理（下次重配会兜底）", name)
+			continue
+		}
+		if rerr := HubRemovePeer(ctx, conn, network.Iface, peer.PublicKey); rerr != nil {
+			note += fmt.Sprintf("；备援 %s 移除失败: %v", name, rerr)
+		} else if rerr := r.rebuildHubConf(ctx, network, h, conn, peer.ID); rerr != nil {
+			note += fmt.Sprintf("；备援 %s 配置重写失败: %v", name, rerr)
+		} else {
+			note += fmt.Sprintf("；备援 %s 已同步移除", name)
+		}
+		closer()
+		cancel()
+	}
+	return note
 }
 
 // rebuildHubConf 按 DB 现状（排除 excludePeerID）重写 hub conf 并 syncconf。
