@@ -1107,7 +1107,8 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
               </select>
             </label>
             <p class="bt-modal__desc">
-              注意：目标机若用 WG 网段地址做 SSH 会被跳过（翻转时重启接口会失联）；
+              金丝雀必须是 SSH 纳管的服务器成员（接管目标机除外），指定后不会用别的成员顶替。
+              目标机若用 WG 网段地址做 SSH 会被跳过（翻转时重启接口会失联）；
               本机成员会自动排在最后执行。
             </p>
             <div v-if="!takeoverTargets.length" class="bt-alert bt-alert--info" role="note">

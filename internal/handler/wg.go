@@ -1220,18 +1220,20 @@ func (a *App) WGTakeover(c *gin.Context) {
 
 	// 金丝雀：优先指定；否则自动挑一台在线、且 SSH 不走 WG 网段的 SSH 成员
 	canaryID := in.CanaryServerID
+	canaryAuto := false
 	if canaryID == 0 {
-		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid {
+		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid && p.ServerID.Int64 != in.TargetServerID {
 			srv, _ := a.DB.GetServer(p.ServerID.Int64)
 			if srv == nil || !srv.IsSelf {
 				canaryID = p.ServerID.Int64
+				canaryAuto = canaryID != 0
 			}
 		}
 	}
 	oldID := netRow.ActiveHubServerID
 	now := time.Now().Unix()
 	payload, _ := json.Marshal(wg.TakeoverInput{TargetServerID: in.TargetServerID,
-		OldServerID: oldID, Port: in.Port, CanaryServerID: canaryID})
+		OldServerID: oldID, Port: in.Port, CanaryServerID: canaryID, CanaryAuto: canaryAuto})
 	taskID, err := a.DB.InsertWGTask(&store.WGTask{Kind: "takeover", Status: "running",
 		Payload: string(payload), CreatedAt: now})
 	if err != nil {
@@ -1346,7 +1348,7 @@ func (a *App) WGSwitchHub(c *gin.Context) {
 	// 金丝雀：指定或自动挑选在线 SSH 成员
 	canaryID := in.CanaryServerID
 	if canaryID == 0 {
-		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid {
+		if p := a.WG.PickCanary(); p != nil && p.ServerID.Valid && p.ServerID.Int64 != in.TargetServerID {
 			canaryID = p.ServerID.Int64
 		}
 	}

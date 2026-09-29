@@ -11,7 +11,10 @@ package wg
 // 步骤约定（handler 建步骤时保持一致）：
 //   seq 0      目标机预检 + 安装 WG + 迁移身份（公钥/私钥/监听端口）
 //   seq 1      面板侧 UDP 实测（不通即中止，成员零改动）
-//   seq 2..n   成员翻转（金丝雀最先；本机节点排最后）
+//   seq 2..n   成员翻转（**首个可翻转的成员就是金丝雀**，失败回滚并中止；
+//              载荷显式指定 canary_server_id 时必须落在成员步骤里（会被挪到最前），
+//              指定了却找不到就中止——不拿别的成员顶替用户的选择；
+//              本机节点排最后，凭据走 WG 地址时跳过并留待人工收尾）
 //   seq 1000   提交：置现役 → 停用并退役旧中心
 // ============================================================
 
@@ -33,6 +36,7 @@ type TakeoverInput struct {
 	OldServerID    int64 `json:"old_server_id"`    // 被接管的现役（快照，用于汇总/回滚）
 	Port           int   `json:"port"`             // 目标监听端口；0 = 沿用现役端口
 	CanaryServerID int64 `json:"canary_server_id"`
+	CanaryAuto     bool  `json:"canary_auto"` // 金丝雀是面板自动挑的（挑不中可换人；用户点名的不能换）
 }
 
 // TakeoverCommitSeq 提交步骤的 seq（成员步骤 seq 递增，用一个大值占位排在最后）。
@@ -62,7 +66,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 		_ = r.DB.FinishWGTask(taskID, "failed", "步骤读取失败: "+err.Error(), time.Now().Unix())
 		return
 	}
-	prepSteps, memberSteps, commitStep := splitTakeoverSteps(steps, in.CanaryServerID)
+	prepSteps, memberSteps, commitStep, canaryFound := splitTakeoverSteps(steps, in.CanaryServerID)
 
 	oldHub, _ := r.DB.GetWGHub(network.ActiveHubServerID)
 	targetHub, _ := r.DB.GetWGHub(in.TargetServerID)
@@ -80,6 +84,21 @@ func (r *Runner) RunTakeover(taskID int64) {
 			return s.Name
 		}
 		return fmt.Sprint(id)
+	}
+	var notes []string // 跳过事项：塞进任务摘要，「少翻了一台」不能无声无息
+	if !canaryFound {
+		// 自动挑的金丝雀挑歪了（例如挑中接管目标）：退回「首台成员当金丝雀」，不拦流程；
+		// 用户点名的金丝雀挑不了才是硬错误——不能拿别的成员顶替他的显式选择
+		if in.CanaryAuto {
+			notes = append(notes, fmt.Sprintf(
+				"自动挑选的金丝雀（id=%d）不在可翻转的成员中，已改由首台成员充当金丝雀",
+				in.CanaryServerID))
+		} else {
+			r.abortTakeover(taskID, fmt.Sprintf(
+				"指定的金丝雀成员（id=%d）不在可翻转的成员步骤中（金丝雀需是 SSH 纳管的服务器成员）；"+
+					"成员未做任何改动（现役仍是 %s）", in.CanaryServerID, nameOf(oldID)))
+			return
+		}
 	}
 
 	// ---------- 阶段 0/1：迁移身份 + 安装 + 实测 ----------
@@ -143,12 +162,12 @@ func (r *Runner) RunTakeover(taskID int64) {
 		return
 	}
 
-	// ---------- 阶段 2：成员翻转（金丝雀先行，失败即整体回滚） ----------
+	// ---------- 阶段 2：成员翻转（首个可翻转的成员就是金丝雀，失败即整体回滚） ----------
 	flipped := []*store.WGPeer{}
-	canaryOK := len(memberSteps) == 0
+	canaryDone := false // 金丝雀验证是否已通过
 	failMsg := ""
 	skipMsg := ""
-	for i, st := range memberSteps {
+	for _, st := range memberSteps {
 		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
 		now := time.Now().Unix()
 		next := func(status, msg string) { _ = r.DB.FinishWGTaskStep(st.ID, status, msg, now) }
@@ -156,45 +175,56 @@ func (r *Runner) RunTakeover(taskID int64) {
 			next("skipped", "前置步骤未通过，未执行")
 			continue
 		}
-		if i == 0 && !canaryOK {
-			next("skipped", "无可用的金丝雀成员")
-			continue
-		}
 		var peer *store.WGPeer
 		if st.ServerID.Valid {
 			peer, _ = r.DB.GetWGPeerByServer(st.ServerID.Int64)
 		}
-		if peer == nil {
-			next("skipped", "成员不存在")
+		risk := ""
+		if peer != nil {
+			// 本机（面板宿主）必须走非 WG 地址，否则翻转会把自己掐断
+			risk = r.selfFlipRisk(peer, network)
+		}
+		isCanary := in.CanaryServerID != 0 && st.ServerID.Valid && st.ServerID.Int64 == in.CanaryServerID
+		flip, skipReason, failReason := memberGate(peer != nil, risk, isCanary)
+		if failReason != "" {
+			failMsg = failReason
+			next("failed", "失败: "+failReason)
 			continue
 		}
-		// 本机（面板宿主）：必须走非 WG 地址，否则翻转会把自己掐断
-		if bad := r.selfFlipRisk(peer, network); bad != "" {
-			if i == 0 {
-				next("skipped", bad)
-				continue
+		if !flip {
+			if skipReason == "成员不存在" {
+				notes = append(notes, "步骤「"+st.Title+"」对应的成员已不存在，未翻转")
+			} else {
+				notes = append(notes, skipReason)
+				if canaryDone {
+					// 非金丝雀位的成员翻不了（本机地址在 WG 网段）：停在这里，
+					// 后面的成员也不再动，交人工收尾
+					skipMsg = skipReason
+				}
 			}
-			skipMsg = bad
-			next("skipped", bad)
+			next("skipped", skipReason)
 			continue
 		}
 		if err := r.flipSpoke(ctx, network, peer, in.TargetServerID); err != nil {
-			if i == 0 {
-				if rbErr := r.rollbackSpoke(ctx, network, peer); rbErr != nil {
-					log.Printf("[wg] takeover %d 金丝雀回滚失败: %v", taskID, rbErr)
-				}
-				failMsg = "金丝雀翻转失败：" + err.Error()
-				next("failed", "失败: "+err.Error()+"（已回滚该成员）")
+			// 失败的成员也可能已被写盘/重启（flipSpoke 先改配置后验握手），
+			// 先把它单独翻回去，再走整体回滚——否则它会孤零零留在目标端点上
+			rbNote := "（已回滚该成员）"
+			if rbErr := r.rollbackSpoke(ctx, network, peer); rbErr != nil {
+				log.Printf("[wg] takeover %d 回滚 %s 失败: %v", taskID, peer.Name, rbErr)
+				rbNote = "（回滚失败：" + rbErr.Error() + "）"
+			}
+			if !canaryDone {
+				failMsg = "金丝雀（" + peer.Name + "）翻转失败：" + err.Error()
 			} else {
 				failMsg = fmt.Sprintf("%s 翻转失败：%s", peer.Name, err.Error())
-				next("failed", "失败: "+err.Error())
 			}
+			next("failed", "失败: "+err.Error()+rbNote)
 			continue
 		}
 		flipped = append(flipped, peer)
-		if i == 0 {
-			canaryOK = true
-			next("ok", "金丝雀验证通过（端点已指向 "+nameOf(in.TargetServerID)+"）")
+		if !canaryDone {
+			canaryDone = true
+			next("ok", "金丝雀验证通过（"+peer.Name+" 端点已指向 "+nameOf(in.TargetServerID)+"）")
 			continue
 		}
 		next("ok", "")
@@ -263,12 +293,46 @@ func (r *Runner) RunTakeover(taskID int64) {
 	}
 	if len(flipped) > 0 {
 		summary += fmt.Sprintf("；已翻转 %d 台 SSH 成员", len(flipped))
+	} else if len(memberSteps) > 0 {
+		summary += "；未翻转任何 SSH 成员"
+	}
+	if !canaryDone && len(memberSteps) > 0 {
+		summary += "；金丝雀验证未执行（首台成员不可安全翻转），请按下列提示人工收尾"
 	}
 	if skipMsg != "" {
 		summary += "；注意：" + skipMsg
 	}
+	for _, n := range notes {
+		summary += "；跳过：" + n
+	}
 	_ = r.DB.FinishWGTask(taskID, "done", summary, time.Now().Unix())
 	log.Printf("[wg] takeover task %d 完成: %s", taskID, summary)
+}
+
+// memberGate 决定一个成员步骤怎么走（纯函数，门控单独测）：
+//
+//	flip=true        正常翻转；金丝雀尚未通过时它同时充当金丝雀
+//	skipReason!=""   跳过该成员（原因进步骤日志与任务摘要，不阻断其余成员）
+//	failReason!=""   任务级失败：中止接管，已翻成员整体回滚
+//
+// 关键回归点：成员可用时必须 flip。早期实现写的是「canaryOK := len(memberSteps) == 0」，
+// 于是只要有成员，首台就恒被判「无可用的金丝雀成员」跳过——只有本机一个 SSH 成员的
+// 接管会「成功」，却一台都没翻，本机仍指着已退役的旧中心。
+func memberGate(peerExists bool, selfRisk string, isCanary bool) (flip bool, skipReason, failReason string) {
+	if isCanary && !peerExists {
+		return false, "", "指定的金丝雀成员已不存在（可能刚被移除），成员未做任何改动"
+	}
+	if !peerExists {
+		return false, "成员不存在", ""
+	}
+	if selfRisk != "" {
+		if isCanary {
+			// 用户点名的金丝雀翻不了：不许拿别的成员顶替，直接中止
+			return false, "", "指定的金丝雀成员不能安全翻转：" + selfRisk
+		}
+		return false, selfRisk, ""
+	}
+	return true, "", ""
 }
 
 // splitTakeoverSteps 按 seq 把步骤分成三段，并把金丝雀挪到成员步骤最前。
@@ -276,7 +340,11 @@ func (r *Runner) RunTakeover(taskID int64) {
 //	seq 0/1           准备（迁移身份 + 实测）
 //	seq 2..commit-1   成员翻转
 //	seq >= commit     提交（唯一一段）
-func splitTakeoverSteps(steps []*store.WGTaskStep, canaryID int64) (prep, members []*store.WGTaskStep, commit *store.WGTaskStep) {
+//
+// canaryFound：载荷指定 canaryID 时它是否真的在成员步骤里。指定了却找不到
+// （例如选中的是使用端而不是 SSH 纳管的服务器成员）必须由调用方中止——
+// 否则会静默地把「首台成员」当金丝雀，跟用户的显式选择不是一回事。
+func splitTakeoverSteps(steps []*store.WGTaskStep, canaryID int64) (prep, members []*store.WGTaskStep, commit *store.WGTaskStep, canaryFound bool) {
 	for _, st := range steps {
 		switch {
 		case st.Seq <= 1:
@@ -287,10 +355,19 @@ func splitTakeoverSteps(steps []*store.WGTaskStep, canaryID int64) (prep, member
 			members = append(members, st)
 		}
 	}
+	canaryFound = canaryID == 0
+	if canaryID != 0 {
+		for _, st := range members {
+			if st.ServerID.Valid && st.ServerID.Int64 == canaryID {
+				canaryFound = true
+				break
+			}
+		}
+	}
 	if ci := canaryIndex(members, canaryID); ci > 0 {
 		members[0], members[ci] = members[ci], members[0]
 	}
-	return prep, members, commit
+	return prep, members, commit, canaryFound
 }
 
 // decommissionHub 停用一台中心：关接口 + 取消自启 + 移走 conf。
