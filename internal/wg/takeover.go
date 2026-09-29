@@ -67,7 +67,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 	oldHub, _ := r.DB.GetWGHub(network.ActiveHubServerID)
 	targetHub, _ := r.DB.GetWGHub(in.TargetServerID)
 	if oldHub == nil || targetHub == nil {
-		r.abortTakeover(taskID, steps, "现役中心或目标槽位不存在")
+		r.abortTakeover(taskID, "现役中心或目标槽位不存在")
 		return
 	}
 	oldID := oldHub.ServerID
@@ -138,7 +138,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 	}
 	if prepFailed != "" {
 		// 准备阶段失败：目标机保持现状（可重跑），成员零改动，现役不变
-		r.abortTakeover(taskID, steps,
+		r.abortTakeover(taskID,
 			"目标机准备失败："+prepFailed+"；成员未做任何改动（现役仍是 "+nameOf(oldID)+"）")
 		return
 	}
@@ -215,7 +215,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 			msg += fmt.Sprintf("（%d 台回滚失败，请用「切换为现役」手工翻回 %s）", rbFail, nameOf(oldID))
 		}
 		msg += "；现役保持 " + nameOf(oldID) + " 不变"
-		r.abortTakeover(taskID, steps, msg)
+		r.abortTakeover(taskID, msg)
 		return
 	}
 
@@ -225,7 +225,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 	}
 	now := time.Now().Unix()
 	if err := r.DB.SetActiveHub(in.TargetServerID, now); err != nil {
-		r.abortTakeover(taskID, steps, "置现役失败: "+err.Error())
+		r.abortTakeover(taskID, "置现役失败: "+err.Error())
 		return
 	}
 	// 旧中心停用：关接口 + 取消开机自启 + 移走 conf（两台同身份同时在线会互相抢端点）
@@ -336,14 +336,11 @@ func (r *Runner) selfFlipRisk(peer *store.WGPeer, network *store.WGNetwork) stri
 		"），翻转时重启接口会让面板与它失联：请改填容器可达地址（172.17.0.1/内网 IP），或人工收尾"
 }
 
-// abortTakeover 中止：把未执行的步骤标记 skipped，任务置失败。
-func (r *Runner) abortTakeover(taskID int64, steps []*store.WGTaskStep, msg string) {
+// abortTakeover 中止：把**库里仍是待执行**的步骤标记 skipped（已跑过的步骤保留各自
+// 的状态与日志——中止不等于「什么都没发生」，目标机准备、金丝雀翻转都可能已经落过地），任务置失败。
+func (r *Runner) abortTakeover(taskID int64, msg string) {
 	now := time.Now().Unix()
-	for _, st := range steps {
-		if st.Status == "pending" {
-			_ = r.DB.FinishWGTaskStep(st.ID, "skipped", "未执行（任务中止）", now)
-		}
-	}
+	_ = r.DB.SkipPendingWGTaskSteps(taskID, "未执行（任务中止）", now)
 	_ = r.DB.FinishWGTask(taskID, "failed", msg, now)
 	log.Printf("[wg] takeover task %d 中止: %s", taskID, msg)
 }

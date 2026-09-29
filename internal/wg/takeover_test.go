@@ -98,16 +98,26 @@ func TestAbortTakeoverMarksStepsSkipped(t *testing.T) {
 	}
 	st1, _ := db.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: 0, Title: "准备", Status: "ok"})
 	st2, _ := db.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: 2, Title: "翻转", Status: "pending"})
-	r.abortTakeover(taskID, []*store.WGTaskStep{{ID: st1, Seq: 0, Status: "ok"}, {ID: st2, Seq: 2, Status: "pending"}},
-		"目标机准备失败，成员未动")
+	st3, _ := db.InsertWGTaskStep(&store.WGTaskStep{TaskID: taskID, Seq: 1000, Title: "提交", Status: "running"})
+	// 中止按 DB 现状筛选：跑过的步骤（ok）必须原样保留状态与日志，
+	// pending/running 才标 skipped——中途中止不等于「什么都没发生」
+	_ = db.FinishWGTaskStep(st1, "ok", "已迁移中心身份（公钥 abcd1234，端口 51830）并拉起接口", time.Now().Unix())
+	r.abortTakeover(taskID, "目标机准备失败，成员未动")
 
 	steps, _ := db.ListWGTaskSteps(taskID)
 	for _, st := range steps {
-		if st.ID == st1 && st.Status != "ok" {
-			t.Fatalf("已完成的步骤不该被改写: %s", st.Status)
-		}
-		if st.ID == st2 && st.Status != "skipped" {
-			t.Fatalf("未执行的步骤应标 skipped: %s", st.Status)
+		switch st.ID {
+		case st1:
+			if st.Status != "ok" {
+				t.Fatalf("已完成的步骤不该被改写: %s", st.Status)
+			}
+			if !contains(st.Log, "已迁移中心身份") {
+				t.Fatalf("已完成的步骤日志不该被覆盖: %q", st.Log)
+			}
+		case st2, st3:
+			if st.Status != "skipped" {
+				t.Fatalf("未执行的步骤应标 skipped: %s", st.Status)
+			}
 		}
 	}
 	task, _ := db.GetWGTask(taskID)

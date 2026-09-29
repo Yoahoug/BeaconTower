@@ -373,6 +373,15 @@ func (db *DB) AppendWGTaskStepLog(id int64, line string) error {
 	return err
 }
 
+// SkipPendingWGTaskSteps 把**库里仍是** pending/running 的步骤标成 skipped（任务中止时用）。
+// 按 DB 现状筛，而不是调用方手里的旧快照：中途中止时前面的步骤已经跑过并写了
+// 状态与日志，拿旧快照逐个回写会把它们一并改成「未执行」，真实过程就查不到了。
+func (db *DB) SkipPendingWGTaskSteps(taskID int64, msg string, now int64) error {
+	_, err := db.SQL.Exec(`UPDATE wg_task_step SET status='skipped', log=?, finished_at=?
+		WHERE task_id=? AND status IN ('pending','running')`, msg, now, taskID)
+	return err
+}
+
 func (db *DB) ListWGTaskSteps(taskID int64) ([]*WGTaskStep, error) {
 	rows, err := db.SQL.Query(`SELECT id, task_id, seq, server_id, title, status, COALESCE(log,''),
 		started_at, finished_at FROM wg_task_step WHERE task_id = ? ORDER BY seq`, taskID)
