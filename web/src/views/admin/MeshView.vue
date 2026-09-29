@@ -251,10 +251,14 @@ function togglePick(id) {
 
 function wizardPayload() {
   const spokes = selectedIds.value.filter((id) => id !== wizardHubId.value).map((id) => ({ server_id: id }))
-  const p = { hub_server_id: wizardHubId.value || undefined, hub_port: wizardHubPort.value, spokes }
+  const p = { hub_server_id: wizardHubId.value || undefined, spokes }
   if (!network.value) {
+    // 新组网才带端口（界面上也就这时才显示输入框）
+    p.hub_port = wizardHubPort.value
     p.network = { subnet: wizardSubnet.value, hub_ip: wizardHubIp.value, keepalive: 25, mtu: 1420 }
   }
+  // 已有组网：不带 hub_port，由后端沿用该中心槽位的现有端口——写死 51820 会让
+  // 预检的防火墙提示与 UDP 实测都指向错的端口（备援常常不是 51820）
   return p
 }
 
