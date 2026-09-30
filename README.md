@@ -113,3 +113,7 @@ docker compose up -d
 - [12-WG组网模块设计](./doc/12-WG组网模块设计.md)
 
 > 采集到的指标均为被监控机真实数据（SSH 只读命令），面板不写目标机任何状态（WG 组网除外，且仅限 WG 配置）。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/) —— 中文技术社区（AI / 开发 / 自托管），Where possible begins.
