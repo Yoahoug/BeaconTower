@@ -39,5 +39,8 @@ docker run -d --name frpc-chmlfrp --restart unless-stopped --network host \
 - **必须 host 网络**：配置里的 `local_ip` 通常是 `localhost`/`127.0.0.1`（本机服务）。
   要用 bridge，得把配置里的 `local_ip` 改成宿主机地址或网关。
 - 配置文件里有平台 token，挂载建议只读（`:ro`），别提交进 git。
-- 升级版本：手动触发 `FRP client images (manual)` workflow，把 frp 版本作为输入；
-  面板下载的 ini 与新版本仍兼容（上游 frp 一直保留 ini 解析）。
+- 升级版本：手动触发 `FRP client images (manual)` workflow，把 frp 版本作为输入。
+  0.61.2 实测会打印 ini 弃用警告（`ini format is deprecated, please use yaml/json/toml`），
+  但仍完整解析并正常建隧道——上游目前（v0.71.0）尚未移除 ini 支持。若将来某个大版本
+  真的删掉 ini，面板侧需要改为下发 TOML（ChmlFrp 面板下发格式由账号接口返回，接上
+  0.59+ 客户端参数即得 TOML），届时同步升级客户端镜像与 `ChmlFrp*` 相关代码即可。

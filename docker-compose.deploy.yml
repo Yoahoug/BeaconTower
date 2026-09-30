@@ -20,7 +20,10 @@ services:
       # 只挂子目录会因链接悬空判不出物理网卡。未挂载时退化为「流量最大的单接口」。
       - /sys:/host/sys:ro
       # Docker 默认 MaskedPaths 掩掉 /sys/devices/virtual/powercap（class 符号链接失效），
-      # 只读挂到 /powercap-ro 兜底，采集逻辑自动探测两种布局
+      # 只读挂到 /powercap-ro 兜底，采集逻辑自动探测两种布局。
+      # 无 RAPL 的机器（多数云 ECS/虚拟机）没有这个宿主路径，Docker 会尝试创建挂载源并
+      # 以「mkdir /sys/devices/virtual/powercap: operation not permitted」失败——这类机器
+      # 请删掉本行再 up -d（没有功耗数据的物理来源，其余指标不受影响）。
       - /sys/devices/virtual/powercap:/powercap-ro:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
