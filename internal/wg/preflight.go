@@ -105,7 +105,7 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bo
 		out = append(out, Issue{Warn, "容器环境（" + v + "）：内核模块可能不可用，需宿主支持 wireguard"})
 	}
 	if p.UfwActive && (role == RoleHub || role == RoleStandby) {
-		out = append(out, Issue{Warn, fmt.Sprintf("ufw 已启用：需放行 UDP %d（云厂商安全组亦需放行）", listenPort)})
+		out = append(out, Issue{Warn, fmt.Sprintf("ufw 已启用：需放行 UDP %d；云服务器还需到控制台安全组入方向放行 UDP %d（放行 TCP 不等于放行 UDP）", listenPort, listenPort)})
 	}
 	// wireguard 现状（安装缺失不算 Err，安装步骤会处理）
 	if !p.HasWg {

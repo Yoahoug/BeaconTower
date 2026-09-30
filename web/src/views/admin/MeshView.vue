@@ -857,7 +857,8 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
           <li>
             <b>先备一台公网服务器</b>：在
             <RouterLink to="/admin/servers">节点管理</RouterLink> 录入（要能 SSH 登录），
-            并在云安全组/防火墙放行它的 UDP 端口（默认 51820 入方向）。
+            并在云安全组放行它的 <b>UDP</b> 端口（默认 51820 入方向）：控制台 → 实例 → 安全组 → 配置规则 → 入方向，
+            添加「协议 UDP、端口 51820/51820、源 0.0.0.0/0」——只放行 TCP 不算数，这是最常见的踩坑点。
           </li>
           <li>
             <b>组网向导</b>：把它选为「★ 中心」，勾上「本机（本机）」一起接入。
@@ -1360,8 +1361,8 @@ watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
                 <input v-model.number="wizardHubPort" class="bt-input" type="number" min="1" max="65535" /></label>
             </div>
             <p class="mesh-hint">
-              中心节点（★）：须公网 UDP 端口可达（云服务器）；再勾选要接入的节点——
-              家用场景通常就是「公网服务器当中心 + 本机入网」。
+              中心节点（★）：须公网 UDP 端口可达（云服务器；安全组入方向要放行 UDP，只放 TCP 不行）；
+              再勾选要接入的节点——家用场景通常就是「公网服务器当中心 + 本机入网」。
             </p>
             <div class="mesh-pick-list">
               <div v-for="s in pickableServers" :key="s.id" class="bt-check mesh-pick">

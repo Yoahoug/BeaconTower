@@ -36,8 +36,7 @@ func (o HubProbeOutcome) FailMessage(port int) string {
 	if n := len(o.Peers); n > 1 {
 		tried = fmt.Sprintf("（已依次用 %d 个成员身份尝试：%s）", n, strings.Join(o.Peers, "、"))
 	}
-	return fmt.Sprintf("UDP %d 从面板侧握手无回应%s：请确认云安全组/防火墙已放行 UDP %d 入方向；"+
-		"若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, tried, p, o.Result.Target)
+	return fmt.Sprintf("UDP %d 从面板侧握手无回应%s：多半是 UDP 入方向没放行——云服务器（阿里云/腾讯云等）到控制台 → 实例 → 安全组 → 配置规则 → 入方向，添加「协议 UDP、端口 %d/%d、源 0.0.0.0/0」，注意放行 TCP 不代表放行 UDP；服务器 ufw/firewalld 也需放行。若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, tried, p, p, o.Result.Target)
 }
 
 // pickProbePeers 按「适合当探针」的优先级取前 n 台托管成员（n<=0 取全部）。
@@ -214,8 +213,11 @@ func ReachHintMessage(port int, endpoint string, hint UDPReach, expectRunning bo
 	}
 }
 
+// udpHintFallback 是「UDP 入方向没能确认放行」时的行动指引：把用户该去哪儿点明，
+// 只说「请放行安全组」用户往往不知道是云控制台还是服务器防火墙——实测中阿里云安全组
+// 只放行 TCP 时，UDP 会被静默丢弃且没有任何报错，是本项目最常见的翻车点。
 func udpHintFallback(port int) string {
-	return fmt.Sprintf("UDP %d 入方向无法确认放行：如为云主机请在安全组放行 UDP %d 入方向（安装完成后面板会自动实测握手）", port, port)
+	return fmt.Sprintf("UDP %d 入方向未确认放行。云服务器（阿里云/腾讯云等）请到控制台：实例 → 安全组 → 配置规则 → 入方向 → 手动添加「协议 UDP、端口范围 %d/%d、源 0.0.0.0/0」，保存即时生效——注意放行 TCP 不代表放行 UDP，默认安全组常常只开了 TCP；服务器自身若启用了 ufw/firewalld，还需一并放行 UDP %d。", port, port, port, port)
 }
 
 // ValidateHubUDP 翻成员之前的硬门禁：只在拿到「确定不通」的证据时才阻断。

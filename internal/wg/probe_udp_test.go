@@ -388,6 +388,13 @@ func TestHubProbeOutcomeFailMessage(t *testing.T) {
 	if msg == "" || !contains(msg, "51820") || !contains(msg, "1.2.3.4:51820") {
 		t.Fatalf("提示文案缺信息: %s", msg)
 	}
+	// 握手超时的文案要给出可照做的定位路径（云控制台 → 安全组 → 入方向 → UDP），
+	// 并提醒「放行 TCP 不等于放行 UDP」——真实翻车场景就是安全组只开了 TCP。
+	for _, want := range []string{"安全组", "入方向", "控制台", "UDP", "0.0.0.0/0", "TCP"} {
+		if !contains(msg, want) {
+			t.Fatalf("握手失败文案缺少「%s」：%s", want, msg)
+		}
+	}
 	o2 := HubProbeOutcome{Result: ProbeUDPResult{Target: "1.2.3.4:51830"}}
 	if !contains(o2.FailMessage(0), "51830") {
 		t.Fatalf("端口缺省时应从端点推断: %s", o2.FailMessage(0))

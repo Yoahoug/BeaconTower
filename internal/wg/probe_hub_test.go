@@ -35,10 +35,16 @@ func TestReachHintMessage(t *testing.T) {
 	if _, need := ReachHintMessage(51820, "1.2.3.4:51820", ReachClosed, true); !need {
 		t.Fatal("已有中心的 ReachClosed 必须提示")
 	}
-	// 超时 = 无法确认，要提示用户去放行
+	// 超时 = 无法确认，要提示用户去放行；且必须点明「去哪儿放行」——
+	// 实测中阿里云安全组只放行 TCP 时 UDP 被静默丢弃，用户看到「请放行 UDP」并不知道是云控制台还是服务器防火墙。
 	msg, need := ReachHintMessage(51820, "1.2.3.4:51820", ReachUnknown, true)
 	if !need || !strings.Contains(msg, "安全组") {
 		t.Fatalf("超时应提示放行安全组: %q need=%v", msg, need)
+	}
+	for _, want := range []string{"入方向", "控制台", "UDP", "0.0.0.0/0", "TCP"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("UDP 未放行提示缺少「%s」，用户无法定位问题：%q", want, msg)
+		}
 	}
 	// 有监听者：不打扰
 	if _, need := ReachHintMessage(51820, "1.2.3.4:51820", ReachListener, true); need {
