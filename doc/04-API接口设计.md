@@ -67,6 +67,40 @@
 - 之后：`event: update`，每轮采集后推送变化节点的最新数据（与 1.2 同结构）；
 - 心跳 `: ping` 每 15s；客户端断线指数退避重连。
 
+### 1.5 穿透摘要（游客版）
+
+`GET /api/v1/public/frp`
+
+> **白名单序列化**，与 1.2 同一套纪律：下面是该接口能出现的全部字段。
+> 只回答访客关心的三件事——接了哪几个平台、隧道通不通、今天走了多少流量、在用的节点健不健康。
+> **不下发**：账号画像（`username`/`uid`/`realname`/账号分组）、套餐信息（剩余流量、限速）、
+> 内网拓扑（节点域名 `host`、隧道名与本地/公网端点、节点 `remote_id`）。
+> 节点只回「被隧道挂载的那些」，平台全网节点表（NATFRP 实测 71 条）不会出现在这里。
+> 回归测试：`internal/handler/frp_public_test.go` 对响应体做禁止串扫描，漏字段即 CI 失败。
+
+```json
+{
+  "code": 0,
+  "data": {
+    "platforms": [{
+      "name": "NATFRP（樱花）", "kind": "natfrp", "online": true,
+      "tunnel_total": 2, "tunnel_online": 2, "conns": 0,
+      "traffic_today": 2294754205,
+      "nodes": [{ "name": "长沙电信PLUS2", "group": "普通节点", "online": true, "load": 34.3, "uptime": 306200 }],
+      "updated_at": 1790763685
+    }],
+    "summary": { "platform_total": 1, "tunnel_total": 2, "tunnel_online": 2, "conns": 0,
+                 "traffic_today": 2294754205, "node_in_use": 2, "node_online": 2, "updated_at": 1790763685 }
+  }
+}
+```
+
+- `traffic_today`：NATFRP 取账号级当日消耗；ChmlFrp 账号级无当日值，用其名下隧道当日进出之和兜底；
+- `online`：平台最近一次同步是否成功（同步失败的平台为 `false`，不下发上游错误原文）；
+- `uptime`：ChmlFrp 节点接口不报在线时长（恒 0），前端为 0 时不显示；
+- `private_mode=true` 且未登录时返回 `401 {code:1002}`（与其余公开接口一致）；
+- 前端 `/tunnels` 穿透状态页消费本接口（`stores/monitor.js` 的 `startFrp/stopFrp`，60s 独立轮询）。
+
 ## 2. 初始化与认证
 
 ### 2.1 查询初始化状态
@@ -158,4 +192,50 @@ POST /api/v1/admin/logout   → 清除会话
 | 1006 | 请求过于频繁（限速触发） |
 | 2001 | SSH 连接失败（msg 含分类：认证失败/超时/主机不可达） |
 | 2002 | 节点不存在 |
+| 2010 | WG 预检/配置不通过 |
+| 2011 | WG 执行失败 |
+| 2012 | WG IP 冲突 |
+| 2020 | 穿透平台不支持该操作（如对 ChmlFrp 调锁定） |
+| 2021 | 穿透平台凭据失效，需重新授权 |
+| 2022 | 上游穿透平台调用失败 |
 | 5000 | 服务器内部错误 |
+
+## 7. 内网穿透接口（/api/v1/admin/frp/*）
+
+完整清单与错误语义见 [doc/13](./13-内网穿透平台管理设计.md)；此处只列路径索引：
+
+```
+GET     /frp/overview                          平台卡片 + 跨平台隧道 + 汇总
+GET     /frp/nodes                             跨平台节点列表
+POST    /frp/platforms                         绑定 NATFRP（访问密钥）
+PUT     /frp/platforms/:id                     改名
+DELETE  /frp/platforms/:id                     解绑
+GET     /frp/platforms/:id                     详情（账号 + 隧道 + 节点 + 用量快照）
+POST    /frp/platforms/:id/sync                手动同步（?full=0 跳过节点）
+GET     /frp/platforms/:id/flow                流量历史（?kind=day|week|month）
+POST    /frp/platforms/:id/tunnels             新建隧道
+GET     /frp/platforms/:id/subdomains          ChmlFrp 二级域名列表
+GET     /frp/platforms/:id/subdomains/available 可用主域名
+POST    /frp/platforms/:id/subdomains          新建解析
+PUT     /frp/platforms/:id/subdomains          修改解析
+DELETE  /frp/platforms/:id/subdomains          删除解析（domain/record 走查询参数）
+PUT     /frp/tunnels/:id                       修改隧道
+DELETE  /frp/tunnels/:id                       删除隧道
+POST    /frp/tunnels/:id/lock                  锁定编辑/删除/迁移（仅 NATFRP）
+POST    /frp/tunnels/:id/migrate               迁移节点（仅 NATFRP）
+POST    /frp/tunnels/:id/offline               强制下线（仅 ChmlFrp）
+POST    /frp/tunnels/:id/auth                  通过访问认证（仅 NATFRP）
+GET     /frp/tunnels/:id/config                下载 frpc 配置（裸文本附件）
+GET     /frp/tunnels/:id/traffic               单隧道流量曲线
+POST    /frp/chmlfrp/device                    发起 ChmlFrp 设备码授权
+GET     /frp/chmlfrp/device/:sid               轮询授权状态
+DELETE  /frp/chmlfrp/device/:sid               取消授权会话
+```
+
+> 全部外部调用带 30–45s 超时，前端 `retries: 0`（重试会重复建隧道）；
+> `GET /frp/tunnels/:id/config` 返回裸文本附件而非 `{code,msg,data}` 包装
+> （与 WG 凭证 zip 同一处理方式）。
+>
+> `GET /frp/nodes` 与 `GET /frp/platforms/:id` 的节点项都带 **`in_use`**：
+> 平台节点表是全网节点（NATFRP 实测 71 条），面板默认只展示被本账号隧道挂载的那些，
+> 后端只提供标记、不替前端决定筛选口径。游客侧（§1.5）则直接只回在用节点。

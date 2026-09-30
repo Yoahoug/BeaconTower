@@ -17,6 +17,12 @@ type Config struct {
 	SiteTitle         string
 	TrustedProxies    []*net.IPNet
 	TrustedProxiesRaw string
+
+	// ChmlfrpClientID OAuth2 设备码授权用的公共客户端 ID。
+	// 默认值是 ChmlFrp 官方启动器的客户端（无 secret、已开启设备码），
+	// 它不属于本项目，若被平台方回收，可到 account.qzhua.net/console
+	// 申请自己的客户端（需勾选 chmlfrp_api scope）后用它替换。
+	ChmlfrpClientID string
 }
 
 func getenv(key, def string) string {
@@ -39,6 +45,7 @@ func Load() *Config {
 		SetupToken:      os.Getenv("BEACON_SETUP_TOKEN"),
 		CollectInterval: interval,
 		SiteTitle:       getenv("BEACON_SITE_TITLE", "BeaconTower"),
+		ChmlfrpClientID: strings.TrimSpace(os.Getenv("BEACON_CHMLFRP_CLIENT_ID")),
 	}
 	raw := strings.TrimSpace(os.Getenv("BEACON_TRUSTED_PROXIES"))
 	c.TrustedProxiesRaw = raw

@@ -42,6 +42,8 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 			pub.GET("/servers/:id/history", app.PublicHistory)
 			pub.GET("/servers/:id/traffic", app.PublicTraffic)
 			pub.GET("/stream", app.PublicStream)
+			// 穿透摘要（doc/13 §12）：硬白名单，访客只看用量与在用节点健康度
+			pub.GET("/frp", app.FRPPublicSnapshot)
 		}
 		adm := api.Group("/admin")
 		{
@@ -91,6 +93,34 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.POST("/wg/assets/:id/probe", app.WGAssetProbe)
 				auth.POST("/wg/assets/:id/fetch", app.WGAssetFetch)
 				auth.POST("/wg/assets/:id/push", app.WGAssetPush)
+
+				// 内网穿透平台（NATFRP / ChmlFrp，doc/13）
+				auth.GET("/frp/overview", app.FRPOverview)
+				auth.GET("/frp/nodes", app.FRPNodes)
+				auth.POST("/frp/platforms", app.FRPBindNatfrp)
+				auth.PUT("/frp/platforms/:id", app.FRPPlatformRename)
+				auth.DELETE("/frp/platforms/:id", app.FRPPlatformDelete)
+				auth.GET("/frp/platforms/:id", app.FRPPlatformDetail)
+				auth.POST("/frp/platforms/:id/sync", app.FRPSync)
+				auth.GET("/frp/platforms/:id/flow", app.FRPFlow)
+				auth.POST("/frp/platforms/:id/tunnels", app.FRPTunnelCreate)
+				auth.GET("/frp/platforms/:id/subdomains", app.FRPSubdomains)
+				auth.GET("/frp/platforms/:id/subdomains/available", app.FRPSubdomainsAvailable)
+				auth.POST("/frp/platforms/:id/subdomains", app.FRPSubdomainCreate)
+				auth.PUT("/frp/platforms/:id/subdomains", app.FRPSubdomainUpdate)
+				auth.DELETE("/frp/platforms/:id/subdomains", app.FRPSubdomainDelete)
+				auth.PUT("/frp/tunnels/:id", app.FRPTunnelUpdate)
+				auth.DELETE("/frp/tunnels/:id", app.FRPTunnelDelete)
+				auth.POST("/frp/tunnels/:id/lock", app.FRPTunnelLock)
+				auth.POST("/frp/tunnels/:id/migrate", app.FRPTunnelMigrate)
+				auth.POST("/frp/tunnels/:id/offline", app.FRPTunnelOffline)
+				auth.POST("/frp/tunnels/:id/auth", app.FRPTunnelAuth)
+				auth.GET("/frp/tunnels/:id/config", app.FRPTunnelConfig)
+				auth.GET("/frp/tunnels/:id/traffic", app.FRPTunnelTraffic)
+				// ChmlFrp 授权走 OAuth2 设备码（交互式，无法用静态密钥替代）
+				auth.POST("/frp/chmlfrp/device", app.FRPChmlfrpDeviceStart)
+				auth.GET("/frp/chmlfrp/device/:sid", app.FRPChmlfrpDevicePoll)
+				auth.DELETE("/frp/chmlfrp/device/:sid", app.FRPChmlfrpDeviceCancel)
 			}
 		}
 	}

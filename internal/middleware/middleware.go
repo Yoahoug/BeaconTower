@@ -78,13 +78,18 @@ func RequireAuth(db *store.DB) gin.HandlerFunc {
 			return
 		}
 		hash := crypto.HashToken(token)
-		ok, err := db.GetSession(hash, nowUnix())
+		now := nowUnix()
+		expiresAt, ok, err := db.SessionExpiresAt(hash, now)
 		if err != nil || !ok {
 			abortCode(c, http.StatusUnauthorized, 1002, "未登录或会话已过期")
 			return
 		}
-		// 滑动过期
-		_ = db.TouchSession(hash, nowUnix()+24*3600)
+		// 滑动过期：仅当剩余不足 1h 时才续满 24h。监控页每 10s 轮询一次，
+		// 每请求都 UPDATE 会让会话行一天被重写八千多次；降频后有效语义
+		// 不变（持续使用则不过期），最长续期间隙 1h。
+		if now+3600 >= expiresAt {
+			_ = db.TouchSession(hash, now+24*3600)
+		}
 		c.Set(CtxSessionHash, hash)
 		c.Next()
 	}

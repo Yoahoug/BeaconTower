@@ -159,6 +159,20 @@ func (db *DB) GetSession(tokenHash string, now int64) (bool, error) {
 	return n > 0, err
 }
 
+// SessionExpiresAt 查会话到期时间（不存在/已过期返回 ok=false）。
+// RequireAuth 用它决定是否需要滑动续期，避免每请求都 UPDATE 一次会话行。
+func (db *DB) SessionExpiresAt(tokenHash string, now int64) (expiresAt int64, ok bool, err error) {
+	err = db.SQL.QueryRow(`SELECT expires_at FROM session WHERE token_hash = ? AND expires_at > ?`,
+		tokenHash, now).Scan(&expiresAt)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return expiresAt, true, nil
+}
+
 func (db *DB) TouchSession(tokenHash string, expiresAt int64) error {
 	_, err := db.SQL.Exec(`UPDATE session SET expires_at = ? WHERE token_hash = ?`, expiresAt, tokenHash)
 	return err
@@ -908,6 +922,34 @@ func (db *DB) SamplesInRange(serverID int64, from, to int64, limit int) ([]*Metr
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// TrafficWindowEdge 窗口端点计数：[from,to] 内首个（可选：跳过未初始化的
+// NULL/0 计数样本）与最后一个有累计流量的样本。供日流量差值计算用，
+// 替代把整窗样本拉进内存——10s 采样下一天 8640 行，端点两条索引查询足够。
+type TrafficWindowEdge struct {
+	NetInTotal  int64
+	NetOutTotal int64
+}
+
+// FirstTrafficSample 窗口内第一条有效计数样本（net_in_total>0 且 net_out_total>0，
+// 按时间升序）。无有效样本返回 false。
+func (db *DB) FirstTrafficSample(serverID int64, from, to int64) (TrafficWindowEdge, bool) {
+	var e TrafficWindowEdge
+	err := db.SQL.QueryRow(`SELECT net_in_total, net_out_total FROM metric_sample
+		WHERE server_id = ? AND ts >= ? AND ts <= ? AND net_in_total > 0 AND net_out_total > 0
+		ORDER BY ts LIMIT 1`, serverID, from, to).Scan(&e.NetInTotal, &e.NetOutTotal)
+	return e, err == nil
+}
+
+// LastTrafficSample 窗口内最后一条样本的累计计数（不筛有效性，
+// 有效性由调用方按回绕/零头规则判定）。无样本返回 false。
+func (db *DB) LastTrafficSample(serverID int64, from, to int64) (TrafficWindowEdge, bool) {
+	var e TrafficWindowEdge
+	err := db.SQL.QueryRow(`SELECT net_in_total, net_out_total FROM metric_sample
+		WHERE server_id = ? AND ts >= ? AND ts <= ?
+		ORDER BY ts DESC LIMIT 1`, serverID, from, to).Scan(&e.NetInTotal, &e.NetOutTotal)
+	return e, err == nil
 }
 
 // HourlyInRange 小时聚合（7d 曲线）。

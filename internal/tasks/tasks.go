@@ -1,19 +1,26 @@
 package tasks
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"time"
 
+	"github.com/Yoahoug/BeaconTower/internal/frp"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
 
+// frpSyncInterval 穿透平台轮询间隔。隧道在线状态是面板的主要监控对象；
+// 轻同步每平台仅 2 个上游请求（账号 + 隧道），2 分钟对上游是零感知频率。
+const frpSyncInterval = 2 * time.Minute
+
 // Start 后台任务：采样清理（10min）+ 小时聚合（整点+5min 时触发检查）+ 会话清理（每小时）
-// + WG 组网巡检（5min：握手判活/hub 流量差值/配置漂移）+ 月累计 kWh 月初清零。
+// + WG 组网巡检（5min：握手判活/hub 流量差值/配置漂移）+ 穿透平台同步（2min）
+// + 月累计 kWh 月初清零。
 // retention 天数从 setting 表读取（doc/03 §3）。
-func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}, blocker *middleware.LoginBlocker) {
+func Start(db *store.DB, wgRunner *wg.Runner, frpRunner *frp.Runner, stop <-chan struct{}, blocker *middleware.LoginBlocker) {
 	go func() {
 		cleanTick := time.NewTicker(10 * time.Minute)
 		defer cleanTick.Stop()
@@ -23,6 +30,8 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}, blocker *mid
 		defer sessTick.Stop()
 		wgTick := time.NewTicker(5 * time.Minute)
 		defer wgTick.Stop()
+		frpTick := time.NewTicker(frpSyncInterval)
+		defer frpTick.Stop()
 		curMonth := time.Now().Format("2006-01")
 		for {
 			select {
@@ -34,6 +43,15 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}, blocker *mid
 				safeRun("aggregate", func() { aggregate(db) })
 			case <-sessTick.C:
 				_ = db.CleanExpiredSessions(time.Now().Unix())
+			case <-frpTick.C:
+				if frpRunner != nil {
+					// 超时按平台数放大：多平台时单个平台的慢不该拖垮整轮
+					safeRun("frp-sync", func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+						defer cancel()
+						frpRunner.SyncAll(ctx)
+					})
+				}
 			case <-wgTick.C:
 				if wgRunner != nil {
 					// 必须包 safeRun：Patrol 内 panic 若逃逸，整个 ticker goroutine 死掉，
@@ -111,6 +129,12 @@ func cleanup(db *store.DB) {
 	}
 	// 流量日记录与小时聚合同生命周期更新（今日实时 + 昨日定稿）
 	aggregateDailyTraffic(db)
+	// 穿透平台用量快照独立保留 30 天（趋势图只需近 7 天，留足余量便于排查）
+	if n, err := db.PruneFRPUsage(now - 30*86400); err != nil {
+		log.Printf("[tasks] clean frp usage: %v", err)
+	} else if n > 0 {
+		log.Printf("[tasks] cleaned %d frp usage rows", n)
+	}
 }
 
 // dayFloorTs 当日零点（本地时区）。
@@ -143,22 +167,19 @@ func aggregateDailyTraffic(db *store.DB) {
 	}
 }
 
-// trafficDelta [from,to] 窗口流量：首个与最后一个样本的累计计数器差。
-// 样本不足 2 条、窗口内计数器从未初始化、或发生回绕（重启归零）时返回 false（不写库）。
+// trafficDelta [from,to] 窗口流量：首个有效计数样本与最后一个样本的累计计数器差。
+// 样本不足 2 条（首尾同点）、窗口内计数器从未初始化、或发生回绕（重启归零）时返回 false（不写库）。
+// 用两条索引端点查询代替整窗拉取（10s 采样下今日窗口可达 8640 行，每 10 分钟全量加载纯属浪费）。
 func trafficDelta(db *store.DB, serverID, from, to int64) (inTotal, outTotal int64, ok bool) {
-	samples, err := db.SamplesInRange(serverID, from, to, 0)
-	if err != nil || len(samples) < 2 {
+	// 首条有效计数：跳过 NULL/0 旧样本（列引入前或采集端未上报），
+	// 否则凌晨新数据会把整天判成「未初始化」而永远不写（今日流量卡片空白的根因）
+	first, ok := db.FirstTrafficSample(serverID, from, to)
+	if !ok {
 		return 0, 0, false
 	}
-	first, last := samples[0], samples[len(samples)-1]
-	// 窗口头部可能是 NULL/0 旧样本（列引入前或采集端未上报）：跳到首个非零样本，
-	// 否则凌晨新数据会把整天判成「未初始化」而永远不写（今日流量卡片空白的根因）
-	i := 0
-	for ; i < len(samples)-1 && (samples[i].NetInTotal <= 0 || samples[i].NetOutTotal <= 0); i++ {
-	}
-	first = samples[i]
-	if first.NetInTotal <= 0 || first.NetOutTotal <= 0 {
-		return 0, 0, false // 整窗无有效计数
+	last, ok := db.LastTrafficSample(serverID, from, to)
+	if !ok {
+		return 0, 0, false
 	}
 	if last.NetInTotal < first.NetInTotal || last.NetOutTotal < first.NetOutTotal {
 		return 0, 0, false // 回绕/重启归零：窗口不可信，跳过

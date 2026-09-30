@@ -1,0 +1,1736 @@
+<!-- ============================================================
+     内网穿透平台管理（doc/13）
+     平台卡只做展示（各自特色指标），不做「点击切换下方视图」；
+     下方是跨平台归一化的一份内容：合并隧道表（平台列标注归属）、
+     合并在用节点表（在用展开 / 未在用折叠）、双平台同图流量历史。
+     平台差异（NATFRP 锁定/迁移/认证、ChmlFrp 下线/二级域名）以
+     附加列与独立小节出现，不另起版式。
+     ============================================================ -->
+<script setup>
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useAdminStore } from '../../stores/admin'
+import AppIcon from '../../components/AppIcon.vue'
+import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
+import StateEmpty from '../../components/ui/StateEmpty.vue'
+import StateError from '../../components/ui/StateError.vue'
+import StateSkeleton from '../../components/ui/StateSkeleton.vue'
+import TrendChart from '../../components/charts/TrendChart.vue'
+import { fmtBytes } from '../../utils/format'
+import { fmtTs, agoFromTs } from '../../api/auth'
+
+const admin = useAdminStore()
+
+// 设备码授权轮询间隔：官方建议 5s，取 3s 让用户等待感更短（后端已按平台
+// interval 节流，前端多问几次不会真的多打上游）
+const DEVICE_POLL_MS = 3000
+
+// 节点折叠区默认收起；展开状态按平台 id 记忆（解绑后重置无害）
+
+const kindLabel = { natfrp: 'NATFRP', chmlfrp: 'ChmlFrp' }
+const protoLabel = { tcp: 'TCP', udp: 'UDP', http: 'HTTP', https: 'HTTPS' }
+
+const platforms = computed(() => admin.frpOverview?.platforms || [])
+
+// 每个平台一份详情：账号用量（平台卡）+ 节点候选（建隧道/迁移弹窗）。
+// 概览接口不带节点，避免首屏多拉几 MB；详情没回来时节点候选为空。
+const detailsById = computed(() => admin.frpDetails || {})
+const allNodes = computed(() =>
+  platforms.value.flatMap((p) => detailsById.value[p.id]?.nodes || []),
+)
+const inUseNodes = computed(() => allNodes.value.filter((n) => n.in_use))
+const idleNodes = computed(() => allNodes.value.filter((n) => !n.in_use))
+
+// 跨平台合并隧道表：概览接口已带 platform_name/kind，直接平铺
+const allTunnels = computed(() => admin.frpOverview?.tunnels || [])
+
+// 节点折叠展开集合（跨平台共用一个开关，表本身就是合并的）
+const idleExpanded = ref(false)
+
+function nodePlatform(nodeId) {
+  return platforms.value.find((p) => detailsById.value[p.id]?.nodes?.some((n) => n.id === nodeId)) || null
+}
+
+function tunnelPlatform(t) {
+  return platforms.value.find((p) => p.id === t.platform_id) || null
+}
+
+// ---------- 详情加载：进入页面拉一次全部平台，写操作后只刷对应平台 ----------
+async function loadDetails() {
+  await Promise.all(platforms.value.map((p) => admin.loadFrpDetail(p.id)))
+}
+
+async function refresh() {
+  await admin.loadFrp()
+  await loadDetails()
+  await loadAllSubdomains()
+}
+
+const syncingId = ref(0)
+async function syncOne(p) {
+  syncingId.value = p.id
+  try {
+    await admin.frpSync(p.id, true)
+    toast(`${p.name} 同步完成`)
+  } catch (e) {
+    toast(e?.message || '同步失败', true)
+  } finally {
+    syncingId.value = 0
+  }
+}
+
+// ---------- 轻提示（页内，不用 alert） ----------
+const tip = ref({ text: '', error: false })
+let tipTimer = 0
+function toast(text, error = false) {
+  tip.value = { text, error }
+  window.clearTimeout(tipTimer)
+  tipTimer = window.setTimeout(() => (tip.value = { text: '', error: false }), 4000)
+}
+
+// ---------- 弹窗 ----------
+const bindModal = ref(null) // NATFRP 绑定
+const deviceModal = ref(null) // ChmlFrp 设备码
+const tunnelModal = ref(null) // 建/改隧道
+const migrateModal = ref(null) // 迁移节点
+const lockModal = ref(null) // 锁定设置
+const confirmState = ref(null) // 删除确认
+
+let pollTimer = 0
+
+function closeModal() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = 0
+  }
+  bindModal.value = null
+  deviceModal.value = null
+  tunnelModal.value = null
+  migrateModal.value = null
+  lockModal.value = null
+}
+
+// ---------- 绑定 NATFRP ----------
+function openBind() {
+  bindModal.value = { name: 'NATFRP', token: '', busy: false, error: '' }
+}
+async function submitBind() {
+  const m = bindModal.value
+  if (!m.token.trim()) {
+    m.error = '请填写访问密钥'
+    return
+  }
+  m.busy = true
+  m.error = ''
+  try {
+    await admin.frpBindNatfrp({ name: m.name.trim() || 'NATFRP', token: m.token.trim() })
+    closeModal()
+    await refresh()
+    toast('NATFRP 绑定成功')
+  } catch (e) {
+    m.error = e?.message || '绑定失败'
+  } finally {
+    if (bindModal.value) bindModal.value.busy = false
+  }
+}
+
+// ---------- ChmlFrp 设备码授权 ----------
+// reuseId > 0 表示给已有平台重新授权（保留隧道镜像与用量历史）
+async function openDevice(reuseId = 0) {
+  deviceModal.value = {
+    reuseId,
+    status: 'starting',
+    userCode: '',
+    verifyUrl: '',
+    error: '',
+    secondsLeft: 0,
+  }
+  try {
+    const r = await admin.deviceStart(reuseId)
+    deviceModal.value.status = 'pending'
+    deviceModal.value.userCode = r.user_code
+    deviceModal.value.verifyUrl = r.verify_url
+    deviceModal.value.secondsLeft = r.expires_in
+    startPolling(r.session_id)
+  } catch (e) {
+    deviceModal.value.status = 'error'
+    deviceModal.value.error = e?.message || '发起授权失败'
+  }
+}
+function startPolling(sessionId) {
+  if (pollTimer) window.clearInterval(pollTimer)
+  pollTimer = window.setInterval(async () => {
+    const m = deviceModal.value
+    if (!m) return
+    if (m.secondsLeft > 0) m.secondsLeft -= DEVICE_POLL_MS / 1000
+    try {
+      const r = await admin.devicePoll(sessionId)
+      if (r.status === 'ok') {
+        window.clearInterval(pollTimer)
+        pollTimer = 0
+        closeModal()
+        await refresh()
+        toast(`ChmlFrp 授权成功${r.username ? `（${r.username}）` : ''}`)
+        return
+      }
+      if (r.status !== 'pending') {
+        window.clearInterval(pollTimer)
+        pollTimer = 0
+        m.status = r.status
+        m.error = r.error || '授权失败，请重新发起'
+      }
+    } catch (e) {
+      window.clearInterval(pollTimer)
+      pollTimer = 0
+      m.status = 'error'
+      m.error = e?.message || '轮询失败'
+    }
+  }, DEVICE_POLL_MS)
+}
+
+// ---------- 建/改隧道 ----------
+function openTunnelCreate() {
+  tunnelModal.value = {
+    mode: 'create',
+    platformId: platforms.value[0]?.id || 0,
+    nodes: allNodes.value,
+    name: '',
+    proto: 'tcp',
+    nodeId: '',
+    localIp: '127.0.0.1',
+    localPort: '',
+    remotePort: '',
+    domain: '',
+    note: '',
+    extra: '',
+    busy: false,
+    error: '',
+  }
+}
+
+// 建隧道时切换平台 → 节点候选跟随该平台的节点镜像
+function onCreatePlatformChange() {
+  const m = tunnelModal.value
+  if (!m || m.mode !== 'create') return
+  m.nodeId = ''
+  m.nodes = detailsById.value[m.platformId]?.nodes || []
+}
+function openTunnelEdit(t) {
+  const sec = detailsById.value[t.platform_id]
+  tunnelModal.value = {
+    mode: 'edit',
+    id: t.id,
+    platformId: t.platform_id,
+    platformName: t.platform_name,
+    nodes: sec?.nodes || [],
+    name: t.name,
+    proto: t.proto,
+    nodeId: '',
+    nodeName: t.node_name,
+    localIp: t.local_ip,
+    localPort: String(t.local_port || ''),
+    remotePort: /^\d+$/.test(t.remote) ? t.remote : '',
+    domain: /^\d+$/.test(t.remote) ? '' : t.remote,
+    note: t.extra || '',
+    extra: '',
+    busy: false,
+    error: '',
+  }
+}
+
+async function submitTunnel() {
+  const m = tunnelModal.value
+  const payload = {
+    name: m.name.trim(),
+    proto: m.proto,
+    node_id: m.nodeId,
+    local_ip: m.localIp.trim(),
+    local_port: Number(m.localPort) || 0,
+    remote_port: Number(m.remotePort) || 0,
+    domain: m.domain.trim(),
+    note: m.note.trim(),
+    extra: m.extra.trim(),
+  }
+  if (!payload.name) {
+    m.error = '请填写隧道名'
+    return
+  }
+  if (!payload.local_port) {
+    m.error = '请填写本地端口'
+    return
+  }
+  if ((m.proto === 'http' || m.proto === 'https') && !payload.domain) {
+    m.error = 'HTTP(S) 隧道必须填写绑定域名'
+    return
+  }
+  m.busy = true
+  m.error = ''
+  try {
+    if (m.mode === 'create') {
+      if (!payload.node_id) {
+        m.error = '请选择节点'
+        return
+      }
+      await admin.frpTunnelCreate(m.platformId, payload)
+      toast('隧道已创建')
+    } else {
+      await admin.frpTunnelUpdate(m.id, payload, m.platformId)
+      toast('隧道已更新')
+    }
+    closeModal()
+  } catch (e) {
+    m.error = e?.message || '提交失败'
+  } finally {
+    if (tunnelModal.value) tunnelModal.value.busy = false
+  }
+}
+
+// ---------- 迁移 / 锁定 ----------
+function openMigrate(t) {
+  const sec = detailsById.value[t.platform_id]
+  migrateModal.value = {
+    id: t.id,
+    platformId: t.platform_id,
+    name: t.name,
+    nodes: sec?.nodes || [],
+    nodeId: '',
+    busy: false,
+    error: '',
+  }
+}
+async function submitMigrate() {
+  const m = migrateModal.value
+  if (!m.nodeId) {
+    m.error = '请选择目标节点'
+    return
+  }
+  m.busy = true
+  m.error = ''
+  try {
+    await admin.frpTunnelMigrate(m.id, m.nodeId, m.platformId)
+    closeModal()
+    toast('迁移已提交')
+  } catch (e) {
+    m.error = e?.message || '迁移失败'
+  } finally {
+    if (migrateModal.value) migrateModal.value.busy = false
+  }
+}
+
+function openLock(t) {
+  lockModal.value = {
+    id: t.id,
+    platformId: t.platform_id,
+    name: t.name,
+    edit: t.lock_edit,
+    del: t.lock_delete,
+    migrate: t.lock_migrate,
+    busy: false,
+    error: '',
+  }
+}
+async function submitLock() {
+  const m = lockModal.value
+  m.busy = true
+  m.error = ''
+  try {
+    await admin.frpTunnelLock(m.id, { edit: m.edit, delete: m.del, migrate: m.migrate }, m.platformId)
+    closeModal()
+    toast('锁定设置已更新')
+  } catch (e) {
+    m.error = e?.message || '操作失败'
+  } finally {
+    if (lockModal.value) lockModal.value.busy = false
+  }
+}
+
+// ---------- 其它隧道动作 ----------
+async function offlineTunnel(t) {
+  try {
+    await admin.frpTunnelOffline(t.id, t.platform_id)
+    toast('已强制下线')
+  } catch (e) {
+    toast(e?.message || '操作失败', true)
+  }
+}
+async function authTunnel(t) {
+  try {
+    const r = await admin.frpTunnelAuth(t.id, '', t.platform_id)
+    toast(`已授权访问：${r.ip || '当前来源 IP'}`)
+  } catch (e) {
+    toast(e?.message || '操作失败', true)
+  }
+}
+function askDeleteTunnel(t) {
+  confirmState.value = {
+    title: '删除隧道',
+    message: `确认在 ${kindLabel[t.platform_kind] || t.platform_kind} 平台删除隧道「${t.name}」？该操作会直接调用平台接口，不可撤销。`,
+    confirmText: '删除',
+    danger: true,
+    busy: false,
+    run: async () => {
+      await admin.frpTunnelDelete(t.id, t.platform_id)
+      toast('隧道已删除')
+    },
+  }
+}
+function askDeletePlatform(p) {
+  confirmState.value = {
+    title: '解绑平台',
+    message: `确认解绑「${p.name}」？将移除面板中该账号的隧道与节点镜像（不影响平台侧的实际隧道）。`,
+    confirmText: '解绑',
+    danger: true,
+    busy: false,
+    run: async () => {
+      await admin.frpDeletePlatform(p.id)
+      toast('已解绑')
+    },
+  }
+}
+function askDeleteSubdomain(sd) {
+  const p = platforms.value.find((x) => x.kind === 'chmlfrp')
+  confirmState.value = {
+    title: '删除解析记录',
+    message: `确认删除 ${sd.record}.${sd.domain}？会直接调用 ChmlFrp 接口。`,
+    confirmText: '删除',
+    danger: true,
+    busy: false,
+    run: async () => {
+      await admin.deleteSubdomain(p.id, sd.domain, sd.record)
+      await loadAllSubdomains()
+      toast('解析已删除')
+    },
+  }
+}
+async function runConfirm() {
+  const c = confirmState.value
+  if (!c) return
+  c.busy = true
+  try {
+    await c.run()
+    confirmState.value = null
+  } catch (e) {
+    toast(e?.message || '操作失败', true)
+    c.busy = false
+  }
+}
+
+// ---------- 配置下载 ----------
+// 二进制/文本下载走裸 fetch（doc/10 §8 明示例外），必须 revokeObjectURL
+const downloadingId = ref(0)
+async function downloadConfig(t) {
+  downloadingId.value = t.id
+  try {
+    const resp = await fetch(`/api/v1/admin/frp/tunnels/${t.id}/config`, { credentials: 'same-origin' })
+    if (!resp.ok) {
+      let msg = `下载失败（HTTP ${resp.status}）`
+      try {
+        const j = await resp.json()
+        if (j?.msg) msg = j.msg
+      } catch {
+        /* 非 JSON 错误体，保留默认提示 */
+      }
+      throw new Error(msg)
+    }
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${t.platform_kind}-${t.name}.conf`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    toast(e?.message || '下载失败', true)
+  } finally {
+    downloadingId.value = 0
+  }
+}
+
+// ---------- ChmlFrp 子域名（跨平台唯一的平台特有区块） ----------
+const subs = ref({ loading: false, list: [], domains: [], error: '' })
+const subModal = ref(null)
+
+async function loadAllSubdomains() {
+  const p = platforms.value.find((x) => x.kind === 'chmlfrp')
+  if (!p) {
+    subs.value = { loading: false, list: [], domains: [], error: '' }
+    return
+  }
+  subs.value.loading = true
+  subs.value.error = ''
+  try {
+    const [a, b] = await Promise.all([admin.subdomains(p.id), admin.availableDomains(p.id)])
+    subs.value = { loading: false, list: a.subdomains || [], domains: b.domains || [], error: '' }
+  } catch (e) {
+    subs.value = { ...(subs.value), loading: false, error: e?.message || '域名信息加载失败' }
+  }
+}
+
+const subTTLs = ['1分钟', '2分钟', '5分钟', '10分钟', '15分钟', '30分钟', '1小时', '2小时', '5小时', '12小时', '1天']
+
+function openSubCreate() {
+  subModal.value = {
+    platformId: platforms.value.find((x) => x.kind === 'chmlfrp')?.id || 0,
+    mode: 'create',
+    domain: (subs.value.domains.map((d) => d.domain) || [])[0] || '',
+    record: '',
+    type: 'A',
+    target: '',
+    ttl: '10分钟',
+    remarks: '',
+    busy: false,
+    error: '',
+  }
+}
+function openSubEdit(sd) {
+  subModal.value = {
+    platformId: platforms.value.find((x) => x.kind === 'chmlfrp')?.id || 0,
+    mode: 'edit',
+    ...sd,
+    busy: false,
+    error: '',
+  }
+}
+async function submitSub() {
+  const m = subModal.value
+  if (!m.domain || !m.record.trim() || !m.target.trim()) {
+    m.error = '主域名、主机记录、目标地址均为必填'
+    return
+  }
+  m.busy = true
+  m.error = ''
+  const payload = {
+    domain: m.domain,
+    record: m.record.trim(),
+    type: m.type,
+    target: m.target.trim(),
+    ttl: m.ttl,
+    remarks: m.remarks || '',
+  }
+  try {
+    if (m.mode === 'create') await admin.createSubdomain(m.platformId, payload)
+    else await admin.updateSubdomain(m.platformId, payload)
+    closeModal()
+    await loadAllSubdomains()
+    toast(m.mode === 'create' ? '解析已创建' : '解析已更新')
+  } catch (e) {
+    m.error = e?.message || '提交失败'
+  } finally {
+    if (subModal.value) subModal.value.busy = false
+  }
+}
+
+// ---------- 归一化 ----------
+const chmlPlatform = computed(() => platforms.value.find((p) => p.kind === 'chmlfrp') || null)
+
+// 双平台同图流量历史：每个平台一条序列（ChmlFrp 只有近 7 日，
+// NATFRP 的 day 口径同为 7 点，天然对齐）
+const TREND_COLORS = { natfrp: '#0ea5e9', chmlfrp: '#8b5cf6' }
+const trend = ref({ loading: false })
+const trendSeries = ref([])
+const trendLabels = ref([])
+
+async function loadTrend() {
+  if (!platforms.value.length) return
+  trend.value.loading = true
+  try {
+    const results = await Promise.all(
+      platforms.value.map(async (p) => {
+        try {
+          const r = await admin.frpFlow(p.id, 'day')
+          return { p, points: r.points || [] }
+        } catch {
+          return { p, points: [] }
+        }
+      }),
+    )
+    // 任一平台有点才算有数据；标签以点最多的平台为基准
+    const withData = results.filter((r) => r.points.length)
+    const base = withData.reduce((best, r) => (r.points.length > best.length ? r.points : best), [])
+    trendLabels.value = base.map((x) => x.label)
+    trendSeries.value = withData.map((r) => ({
+      name: r.p.name,
+      color: TREND_COLORS[r.p.kind] || '#0ea5e9',
+      data: trendLabels.value.map(
+        (l) => Number(r.points.find((x) => x.label === l)?.used) || 0,
+      ),
+      fill: false,
+    }))
+  } finally {
+    trend.value.loading = false
+  }
+}
+
+function statusTag(p) {
+  if (p.status === 'ok') return { cls: 'bt-tag--success', text: '正常' }
+  if (p.status === 'unbound') return { cls: 'bt-tag--danger', text: '需重新授权' }
+  if (p.status === 'error') return { cls: 'bt-tag--warning', text: '同步异常' }
+  return { cls: 'bt-tag--info', text: '未同步' }
+}
+
+function tunnelStatus(t) {
+  if (t.online) return { cls: 'bt-tag--success', text: '在线' }
+  if (t.status === 'banned') return { cls: 'bt-tag--danger', text: '封禁' }
+  return { cls: '', text: '离线' }
+}
+
+function loadTone(load) {
+  if (load >= 80) return 'is-full'
+  if (load >= 50) return 'is-warn'
+  return ''
+}
+
+function kindIcon(kind) {
+  return kind === 'chmlfrp' ? 'globe' : 'tunnel'
+}
+
+function capsText(caps) {
+  const map = {
+    http: 'HTTP 建站', https: 'HTTPS 建站', web: '建站', udp: 'UDP',
+    create: '可创建', mainland: '内地', nodefense: '无防', defense: '有防御',
+    private: '私有', auth: '强制认证', beta: 'BETA', vip: 'VIP', ipv6: 'IPv6',
+  }
+  return (caps || []).map((c) => map[c] || c)
+}
+
+onMounted(async () => {
+  await refresh()
+  await loadTrend()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(tipTimer)
+  if (pollTimer) window.clearInterval(pollTimer)
+})
+</script>
+
+<template>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>内网穿透</h1>
+        <p class="page-head__desc">
+          NATFRP / ChmlFrp 隧道统一管理 · 账号用量 · 节点负载 · 每 3 分钟自动同步
+        </p>
+      </div>
+      <div class="page-head__actions">
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="admin.frpSaving" @click="refresh">
+          <AppIcon name="refresh" aria-hidden="true" />刷新
+        </button>
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">
+          <AppIcon name="plus" aria-hidden="true" />授权 ChmlFrp
+        </button>
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">
+          <AppIcon name="plus" aria-hidden="true" />绑定 NATFRP
+        </button>
+      </div>
+    </div>
+
+    <div v-if="tip.text" class="bt-alert" :class="tip.error ? 'bt-alert--error' : 'bt-alert--success'"
+      :role="tip.error ? 'alert' : 'status'" style="margin-bottom: 12px">
+      {{ tip.text }}
+    </div>
+
+    <StateError v-if="admin.frpError" style="margin-bottom: 12px" :message="admin.frpError" @retry="refresh" />
+    <StateSkeleton v-if="admin.frpLoading && !platforms.length" style="margin-bottom: 12px" :rows="4" />
+
+    <StateEmpty v-if="!admin.frpLoading && !platforms.length && !admin.frpError"
+      title="尚未接入穿透平台"
+      desc="绑定 NATFRP 访问密钥，或通过 OAuth 设备码授权 ChmlFrp 账号后即可在此管理隧道">
+      <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px">
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">绑定 NATFRP</button>
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">授权 ChmlFrp</button>
+      </div>
+    </StateEmpty>
+
+    <!-- ===== 平台卡（纯展示，不切换下方内容；各自特色指标在卡内） ===== -->
+    <template v-if="platforms.length">
+      <p class="frp-sec-title">穿透平台</p>
+      <div class="frp-platforms">
+        <div v-for="p in platforms" :key="p.id" class="frp-platform" :class="{ 'is-degraded': p.status !== 'ok' }">
+          <span class="frp-platform__avatar" :class="`frp-platform__avatar--${p.kind}`">
+            <AppIcon :name="kindIcon(p.kind)" aria-hidden="true" />
+          </span>
+          <span class="frp-platform__main">
+            <span class="frp-platform__head">
+              <span class="frp-platform__name">{{ p.name }}</span>
+              <span class="bt-tag" :class="statusTag(p).cls">{{ statusTag(p).text }}</span>
+            </span>
+            <span class="frp-platform__stats">
+              <span class="frp-stat">
+                <span class="frp-stat__num tnum">{{ p.tunnel_online }}<i>/</i>{{ p.tunnel_total }}</span>
+                <span class="frp-stat__label">隧道在线</span>
+              </span>
+              <span class="frp-stat">
+                <span class="frp-stat__num tnum">
+                  {{ p.tunnel_quota ? `${p.tunnel_used}/${p.tunnel_quota}` : p.tunnel_used }}
+                </span>
+                <span class="frp-stat__label">配额</span>
+              </span>
+              <span class="frp-stat">
+                <span class="frp-stat__num tnum">{{ p.kind === 'natfrp' ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—') : fmtBytes(p.traffic_up) }}</span>
+                <span class="frp-stat__label">{{ p.kind === 'natfrp' ? '剩余流量' : '累计上传' }}</span>
+              </span>
+              <span v-if="p.kind === 'natfrp'" class="frp-stat">
+                <span class="frp-stat__num">{{ p.profile?.sign_signed ? `签 ${p.profile?.sign_days || 0} 天` : '未签' }}</span>
+                <span class="frp-stat__label">签到</span>
+              </span>
+              <span v-else class="frp-stat">
+                <span class="frp-stat__num tnum">{{ fmtBytes(p.traffic_down) }}</span>
+                <span class="frp-stat__label">累计下载</span>
+              </span>
+            </span>
+            <span v-if="p.tunnel_quota" class="frp-quota">
+              <i class="frp-quota__bar" :class="loadTone((p.tunnel_used / p.tunnel_quota) * 100)"
+                :style="{ width: Math.min(100, (p.tunnel_used / p.tunnel_quota) * 100) + '%' }" />
+            </span>
+            <span v-if="p.last_error" class="frp-platform__err">{{ p.last_error }}</span>
+            <span class="frp-platform__foot">同步于 {{ p.last_sync_at ? agoFromTs(p.last_sync_at) : '尚未同步' }}</span>
+          </span>
+          <span class="frp-platform__side">
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+              :disabled="syncingId === p.id" @click="syncOne(p)">
+              <AppIcon name="refresh" aria-hidden="true" />
+              {{ syncingId === p.id ? '同步中…' : '同步' }}
+            </button>
+            <button v-if="p.kind === 'chmlfrp'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+              @click="openDevice(p.id)">重新授权</button>
+            <button v-if="p.kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+              @click="openBind">换密钥</button>
+            <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button" @click="askDeletePlatform(p)">
+              解绑
+            </button>
+          </span>
+        </div>
+      </div>
+
+      <!-- ===== 归一化：合并用量条（跨平台一行铺开，每块标平台名） ===== -->
+      <div class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">账号用量</h2>
+          <span class="bt-text-muted frp-head-hint">同列指标按平台口径换算：剩余流量 / 累计上传</span>
+        </div>
+        <div class="bt-card__body">
+          <div class="frp-tiles">
+            <div v-for="p in platforms" :key="`u-${p.id}`" class="frp-tile frp-tile--plat">
+              <span class="frp-tile__icon" :class="p.kind === 'chmlfrp' ? 'frp-tile__icon--violet' : 'frp-tile__icon--brand'">
+                <AppIcon :name="kindIcon(p.kind)" aria-hidden="true" />
+              </span>
+              <div class="frp-tile__grid">
+                <div class="frp-tile__row">
+                  <span class="frp-tile__label">今日流量</span>
+                  <span class="frp-tile__value tnum">{{ p.traffic_day_used ? fmtBytes(p.traffic_day_used) : '—' }}</span>
+                </div>
+                <div class="frp-tile__row">
+                  <span class="frp-tile__label">{{ p.kind === 'natfrp' ? '剩余流量' : '累计上传/下载' }}</span>
+                  <span class="frp-tile__value tnum">
+                    {{ p.kind === 'natfrp'
+                      ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—')
+                      : `${fmtBytes(p.traffic_up)} / ${fmtBytes(p.traffic_down)}` }}
+                  </span>
+                </div>
+                <div class="frp-tile__row">
+                  <span class="frp-tile__label">限速</span>
+                  <span class="frp-tile__value">{{ p.speed_limit || '—' }}</span>
+                </div>
+                <div class="frp-tile__row">
+                  <span class="frp-tile__label">上次同步</span>
+                  <span class="frp-tile__value">{{ p.last_sync_at ? fmtTs(p.last_sync_at) : '—' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 合并流量历史：每个平台一条序列，同图对比 ===== -->
+      <div class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">流量历史</h2>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="loadTrend">
+            <AppIcon name="refresh" aria-hidden="true" />重新加载
+          </button>
+        </div>
+        <div class="bt-card__body">
+          <StateSkeleton v-if="trend.loading" :rows="3" />
+          <StateEmpty v-else-if="!trendSeries.length" title="暂无历史数据"
+            desc="平台侧的流量历史接口粒度较粗，点「重新加载」拉取；趋势图也依赖每轮同步的本地快照累积" />
+          <TrendChart v-else :series="trendSeries" :x-labels="trendLabels" :height="220"
+            :y-formatter="fmtBytes" label="平台流量历史" />
+        </div>
+      </div>
+
+      <!-- ===== 合并隧道表：平台列标注归属，操作列按平台能力渲染 ===== -->
+      <div class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">隧道 <span class="frp-count">{{ allTunnels.length }}</span></h2>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openTunnelCreate">
+            <AppIcon name="plus" aria-hidden="true" />新建隧道
+          </button>
+        </div>
+        <div class="bt-card__body">
+          <StateEmpty v-if="!allTunnels.length" title="暂无隧道" desc="点上方「新建隧道」或到平台控制台创建后同步" />
+          <div v-else class="bt-table-wrap">
+            <table class="bt-table">
+              <caption class="bt-text-muted">隧道列表：状态、端点、用量与可执行操作</caption>
+              <thead>
+                <tr>
+                  <th scope="col">状态</th>
+                  <th scope="col">名称</th>
+                  <th scope="col">平台</th>
+                  <th scope="col">节点</th>
+                  <th scope="col">本地</th>
+                  <th scope="col">公网</th>
+                  <th scope="col" class="num">连接数</th>
+                  <th scope="col" class="num">今日流量</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in allTunnels" :key="t.id">
+                  <td>
+                    <span class="bt-tag" :class="tunnelStatus(t).cls">{{ tunnelStatus(t).text }}</span>
+                    <div v-if="t.status_reason" class="bt-text-muted frp-cell-note">{{ t.status_reason }}</div>
+                  </td>
+                  <td>
+                    <div class="frp-tunnel-name">
+                      <span class="bt-tag bt-tag--outline">{{ protoLabel[t.proto] || t.proto }}</span>
+                      <b>{{ t.name }}</b>
+                    </div>
+                    <div v-if="t.extra" class="bt-text-muted frp-cell-note">{{ t.extra }}</div>
+                  </td>
+                  <td>
+                    <span class="bt-tag" :class="t.platform_kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                      {{ kindLabel[t.platform_kind] || t.platform_kind }}
+                    </span>
+                  </td>
+                  <td>{{ t.node_name || t.node_id || '—' }}</td>
+                  <td><span class="mono frp-endpoint">{{ t.local_ip }}:{{ t.local_port }}</span></td>
+                  <td>
+                    <span v-if="t.remote" class="mono frp-endpoint">{{ t.remote }}</span>
+                    <span v-else class="bt-text-muted">—</span>
+                  </td>
+                  <td class="num tnum">{{ t.conns || 0 }}</td>
+                  <td class="num tnum">{{ fmtBytes((t.today_up || 0) + (t.today_down || 0)) }}</td>
+                  <td>
+                    <div class="frp-row-actions">
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openTunnelEdit(t)">编辑</button>
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="downloadingId === t.id" @click="downloadConfig(t)">
+                        {{ downloadingId === t.id ? '…' : '配置' }}
+                      </button>
+                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
+                        type="button" @click="openLock(t)">锁定</button>
+                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
+                        type="button" @click="openMigrate(t)">迁移</button>
+                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
+                        type="button" @click="authTunnel(t)">认证</button>
+                      <button v-if="t.platform_kind === 'chmlfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
+                        type="button" @click="offlineTunnel(t)">下线</button>
+                      <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
+                        @click="askDeleteTunnel(t)">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 合并节点表：在用展开（标平台），未在用折叠 ===== -->
+      <div class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">
+            在用节点 <span class="frp-count">{{ inUseNodes.length }}</span>
+          </h2>
+          <span class="bt-text-muted frp-head-hint">隧道所落节点 · 随「同步」更新</span>
+        </div>
+        <div class="bt-card__body">
+          <StateSkeleton v-if="admin.frpDetailLoading && !allNodes.length" :rows="3" />
+          <StateEmpty v-else-if="!allNodes.length" title="暂无节点数据" desc="点平台卡上的「同步」拉取节点列表" />
+          <template v-else>
+            <StateEmpty v-if="!inUseNodes.length" title="暂无在用节点"
+              desc="隧道还没有落到任何节点上；新建隧道或完成一次「同步」后自动出现" />
+            <div v-else class="bt-table-wrap">
+              <table class="bt-table">
+                <caption class="bt-text-muted">在用节点：归属平台、在线状态、负载与可用能力</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">状态</th>
+                    <th scope="col">节点</th>
+                    <th scope="col">平台</th>
+                    <th scope="col">分组</th>
+                    <th scope="col">能力</th>
+                    <th scope="col" class="num">负载</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="n in inUseNodes" :key="`${nodePlatform(n.id)?.id}-${n.id}`">
+                    <td>
+                      <span class="bt-tag" :class="n.online ? 'bt-tag--success' : ''">{{ n.online ? '在线' : '离线' }}</span>
+                    </td>
+                    <td>
+                      <div>{{ n.name }}</div>
+                      <div v-if="n.host" class="bt-text-muted frp-cell-note mono">{{ n.host }}</div>
+                    </td>
+                    <td>
+                      <span class="bt-tag" :class="nodePlatform(n.id)?.kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                        {{ kindLabel[nodePlatform(n.id)?.kind] || '—' }}
+                      </span>
+                    </td>
+                    <td>{{ n.group_name || '—' }}</td>
+                    <td>
+                      <span v-for="c in capsText(n.caps)" :key="c" class="bt-tag bt-tag--outline frp-cap">{{ c }}</span>
+                      <span v-if="!n.caps?.length" class="bt-text-muted">—</span>
+                    </td>
+                    <td class="num">
+                      <div v-if="n.load" class="frp-load">
+                        <span class="frp-load__num tnum">{{ n.load.toFixed(1) }}%</span>
+                        <span class="frp-load__bar">
+                          <i :class="loadTone(n.load)" :style="{ width: Math.min(100, n.load) + '%' }" />
+                        </span>
+                      </div>
+                      <span v-else class="bt-text-muted">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 未在用节点折叠区：默认收起，只在迁移/建隧道选节点时才需要 -->
+            <div v-if="idleNodes.length" class="frp-fold">
+              <button class="frp-fold__toggle" type="button"
+                :aria-expanded="idleExpanded" @click="idleExpanded = !idleExpanded">
+                <AppIcon :name="idleExpanded ? 'arrow-down' : 'arrow-left'" aria-hidden="true" />
+                未在用节点（{{ idleNodes.length }}）
+                <span class="bt-text-muted">默认折叠，建隧道 / 迁移时在弹窗下拉中选择</span>
+              </button>
+              <div v-if="idleExpanded" class="bt-table-wrap frp-fold__body">
+                <table class="bt-table">
+                  <caption class="bt-text-muted">未在用节点：平台全网节点镜像（供建隧道与迁移参考）</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">状态</th>
+                      <th scope="col">节点</th>
+                      <th scope="col">平台</th>
+                      <th scope="col">分组</th>
+                      <th scope="col">能力</th>
+                      <th scope="col" class="num">负载</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="n in idleNodes" :key="`i-${nodePlatform(n.id)?.id}-${n.id}`">
+                      <td>
+                        <span class="bt-tag" :class="n.online ? 'bt-tag--success' : ''">{{ n.online ? '在线' : '离线' }}</span>
+                      </td>
+                      <td>
+                        <div>{{ n.name }}</div>
+                        <div v-if="n.host" class="bt-text-muted frp-cell-note mono">{{ n.host }}</div>
+                      </td>
+                      <td>
+                        <span class="bt-tag" :class="nodePlatform(n.id)?.kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                          {{ kindLabel[nodePlatform(n.id)?.kind] || '—' }}
+                        </span>
+                      </td>
+                      <td>{{ n.group_name || '—' }}</td>
+                      <td>
+                        <span v-for="c in capsText(n.caps)" :key="c" class="bt-tag bt-tag--outline frp-cap">{{ c }}</span>
+                        <span v-if="!n.caps?.length" class="bt-text-muted">—</span>
+                      </td>
+                      <td class="num">
+                        <div v-if="n.load" class="frp-load">
+                          <span class="frp-load__num tnum">{{ n.load.toFixed(1) }}%</span>
+                          <span class="frp-load__bar">
+                            <i :class="loadTone(n.load)" :style="{ width: Math.min(100, n.load) + '%' }" />
+                          </span>
+                        </div>
+                        <span v-else class="bt-text-muted">—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ===== 平台特有：ChmlFrp 免费二级域名 ===== -->
+      <div v-if="chmlPlatform" class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">
+            免费二级域名 <span class="frp-count">{{ subs.list.length }}</span>
+            <span class="bt-tag frp-tag-chml">ChmlFrp</span>
+          </h2>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openSubCreate">
+            <AppIcon name="plus" aria-hidden="true" />新建解析
+          </button>
+        </div>
+        <div class="bt-card__body">
+          <StateError v-if="subs.error" :message="subs.error" @retry="loadAllSubdomains" />
+          <StateSkeleton v-else-if="subs.loading && !subs.list.length" :rows="2" />
+          <StateEmpty v-else-if="!subs.list.length" title="暂无解析记录"
+            desc="ChmlFrp 提供免费二级域名，可用于 HTTP(S) 隧道的绑定域名" />
+          <div v-else class="bt-table-wrap">
+            <table class="bt-table">
+              <caption class="bt-text-muted">免费二级域名解析记录</caption>
+              <thead>
+                <tr>
+                  <th scope="col">主机记录</th>
+                  <th scope="col">主域名</th>
+                  <th scope="col">类型</th>
+                  <th scope="col">目标</th>
+                  <th scope="col">TTL</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="sd in subs.list" :key="`${sd.record}.${sd.domain}`">
+                  <td><span class="mono frp-endpoint">{{ sd.record }}</span></td>
+                  <td>{{ sd.domain }}</td>
+                  <td><span class="bt-tag bt-tag--outline">{{ sd.type }}</span></td>
+                  <td><span class="mono frp-endpoint">{{ sd.target }}</span></td>
+                  <td>{{ sd.ttl }}</td>
+                  <td>
+                    <div class="frp-row-actions">
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        @click="openSubEdit(sd)">编辑</button>
+                      <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
+                        @click="askDeleteSubdomain(sd)">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ===== 弹窗：绑定 NATFRP ===== -->
+    <div v-if="bindModal" class="bt-modal-mask" @click.self="bindModal.busy ? null : closeModal()">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="绑定 NATFRP 账号">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">绑定 NATFRP 账号</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack">
+            <p class="bt-modal__desc">
+              访问密钥在 <b>NATFRP 面板 → 用户信息</b> 页查看（它不是登录密码）。密钥将加密存储，
+              面板只用于读取隧道与节点、并代为调用管理接口。
+            </p>
+            <label class="bt-field">
+              <span class="bt-field__label">备注名称</span>
+              <input v-model="bindModal.name" class="bt-input" type="text" placeholder="NATFRP" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">访问密钥 <span class="bt-text-danger">*</span></span>
+              <input v-model="bindModal.token" class="bt-input" type="password" placeholder="粘贴访问密钥"
+                autocomplete="off">
+            </label>
+            <div v-if="bindModal.error" class="bt-alert bt-alert--error" role="alert">{{ bindModal.error }}</div>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="bindModal.busy" @click="submitBind">
+            {{ bindModal.busy ? '验证中…' : '绑定并同步' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：ChmlFrp 设备码授权 ===== -->
+    <div v-if="deviceModal" class="bt-modal-mask" @click.self="closeModal()">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="授权 ChmlFrp 账号">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">授权 ChmlFrp 账号</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack">
+            <p class="bt-modal__desc">
+              ChmlFrp 使用轻爪账户 OAuth2 登录，需你在浏览器确认一次。授权后令牌由面板自动续期
+              （access_token 仅 10 分钟有效）；若续期失败，此页会提示重新授权。
+            </p>
+            <template v-if="deviceModal.status === 'starting'">
+              <StateSkeleton :rows="2" />
+            </template>
+            <template v-else-if="deviceModal.status === 'pending'">
+              <div class="bt-alert bt-alert--info" role="status">
+                请在浏览器中打开下面的链接并确认授权（{{ Math.max(0, Math.ceil(deviceModal.secondsLeft)) }} 秒内有效）
+              </div>
+              <div class="bt-field">
+                <span class="bt-field__label">用户码</span>
+                <div class="frp-usercode">{{ deviceModal.userCode }}</div>
+              </div>
+              <a class="bt-btn bt-btn--primary bt-btn--block" :href="deviceModal.verifyUrl" target="_blank" rel="noopener noreferrer">
+                打开授权页面
+              </a>
+              <p class="bt-text-muted">授权完成后本弹窗会自动关闭。</p>
+            </template>
+            <template v-else>
+              <div class="bt-alert bt-alert--error" role="alert">{{ deviceModal.error || '授权失败' }}</div>
+            </template>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：建/改隧道 ===== -->
+    <div v-if="tunnelModal" class="bt-modal-mask" @click.self="tunnelModal.busy ? null : closeModal()">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true"
+        :aria-label="tunnelModal.mode === 'create' ? '新建隧道' : '编辑隧道'">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">
+            {{ tunnelModal.mode === 'create' ? '新建隧道' : `编辑隧道 · ${tunnelModal.name}` }}
+          </div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-grid">
+            <label v-if="tunnelModal.mode === 'create'" class="bt-field">
+              <span class="bt-field__label">平台 <span class="bt-text-danger">*</span></span>
+              <select v-model="tunnelModal.platformId" class="bt-select" @change="onCreatePlatformChange">
+                <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">隧道名 <span class="bt-text-danger">*</span></span>
+              <input v-model="tunnelModal.name" class="bt-input" type="text" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">类型</span>
+              <select v-model="tunnelModal.proto" class="bt-select" :disabled="tunnelModal.mode === 'edit'">
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">节点 {{ tunnelModal.mode === 'create' ? '*' : '' }}</span>
+              <select v-model="tunnelModal.nodeId" class="bt-select">
+                <option value="">{{ tunnelModal.mode === 'edit' ? '（不修改）' : '请选择节点' }}</option>
+                <option v-for="n in tunnelModal.nodes" :key="n.remote_id" :value="n.remote_id">
+                  {{ n.name }}{{ n.online ? '' : '（离线）' }}
+                </option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">本地 IP</span>
+              <input v-model="tunnelModal.localIp" class="bt-input" type="text" placeholder="127.0.0.1" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">本地端口 <span class="bt-text-danger">*</span></span>
+              <input v-model="tunnelModal.localPort" class="bt-input" type="number" min="1" max="65535" autocomplete="off">
+            </label>
+            <label v-if="tunnelModal.proto === 'tcp' || tunnelModal.proto === 'udp'" class="bt-field">
+              <span class="bt-field__label">公网端口</span>
+              <input v-model="tunnelModal.remotePort" class="bt-input" type="number" min="0" max="65535"
+                placeholder="0 = 由平台分配" autocomplete="off">
+            </label>
+            <label v-else class="bt-field">
+              <span class="bt-field__label">绑定域名 <span class="bt-text-danger">*</span></span>
+              <input v-model="tunnelModal.domain" class="bt-input" type="text" placeholder="example.com" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">备注</span>
+              <input v-model="tunnelModal.note" class="bt-input" type="text" autocomplete="off">
+            </label>
+            <label v-if="tunnelModal.mode === 'create'" class="bt-field">
+              <span class="bt-field__label">额外参数（frpc 原样透传）</span>
+              <input v-model="tunnelModal.extra" class="bt-input" type="text" placeholder="如 auto_https = auto" autocomplete="off">
+            </label>
+          </div>
+          <p class="bt-hint frp-modal-hint">
+            说明：NATFRP 的编辑只支持本地地址/端口与备注，改类型或节点需删除重建或使用「迁移」；
+            ChmlFrp 官方标注 HTTP(S) 隧道暂不支持修改。
+          </p>
+          <div v-if="tunnelModal.error" class="bt-alert bt-alert--error" role="alert">{{ tunnelModal.error }}</div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="tunnelModal.busy" @click="submitTunnel">
+            {{ tunnelModal.busy ? '提交中…' : '确定' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：迁移节点 ===== -->
+    <div v-if="migrateModal" class="bt-modal-mask" @click.self="migrateModal.busy ? null : closeModal()">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="迁移隧道节点">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">迁移隧道 · {{ migrateModal.name }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack">
+            <label class="bt-field">
+              <span class="bt-field__label">目标节点</span>
+              <select v-model="migrateModal.nodeId" class="bt-select">
+                <option value="">请选择节点</option>
+                <option v-for="n in migrateModal.nodes" :key="n.remote_id" :value="n.remote_id">
+                  {{ n.name }}{{ n.online ? '' : '（离线）' }}{{ n.load ? ` · ${n.load.toFixed(0)}%` : '' }}
+                </option>
+              </select>
+            </label>
+            <p class="bt-hint">迁移会让隧道在目标节点重新建立，客户端需要重新获取配置。</p>
+            <div v-if="migrateModal.error" class="bt-alert bt-alert--error" role="alert">{{ migrateModal.error }}</div>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="migrateModal.busy" @click="submitMigrate">
+            {{ migrateModal.busy ? '迁移中…' : '迁移' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：锁定设置 ===== -->
+    <div v-if="lockModal" class="bt-modal-mask" @click.self="lockModal.busy ? null : closeModal()">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="隧道锁定设置">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">锁定设置 · {{ lockModal.name }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack">
+            <label class="bt-check">
+              <input v-model="lockModal.edit" type="checkbox">
+              <span>锁定编辑（禁止改本地地址/端口/备注）</span>
+            </label>
+            <label class="bt-check">
+              <input v-model="lockModal.del" type="checkbox">
+              <span>锁定删除</span>
+            </label>
+            <label class="bt-check">
+              <input v-model="lockModal.migrate" type="checkbox">
+              <span>锁定迁移</span>
+            </label>
+            <p class="bt-hint">锁定由平台侧生效：锁定后面板上的对应操作会被平台拒绝。</p>
+            <div v-if="lockModal.error" class="bt-alert bt-alert--error" role="alert">{{ lockModal.error }}</div>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="lockModal.busy" @click="submitLock">
+            {{ lockModal.busy ? '提交中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：二级域名 ===== -->
+    <div v-if="subModal" class="bt-modal-mask" @click.self="subModal.busy ? null : closeModal()">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="二级域名解析">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">{{ subModal.mode === 'create' ? '新建解析' : '编辑解析' }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-grid">
+            <label class="bt-field">
+              <span class="bt-field__label">主域名 <span class="bt-text-danger">*</span></span>
+              <select v-model="subModal.domain" class="bt-select" :disabled="subModal.mode === 'edit'">
+                <option v-for="d in subs.domains.map((x) => x.domain)" :key="d" :value="d">{{ d }}</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">主机记录 <span class="bt-text-danger">*</span></span>
+              <input v-model="subModal.record" class="bt-input" type="text" :disabled="subModal.mode === 'edit'"
+                placeholder="如 home" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">类型</span>
+              <select v-model="subModal.type" class="bt-select">
+                <option value="A">A</option>
+                <option value="AAAA">AAAA</option>
+                <option value="CNAME">CNAME</option>
+                <option value="SRV">SRV</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">目标地址 <span class="bt-text-danger">*</span></span>
+              <input v-model="subModal.target" class="bt-input" type="text" autocomplete="off">
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">TTL</span>
+              <select v-model="subModal.ttl" class="bt-select">
+                <option v-for="t in subTTLs" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">备注</span>
+              <input v-model="subModal.remarks" class="bt-input" type="text" autocomplete="off">
+            </label>
+          </div>
+          <div v-if="subModal.error" class="bt-alert bt-alert--error" role="alert">{{ subModal.error }}</div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="subModal.busy" @click="submitSub">
+            {{ subModal.busy ? '提交中…' : '确定' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 危险操作确认 ===== -->
+    <ConfirmDialog v-if="confirmState" :title="confirmState.title" :message="confirmState.message"
+      :confirm-text="confirmState.confirmText" :danger="confirmState.danger" :busy="confirmState.busy"
+      @cancel="confirmState.busy ? null : (confirmState = null)" @confirm="runConfirm" />
+  </div>
+</template>
+
+<style scoped>
+/* ================= 小节标题 ================= */
+
+.frp-sec-title {
+  margin: 0 0 10px 2px;
+  font-size: var(--bt-font-xs);
+  font-weight: var(--bt-weight-semibold);
+  letter-spacing: 0.08em;
+  color: var(--bt-text-4);
+}
+
+/* ================= 平台卡（纯展示 + 轻操作） ================= */
+
+.frp-platforms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 0 4px; /* 让卡片投影不被网格裁切 */
+}
+
+.frp-platform {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--bt-radius-lg);
+  background: var(--bt-bg-card);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--bt-glass-border);
+  box-shadow:
+    var(--bt-glass-hi),
+    var(--bt-shadow-card);
+  min-width: 0;
+  transition:
+    box-shadow var(--bt-duration-base) var(--bt-ease-out),
+    border-color var(--bt-duration-base) ease;
+}
+
+.frp-platform.is-degraded {
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.frp-platform__avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #fff;
+  background: var(--bt-brand-gradient);
+  box-shadow: 0 4px 12px -4px rgba(14, 165, 233, 0.5);
+}
+
+.frp-platform__avatar svg {
+  width: 20px;
+  height: 20px;
+}
+
+.frp-platform__avatar--chmlfrp {
+  background: linear-gradient(135deg, #a78bfa, #8b5cf6);
+  box-shadow: 0 4px 12px -4px rgba(139, 92, 246, 0.5);
+}
+
+.frp-platform__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.frp-platform__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.frp-platform__name {
+  font-weight: var(--bt-weight-semibold);
+  font-size: var(--bt-font-lg);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frp-platform__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.frp-stat__num {
+  display: block;
+  font-size: var(--bt-font-md);
+  font-weight: var(--bt-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frp-stat__num i {
+  font-style: normal;
+  color: var(--bt-text-4);
+  margin: 0 1px;
+}
+
+.frp-stat__label {
+  display: block;
+  font-size: 11px;
+  color: var(--bt-text-4);
+  margin-top: 1px;
+}
+
+.frp-quota {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.18);
+  overflow: hidden;
+}
+
+.frp-quota__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--bt-success-500);
+}
+
+.frp-quota__bar.is-warn {
+  background: var(--bt-warning-500);
+}
+
+.frp-quota__bar.is-full {
+  background: var(--bt-danger-500);
+}
+
+.frp-platform__err {
+  font-size: 12px;
+  color: var(--bt-danger-600);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frp-platform__foot {
+  font-size: 11px;
+  color: var(--bt-text-4);
+}
+
+.frp-platform__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ================= 内容卡片节奏 ================= */
+
+.frp-block {
+  margin-bottom: 16px;
+}
+
+.frp-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  margin-left: 4px;
+  border-radius: var(--bt-radius-pill);
+  font-size: var(--bt-font-xs);
+  font-weight: var(--bt-weight-medium);
+  vertical-align: 2px;
+  color: var(--bt-brand-600);
+  background: var(--bt-brand-50);
+  border: 1px solid rgba(14, 165, 233, 0.18);
+}
+
+.frp-head-hint {
+  font-size: var(--bt-font-xs);
+}
+
+/* 平台归属标签：与 outline 系并列的双色区分（颜色只做辅助，文字才是主通道） */
+.frp-tag-nat {
+  background: var(--bt-brand-100);
+  color: var(--bt-info-600);
+}
+
+.frp-tag-chml {
+  background: rgba(167, 139, 250, 0.16);
+  color: var(--bt-accent-600);
+}
+
+/* ================= 归一化用量瓦片 ================= */
+
+.frp-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.frp-tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--bt-radius-md);
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--bt-border);
+  min-width: 0;
+  transition:
+    border-color var(--bt-duration-fast) ease,
+    background var(--bt-duration-fast) ease;
+}
+
+.frp-tile:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.frp-tile__icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--bt-brand-600);
+  background: var(--bt-brand-50);
+  border: 1px solid rgba(14, 165, 233, 0.18);
+}
+
+.frp-tile__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.frp-tile__icon--violet {
+  color: #7c3aed;
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(139, 92, 246, 0.2);
+}
+
+.frp-tile__icon--brand {
+  color: var(--bt-brand-600);
+  background: var(--bt-brand-50);
+  border-color: rgba(14, 165, 233, 0.18);
+}
+
+/* 平台块内四行指标的键值对齐 */
+.frp-tile__grid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.frp-tile__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.frp-tile__label {
+  font-size: var(--bt-font-xs);
+  color: var(--bt-text-4);
+  white-space: nowrap;
+}
+
+.frp-tile__value {
+  font-size: var(--bt-font-md);
+  font-weight: var(--bt-weight-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ================= 表格微调 ================= */
+
+.frp-tunnel-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.frp-tunnel-name .bt-tag {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+
+.frp-endpoint {
+  font-size: var(--bt-font-xs);
+  letter-spacing: 0.01em;
+}
+
+.frp-cell-note {
+  font-size: 11px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frp-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.frp-cap {
+  margin-right: 4px;
+}
+
+.frp-load {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.frp-load__num {
+  font-size: var(--bt-font-xs);
+  font-weight: var(--bt-weight-medium);
+  min-width: 44px;
+  text-align: right;
+}
+
+.frp-load__bar {
+  width: 64px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.18);
+  overflow: hidden;
+}
+
+.frp-load__bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--bt-success-500);
+}
+
+.frp-load__bar i.is-warn {
+  background: var(--bt-warning-500);
+}
+
+.frp-load__bar i.is-full {
+  background: var(--bt-danger-500);
+}
+
+/* ================= 未在用节点折叠区 ================= */
+
+.frp-fold {
+  margin-top: 12px;
+}
+
+/* 手风琴按钮：文字 + 箭头方向双通道，虚线描边弱化视觉权重 */
+.frp-fold__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1.5px dashed var(--bt-border-strong);
+  border-radius: var(--bt-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: var(--bt-font-sm);
+  font-weight: var(--bt-weight-medium);
+  color: var(--bt-text-2);
+  cursor: pointer;
+  transition:
+    border-color var(--bt-duration-fast) ease,
+    background var(--bt-duration-fast) ease,
+    color var(--bt-duration-fast) ease;
+}
+
+.frp-fold__toggle:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--bt-text-1);
+}
+
+.frp-fold__toggle svg {
+  width: 14px;
+  height: 14px;
+  color: var(--bt-brand-500);
+}
+
+.frp-fold__body {
+  margin-top: 10px;
+}
+
+/* ================= 弹窗微调 ================= */
+
+.frp-usercode {
+  font-family: var(--bt-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 20px;
+  font-weight: var(--bt-weight-semibold);
+  letter-spacing: 0.1em;
+}
+
+/* 表单说明与字段拉开距离：bt-modal__body 无 gap，网格表单贴着 hint 太挤 */
+.frp-modal-hint {
+  margin-top: var(--bt-space-4);
+  padding-top: var(--bt-space-3);
+  border-top: var(--bt-hairline);
+}
+
+/* ================= 窄屏 ================= */
+
+@media (max-width: 720px) {
+  .frp-platforms {
+    grid-template-columns: 1fr;
+  }
+
+  .frp-platform__side {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .frp-platform__stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .frp-load__bar {
+    width: 44px;
+  }
+}
+</style>

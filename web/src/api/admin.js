@@ -64,6 +64,37 @@ const realAdmin = {
   wgAssetProbe: (id) => http.post(`/v1/admin/wg/assets/${id}/probe`, {}, { timeoutMs: 30000, retries: 0 }),
   wgAssetFetch: (id) => http.post(`/v1/admin/wg/assets/${id}/fetch`, {}, { timeoutMs: 600000, retries: 0 }),
   wgAssetPush: (id, serverId) => http.post(`/v1/admin/wg/assets/${id}/push`, { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
+
+  // ---------- 内网穿透平台（doc/13 §5） ----------
+  // 全部走外部平台 API，统一 retries:0 —— 重试会重复建隧道/重复删除
+  frpOverview: () => http.get('/v1/admin/frp/overview'),
+  frpNodes: () => http.get('/v1/admin/frp/nodes'),
+  frpPlatform: (id) => http.get(`/v1/admin/frp/platforms/${id}`, { retries: 0 }),
+  frpBindNatfrp: (payload) => http.post('/v1/admin/frp/platforms', payload, { timeoutMs: 60000, retries: 0 }),
+  frpPlatformRename: (id, name) => http.put(`/v1/admin/frp/platforms/${id}`, { name }),
+  frpPlatformDelete: (id) => http.del(`/v1/admin/frp/platforms/${id}`, { retries: 0 }),
+  frpSync: (id, full = true) => http.post(`/v1/admin/frp/platforms/${id}/sync?full=${full ? 1 : 0}`, {}, { timeoutMs: 60000, retries: 0 }),
+  frpFlow: (id, kind) => http.get(`/v1/admin/frp/platforms/${id}/flow?kind=${kind}`, { retries: 0 }),
+  frpTunnelCreate: (id, payload) => http.post(`/v1/admin/frp/platforms/${id}/tunnels`, payload, { timeoutMs: 60000, retries: 0 }),
+  frpSubdomains: (id) => http.get(`/v1/admin/frp/platforms/${id}/subdomains`, { retries: 0 }),
+  frpAvailableDomains: (id) => http.get(`/v1/admin/frp/platforms/${id}/subdomains/available`, { retries: 0 }),
+  frpSubdomainCreate: (id, payload) => http.post(`/v1/admin/frp/platforms/${id}/subdomains`, payload, { timeoutMs: 30000, retries: 0 }),
+  frpSubdomainUpdate: (id, payload) => http.put(`/v1/admin/frp/platforms/${id}/subdomains`, payload, { timeoutMs: 30000, retries: 0 }),
+  frpSubdomainDelete: (id, domain, record) =>
+    http.del(`/v1/admin/frp/platforms/${id}/subdomains?domain=${encodeURIComponent(domain)}&record=${encodeURIComponent(record)}`, { timeoutMs: 30000, retries: 0 }),
+
+  frpTunnelUpdate: (id, payload) => http.put(`/v1/admin/frp/tunnels/${id}`, payload, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelDelete: (id) => http.del(`/v1/admin/frp/tunnels/${id}`, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelLock: (id, payload) => http.post(`/v1/admin/frp/tunnels/${id}/lock`, payload, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelMigrate: (id, nodeId) => http.post(`/v1/admin/frp/tunnels/${id}/migrate`, { node_id: nodeId }, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelOffline: (id) => http.post(`/v1/admin/frp/tunnels/${id}/offline`, {}, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelAuth: (id, ip) => http.post(`/v1/admin/frp/tunnels/${id}/auth`, { ip }, { timeoutMs: 30000, retries: 0 }),
+  frpTunnelTraffic: (id) => http.get(`/v1/admin/frp/tunnels/${id}/traffic`, { retries: 0 }),
+
+  // ChmlFrp 走 OAuth2 设备码；令牌 10 分钟过期由后端自动续期，续不上时前端弹重新授权
+  frpDeviceStart: (reuseId = 0) => http.post('/v1/admin/frp/chmlfrp/device', { reuse_id: reuseId }, { timeoutMs: 30000, retries: 0 }),
+  frpDevicePoll: (sid) => http.get(`/v1/admin/frp/chmlfrp/device/${sid}`, { retries: 0 }),
+  frpDeviceCancel: (sid) => http.del(`/v1/admin/frp/chmlfrp/device/${sid}`, { retries: 0 }),
 }
 
 function withTimeout(promise, ms = 15000) {
@@ -121,4 +152,30 @@ export const adminClient = {
   wgAssetProbe: (id) => withTimeout(realAdmin.wgAssetProbe(id), 35000),
   wgAssetFetch: (id) => realAdmin.wgAssetFetch(id),
   wgAssetPush: (id, serverId) => withTimeout(realAdmin.wgAssetPush(id, serverId), 95000),
+
+  // 穿透平台：外部 API 往返 + 后端可能的令牌续期，统一给足 60s
+  frpOverview: () => withTimeout(realAdmin.frpOverview(), 20000),
+  frpNodes: () => withTimeout(realAdmin.frpNodes(), 20000),
+  frpPlatform: (id) => withTimeout(realAdmin.frpPlatform(id), 20000),
+  frpBindNatfrp: (payload) => withTimeout(realAdmin.frpBindNatfrp(payload), 65000),
+  frpPlatformRename: (id, name) => withTimeout(realAdmin.frpPlatformRename(id, name)),
+  frpPlatformDelete: (id) => withTimeout(realAdmin.frpPlatformDelete(id), 20000),
+  frpSync: (id, full) => withTimeout(realAdmin.frpSync(id, full), 65000),
+  frpFlow: (id, kind) => withTimeout(realAdmin.frpFlow(id, kind), 45000),
+  frpTunnelCreate: (id, payload) => withTimeout(realAdmin.frpTunnelCreate(id, payload), 65000),
+  frpSubdomains: (id) => withTimeout(realAdmin.frpSubdomains(id), 30000),
+  frpAvailableDomains: (id) => withTimeout(realAdmin.frpAvailableDomains(id), 30000),
+  frpSubdomainCreate: (id, payload) => withTimeout(realAdmin.frpSubdomainCreate(id, payload), 35000),
+  frpSubdomainUpdate: (id, payload) => withTimeout(realAdmin.frpSubdomainUpdate(id, payload), 35000),
+  frpSubdomainDelete: (id, domain, record) => withTimeout(realAdmin.frpSubdomainDelete(id, domain, record), 35000),
+  frpTunnelUpdate: (id, payload) => withTimeout(realAdmin.frpTunnelUpdate(id, payload), 35000),
+  frpTunnelDelete: (id) => withTimeout(realAdmin.frpTunnelDelete(id), 35000),
+  frpTunnelLock: (id, payload) => withTimeout(realAdmin.frpTunnelLock(id, payload), 35000),
+  frpTunnelMigrate: (id, nodeId) => withTimeout(realAdmin.frpTunnelMigrate(id, nodeId), 35000),
+  frpTunnelOffline: (id) => withTimeout(realAdmin.frpTunnelOffline(id), 35000),
+  frpTunnelAuth: (id, ip) => withTimeout(realAdmin.frpTunnelAuth(id, ip), 35000),
+  frpTunnelTraffic: (id) => withTimeout(realAdmin.frpTunnelTraffic(id), 45000),
+  frpDeviceStart: (reuseId) => withTimeout(realAdmin.frpDeviceStart(reuseId), 35000),
+  frpDevicePoll: (sid) => withTimeout(realAdmin.frpDevicePoll(sid), 20000),
+  frpDeviceCancel: (sid) => withTimeout(realAdmin.frpDeviceCancel(sid), 20000),
 }

@@ -18,3 +18,7 @@ data/
 .idea/
 .vscode/
 *.log
+
+# AI 协作工具的本地状态（会话/缓存，非项目内容）
+.zcode/
+.zcodeignore

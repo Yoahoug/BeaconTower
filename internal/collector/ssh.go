@@ -479,32 +479,33 @@ func darwinMem() (total, used int64, ok bool) {
 }
 
 func darwinCpuTicks() (total, idle uint64) {
-	// top -l 1 每次调用即给出最近窗口的 CPU 占用率；直接取 busy% = 100 - idle
+	// iostat -c 2 首行是开机以来均值，第二行才是上次调用以来的窗口均值；
 	// 归一为千分比伪 tick（CpuTotal=1000 恒定，CpuIdle 随窗口浮动），差分即得占用率。
-	out, err := exec.Command("top", "-l", "1", "-n", "0").Output()
+	// 比 top -l 1 便宜一个量级（iostat ~1ms，top 每次 ~300ms 全核遍历，10s 一轮纯属浪费）。
+	out, err := exec.Command("iostat", "-c", "2").Output()
 	if err != nil {
 		return 0, 0
 	}
 	var idN float64
+	windows := 0
 	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(line, "CPU usage: ") {
-			continue
-		}
 		f := strings.Fields(line)
-		// CPU usage: 8.20% user, 2.90% sys, 88.88% idle
-		if len(f) < 7 {
+		// 数据行固定 9 列：KB/t tps MB/s us sy id 1m 5m 15m（表头含 "cpu" 等字母行被 Fields 长度排除）
+		if len(f) != 9 {
 			continue
 		}
-		id, e := strconv.ParseFloat(strings.TrimSuffix(f[6], "%"), 64)
+		id, e := strconv.ParseFloat(f[5], 64)
 		if e != nil {
 			continue
 		}
 		idN = id
+		windows++
 	}
-	if idN == 0 {
+	// 只有一行数据（iostat 首启无历史窗口）时 id 是开机均值，可用但偏旧；正常取最后一行
+	if windows == 0 {
 		return 0, 0
 	}
-	idle = uint64(idN * 10) // 百分比 → 千分比
+	idle = uint64(clampF(idN, 0, 100) * 10) // 百分比 → 千分比
 	return 1000, idle
 }
 

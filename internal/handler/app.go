@@ -7,6 +7,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/collector"
 	"github.com/Yoahoug/BeaconTower/internal/config"
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
+	"github.com/Yoahoug/BeaconTower/internal/frp"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/Yoahoug/BeaconTower/internal/wg"
@@ -19,6 +20,7 @@ type App struct {
 	Coll    *collector.Collector
 	Master  []byte
 	WG      *wg.Runner
+	FRP     *frp.Runner
 	Blocker *middleware.LoginBlocker
 	SetupRL *middleware.RateLimiter
 	LoginRL *middleware.RateLimiter

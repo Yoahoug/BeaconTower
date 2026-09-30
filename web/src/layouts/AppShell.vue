@@ -26,6 +26,7 @@ const crumbs = computed(() => route.meta.breadcrumb || [{ label: '总览' }])
 const adminNav = [
   { to: '/admin/servers', label: '节点管理', icon: 'server' },
   { to: '/admin/mesh', label: 'WG 组网', icon: 'layers' },
+  { to: '/admin/frp', label: '内网穿透', icon: 'tunnel' },
   { to: '/admin/settings', label: '采集与展示', icon: 'sliders' },
   { to: '/admin/security', label: '安全与账号', icon: 'key' },
   { to: '/admin/audit', label: '审计日志', icon: 'log' },
@@ -127,6 +128,17 @@ onUnmounted(() => {
           <AppIcon name="dashboard" aria-hidden="true" />
           <span>状态总览</span>
         </RouterLink>
+        <RouterLink
+          to="/tunnels"
+          class="app-nav__item"
+          :class="{ 'is-active': route.path === '/tunnels' }"
+          :aria-current="route.path === '/tunnels' ? 'page' : undefined"
+          title="穿透状态"
+          @click="closeDrawer"
+        >
+          <AppIcon name="tunnel" aria-hidden="true" />
+          <span>穿透状态</span>
+        </RouterLink>
 
         <template v-if="inAdmin">
           <div class="app-nav__group">管理面板</div>
@@ -161,7 +173,7 @@ onUnmounted(() => {
           <span>实时功耗</span>
           <strong class="tnum">{{ monitor.summary.measuredCount ? `${monitor.summary.watts.toFixed(1)} W` : '—' }}</strong>
         </div>
-        <div class="app-side-ver">v2.0 · SKY BEACON</div>
+        <div class="app-side-ver">v2.1 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -214,7 +226,7 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.0 · Sky Beacon</span>
+        <span class="tnum">v2.1 · Sky Beacon</span>
       </footer>
     </div>
 

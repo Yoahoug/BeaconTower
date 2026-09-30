@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 9
+const schemaVersion = 10
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -374,6 +374,91 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 		)
 	case 9: // wg_task 心跳：watchdog 按 heartbeat_at 判活，长任务不再被误判中断
 		return exec(`ALTER TABLE wg_task ADD COLUMN heartbeat_at INTEGER DEFAULT 0`)
+	case 10: // 内网穿透平台管理（doc/13）：NATFRP / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
+		return exec(
+			`CREATE TABLE IF NOT EXISTS frp_platform (
+				id INTEGER PRIMARY KEY,
+				kind TEXT NOT NULL CHECK (kind IN ('natfrp','chmlfrp')),
+				name TEXT NOT NULL,
+				token_enc BLOB,
+				refresh_enc BLOB,
+				token_expire_at INTEGER DEFAULT 0,
+				uid TEXT DEFAULT '',
+				username TEXT DEFAULT '',
+				group_name TEXT DEFAULT '',
+				speed_limit TEXT DEFAULT '',
+				realname TEXT DEFAULT '',
+				tunnel_used INTEGER DEFAULT 0,
+				tunnel_quota INTEGER DEFAULT 0,
+				conns INTEGER DEFAULT 0,
+				traffic_day_used INTEGER DEFAULT 0,
+				traffic_remain INTEGER DEFAULT 0,
+				traffic_up INTEGER DEFAULT 0,
+				traffic_down INTEGER DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'unbound',
+				last_error TEXT,
+				last_sync_at INTEGER DEFAULT 0,
+				profile_json TEXT DEFAULT '{}',
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER DEFAULT 0
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_platform_kind_name ON frp_platform(kind, name)`,
+			`CREATE TABLE IF NOT EXISTS frp_usage (
+				id INTEGER PRIMARY KEY,
+				platform_id INTEGER NOT NULL REFERENCES frp_platform(id) ON DELETE CASCADE,
+				ts INTEGER NOT NULL,
+				traffic_day_used INTEGER DEFAULT 0,
+				traffic_remain INTEGER DEFAULT 0,
+				traffic_up INTEGER DEFAULT 0,
+				traffic_down INTEGER DEFAULT 0,
+				conns INTEGER DEFAULT 0,
+				tunnel_online INTEGER DEFAULT 0,
+				tunnel_total INTEGER DEFAULT 0
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_frp_usage ON frp_usage(platform_id, ts)`,
+			`CREATE TABLE IF NOT EXISTS frp_tunnel (
+				id INTEGER PRIMARY KEY,
+				platform_id INTEGER NOT NULL REFERENCES frp_platform(id) ON DELETE CASCADE,
+				remote_id TEXT NOT NULL DEFAULT '',
+				name TEXT NOT NULL DEFAULT '',
+				proto TEXT NOT NULL DEFAULT 'tcp',
+				node_id TEXT DEFAULT '',
+				node_name TEXT DEFAULT '',
+				local_ip TEXT DEFAULT '',
+				local_port INTEGER DEFAULT 0,
+				remote TEXT DEFAULT '',
+				online INTEGER DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'unknown',
+				status_reason TEXT DEFAULT '',
+				conns INTEGER DEFAULT 0,
+				today_up INTEGER DEFAULT 0,
+				today_down INTEGER DEFAULT 0,
+				uptime INTEGER DEFAULT 0,
+				client_ver TEXT DEFAULT '',
+				extra TEXT DEFAULT '',
+				lock_edit INTEGER DEFAULT 0,
+				lock_delete INTEGER DEFAULT 0,
+				lock_migrate INTEGER DEFAULT 0,
+				synced_at INTEGER DEFAULT 0
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_tunnel_remote ON frp_tunnel(platform_id, remote_id)`,
+			`CREATE TABLE IF NOT EXISTS frp_node (
+				id INTEGER PRIMARY KEY,
+				platform_id INTEGER NOT NULL REFERENCES frp_platform(id) ON DELETE CASCADE,
+				remote_id TEXT NOT NULL DEFAULT '',
+				name TEXT NOT NULL DEFAULT '',
+				host TEXT DEFAULT '',
+				area TEXT DEFAULT '',
+				group_name TEXT DEFAULT '',
+				caps TEXT DEFAULT '[]',
+				online INTEGER DEFAULT 0,
+				load REAL DEFAULT 0,
+				uptime INTEGER DEFAULT 0,
+				description TEXT DEFAULT '',
+				synced_at INTEGER DEFAULT 0
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_node_remote ON frp_node(platform_id, remote_id)`,
+		)
 	}
 	return fmt.Errorf("unknown migration %d", v)
 }

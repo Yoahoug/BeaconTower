@@ -13,6 +13,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/collector"
 	"github.com/Yoahoug/BeaconTower/internal/config"
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
+	"github.com/Yoahoug/BeaconTower/internal/frp"
 	"github.com/Yoahoug/BeaconTower/internal/geoip"
 	"github.com/Yoahoug/BeaconTower/internal/handler"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
@@ -53,7 +54,9 @@ func main() {
 	coll := collector.New(cfg, db, master)
 	blocker := middleware.NewLoginBlocker()
 	app := &handler.App{
-		DB: db, Cfg: cfg, Coll: coll, Master: master, WG: wg.NewRunner(db, master),
+		DB: db, Cfg: cfg, Coll: coll, Master: master,
+		WG:      wg.NewRunner(db, master),
+		FRP:     frp.NewRunner(db, master, cfg.ChmlfrpClientID),
 		Blocker: blocker,
 		SetupRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
@@ -84,7 +87,7 @@ func main() {
 
 	// 后台任务 + 采集器
 	taskStop := make(chan struct{})
-	tasks.Start(db, app.WG, taskStop, blocker)
+	tasks.Start(db, app.WG, app.FRP, taskStop, blocker)
 	coll.Start()
 
 	engine := router.New(app, webDist, hasDist)

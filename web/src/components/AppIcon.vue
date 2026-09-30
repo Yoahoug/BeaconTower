@@ -207,6 +207,12 @@
       <rect x="2" y="3" width="12" height="11" rx="1.8" />
       <path d="M2 6.6h12M5.4 1.8V4M10.6 1.8V4" />
     </template>
+    <!-- 隧道：内网穿透（拱形通道 + 两侧端点） -->
+    <template v-else-if="name === 'tunnel'">
+      <path d="M1.8 13.2v-3.4a6.2 6.2 0 0 1 12.4 0v3.4" />
+      <path d="M5.2 13.2v-3.4a2.8 2.8 0 0 1 5.6 0v3.4" />
+      <path d="M1.8 13.2h2.4M11.8 13.2h2.4" />
+    </template>
   </svg>
 </template>
 

@@ -15,10 +15,14 @@ import { getCachedStatus } from '../api/auth'
 // 节点详情（公开只读，首屏直载：总览卡片点击即进，无需懒加载等待）
 import ServerDetailView from '../views/monitor/ServerDetailView.vue'
 
+// 穿透状态（公开只读，二级页）：懒加载，公开首屏 bundle 不含它
+const TunnelView = () => import('../views/monitor/TunnelView.vue')
+
 // 管理端按路由懒加载：公开页 bundle 不包含节点/凭据等管理代码。
 const AdminLayout = () => import('../views/admin/AdminLayout.vue')
 const ServersView = () => import('../views/admin/ServersView.vue')
 const MeshView = () => import('../views/admin/MeshView.vue')
+const FrpView = () => import('../views/admin/FrpView.vue')
 const SettingsView = () => import('../views/admin/SettingsView.vue')
 const SecurityView = () => import('../views/admin/SecurityView.vue')
 const AuditView = () => import('../views/admin/AuditView.vue')
@@ -44,6 +48,13 @@ const router = createRouter({
           component: ServerDetailView,
           props: true,
           meta: { breadcrumb: [{ label: '总览', to: '/' }, { label: '节点详情' }] },
+        },
+        {
+          // 公开只读：只下发字段白名单内的用量与在用节点健康度（doc/13 §8）
+          path: 'tunnels',
+          name: 'tunnels',
+          component: TunnelView,
+          meta: { public: true, breadcrumb: [{ label: '总览', to: '/' }, { label: '穿透状态' }] },
         },
         {
           path: 'admin/setup',
@@ -79,6 +90,15 @@ const router = createRouter({
               meta: {
                 title: 'WG 组网',
                 breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: 'WG 组网' }],
+              },
+            },
+            {
+              path: 'frp',
+              name: 'admin-frp',
+              component: FrpView,
+              meta: {
+                title: '内网穿透',
+                breadcrumb: [{ label: '总览', to: '/' }, { label: '管理面板' }, { label: '内网穿透' }],
               },
             },
             {

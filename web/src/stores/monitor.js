@@ -11,6 +11,9 @@ const REFRESH_MS = 10000
 const HISTORY_LEN = 40
 const SSE_RETRY_BASE_MS = 3000
 const SSE_RETRY_MAX_MS = 30000
+// 穿透摘要由面板后台每 3 分钟同步一次平台侧，访客页跟着 10s 轮询毫无意义，
+// 单独给一条低频时间线；只在访客页挂载时跑（见 startFrp/stopFrp）。
+const FRP_REFRESH_MS = 60000
 
 // 后端公开 metrics 速率字段（net_*_bps）实际是「字节/秒」（/proc/net/dev 字节
 // 计数器差分），前端按 B/s 展示 → 卡片字段（GB/天/单数）的换算见下
@@ -123,6 +126,14 @@ export const useMonitorStore = defineStore('monitor', {
     error: '',
     query: '',
     statusFilter: 'all', // all | online | offline
+
+    // 内网穿透摘要（公开接口 /v1/public/frp，字段白名单见 doc/13 §12）
+    frp: null, // { platforms: [], summary: {} }，未拉到时为 null
+    frpStatus: 'idle', // idle | loading | ready | error
+    frpError: '',
+    _frpTimer: 0,
+    _frpBusy: false,
+
     _timer: 0,
     _clock: 0,
     _seeded: false,
@@ -202,6 +213,7 @@ export const useMonitorStore = defineStore('monitor', {
       this._timer = 0
       this._clock = 0
       this._sseTimer = 0
+      this.stopFrp()
       this.closeSSE()
       document.removeEventListener('visibilitychange', this._onVisibility)
       this._boundVisibility = false
@@ -266,6 +278,51 @@ export const useMonitorStore = defineStore('monitor', {
         this.watts = [...this.watts.slice(1), wattsTotal]
       }
       this.status = 'ready'
+    },
+
+    // ---------- 内网穿透摘要（公开只读） ----------
+
+    startFrp() {
+      if (this._frpTimer) return
+      this.fetchFrp()
+      this._frpTimer = window.setInterval(() => {
+        if (document.hidden) return
+        this.fetchFrp()
+      }, FRP_REFRESH_MS)
+    },
+
+    stopFrp() {
+      window.clearInterval(this._frpTimer)
+      this._frpTimer = 0
+    },
+
+    retryFrp() {
+      this.frpStatus = 'loading'
+      this.frpError = ''
+      this.fetchFrp()
+    },
+
+    async fetchFrp() {
+      if (this._frpBusy) return
+      this._frpBusy = true
+      if (!this.frp) this.frpStatus = 'loading'
+      try {
+        const d = await http.get('/v1/public/frp')
+        this.frp = {
+          platforms: Array.isArray(d?.platforms) ? d.platforms : [],
+          summary: d?.summary || {},
+        }
+        this.frpStatus = 'ready'
+        this.frpError = ''
+      } catch (e) {
+        // 已有数据时静默失败：穿透摘要抖一下不该把整页打成错误态
+        if (!this.frp) {
+          this.frpStatus = 'error'
+          this.frpError = e?.message || '穿透数据加载失败'
+        }
+      } finally {
+        this._frpBusy = false
+      }
     },
 
     // SSE 订阅（增量 update；失败指数退避重连，退避期间靠 10s 轮询保底）
