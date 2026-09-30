@@ -60,9 +60,20 @@ async function loadDetails() {
 }
 
 async function refresh() {
-  await admin.loadFrp()
+  // 「刷新」= 现在就向平台拉一次最新状态（轻量同步），再读本地快照；
+  // 只读本地库会出现「官方平台已恢复、面板还显示离线」的假象（实测踩过）。
+  await admin.frpRefreshLive()
   await loadDetails()
   await loadAllSubdomains()
+  await loadDeployments()
+}
+
+// 页面停留期间每 60s 只重读本地快照（不发平台请求）：后端每 3 分钟同步一次，
+// 这里让页面自动跟上那次同步，省得用户手动刷新。
+let idleTimer = 0
+async function idleReload() {
+  if (admin.frpSaving) return
+  await admin.loadFrp()
   await loadDeployments()
 }
 
@@ -542,6 +553,14 @@ function deployTunnelPool(platformId) {
   return allTunnels.value.filter((t) => t.platform_id === platformId)
 }
 
+// 该隧道是否已被「另一条托管」占用（编辑当前这条托管时不算）。
+// 同一隧道被两台机器同时跑去抢，平台侧会一直 proxy conflict，严重的会被判为异常——
+// 所以这里直接禁选，而不是等用户提交后才报错。
+function deployTunnelTaken(t) {
+  const d = deployByTunnel.value[t.id]
+  return !!d && d.id !== (deployModal.value?.editId || 0)
+}
+
 // 节点能否被 SSH 管理：列表接口把凭据摘要放在 ssh 子对象里（凭据本身不回显）
 function deploySshReady(s) {
   return !!(s?.ssh && s.ssh.ssh_ready)
@@ -789,7 +808,39 @@ function statusTag(p) {
 function tunnelStatus(t) {
   if (t.online) return { cls: 'bt-tag--success', text: '在线' }
   if (t.status === 'banned') return { cls: 'bt-tag--danger', text: '封禁' }
-  return { cls: '', text: '离线' }
+  if (t.status && t.status !== 'normal' && t.status !== 'unknown') return { cls: 'bt-tag--warning', text: t.status }
+  // 离线本身不是错误（可能只是没人跑客户端），但要看得见：给一档比平台标签更实的灰
+  return { cls: 'frp-tag-offline', text: '离线' }
+}
+
+// 隧道 → 承载它的面板托管（用于「面板托管」标记与「释放占用」）
+const deployByTunnel = computed(() => {
+  const m = {}
+  for (const d of deployments.value) {
+    for (const id of d.tunnel_ids || []) m[id] = d
+  }
+  return m
+})
+
+// 释放占用：让面板托管的客户端停下，把隧道让给别的机器/官方客户端。
+// 单独成动作是因为「面板占着隧道但用户不知道」会让平台侧后续登录一直 proxy conflict。
+function askReleaseTunnel(t) {
+  const d = deployByTunnel.value[t.id]
+  if (!d) return
+  confirmState.value = {
+    title: '释放隧道占用',
+    message: `确认让「${d.server_name}」上的面板客户端停止占用隧道「${t.name}」？`
+      + '将停止该节点上的 frpc 容器（配置与记录保留，随时可再启动）；'
+      + '之后这条隧道可由其它机器或官方客户端接管。',
+    confirmText: '停止占用',
+    danger: false,
+    busy: false,
+    run: async () => {
+      await admin.frpDeployAction(d.id, 'stop')
+      await loadDeployments()
+      toast('已释放：该隧道的客户端已停止')
+    },
+  }
 }
 
 function loadTone(load) {
@@ -814,11 +865,13 @@ function capsText(caps) {
 onMounted(async () => {
   await refresh()
   await loadTrend()
+  idleTimer = window.setInterval(idleReload, 60000)
 })
 
 onBeforeUnmount(() => {
   window.clearTimeout(tipTimer)
   if (pollTimer) window.clearInterval(pollTimer)
+  if (idleTimer) window.clearInterval(idleTimer)
 })
 </script>
 
@@ -828,12 +881,13 @@ onBeforeUnmount(() => {
       <div>
         <h1>内网穿透</h1>
         <p class="page-head__desc">
-          NATFRP / ChmlFrp 隧道统一管理 · 账号用量 · 节点负载 · 每 3 分钟自动同步
+          NATFRP / ChmlFrp 隧道统一管理 · 账号用量 · 节点负载 · 后台每 3 分钟同步（「刷新」= 立即向平台拉取）
         </p>
       </div>
       <div class="page-head__actions">
-        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="admin.frpSaving" @click="refresh">
-          <AppIcon name="refresh" aria-hidden="true" />刷新
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="admin.frpSaving" @click="refresh"
+          title="立即向两个平台各拉一次最新状态（轻量同步，不含节点列表）">
+          <AppIcon name="refresh" aria-hidden="true" />{{ admin.frpSaving ? '同步中…' : '刷新' }}
         </button>
         <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">
           <AppIcon name="plus" aria-hidden="true" />授权 ChmlFrp
@@ -1014,8 +1068,15 @@ onBeforeUnmount(() => {
                     <div class="frp-tunnel-name">
                       <span class="bt-tag bt-tag--outline">{{ protoLabel[t.proto] || t.proto }}</span>
                       <b>{{ t.name }}</b>
+                      <span v-if="deployByTunnel[t.id]" class="bt-tag frp-tag-hosted"
+                        :title="`由面板托管的客户端承载：${deployByTunnel[t.id].server_name} · ${deployByTunnel[t.id].container}`">
+                        面板托管
+                      </span>
                     </div>
                     <div v-if="t.extra" class="bt-text-muted frp-cell-note">{{ t.extra }}</div>
+                    <div v-if="deployByTunnel[t.id]" class="bt-text-muted frp-cell-note">
+                      {{ deployByTunnel[t.id].server_name }} · {{ deployByTunnel[t.id].status === 'running' ? '客户端运行中' : '客户端已停止' }}
+                    </div>
                   </td>
                   <td>
                     <span class="bt-tag" :class="t.platform_kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
@@ -1043,6 +1104,12 @@ onBeforeUnmount(() => {
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeploy(t)"
                         title="把该平台的 frpc 客户端部署到节点上，由面板经 SSH 起容器并同步配置">
                         托管
+                      </button>
+                      <button v-if="deployByTunnel[t.id]" class="bt-btn bt-btn--ghost bt-btn--sm"
+                        type="button" :disabled="deployByTunnel[t.id].status !== 'running'"
+                        @click="askReleaseTunnel(t)"
+                        title="让面板托管的客户端停止占用这条隧道，交给其它机器/官方客户端接管">
+                        释放占用
                       </button>
                       <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
                         type="button" @click="openLock(t)">锁定</button>
@@ -1138,7 +1205,8 @@ onBeforeUnmount(() => {
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
                         :disabled="deployOpsId === d.id" @click="deployAction(d, 'restart')">重启</button>
                       <button v-if="d.status === 'running'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'stop')">停止</button>
+                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'stop')"
+                        title="停止容器：同时把该客户端承载的隧道让出来，可供其它机器/官方客户端接管">停止</button>
                       <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
                         :disabled="deployOpsId === d.id" @click="deployAction(d, 'start')">启动</button>
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeployLogs(d)">日志</button>
@@ -1662,11 +1730,16 @@ onBeforeUnmount(() => {
               该平台下暂无隧道：先关掉本弹窗，在隧道表里「新建隧道」后再回来托管。
             </p>
             <div v-else class="frp-deploy-pool">
-              <label v-for="t in deployTunnelPool(deployModal.platformId)" :key="t.id" class="frp-deploy-pool__item">
-                <input v-model="deployModal.tunnelIds" type="checkbox" :value="t.id" :disabled="deployModal.busy">
+              <label v-for="t in deployTunnelPool(deployModal.platformId)" :key="t.id" class="frp-deploy-pool__item"
+                :class="{ 'is-taken': deployTunnelTaken(t) }">
+                <input v-model="deployModal.tunnelIds" type="checkbox" :value="t.id"
+                  :disabled="deployModal.busy || deployTunnelTaken(t)">
                 <span class="bt-tag bt-tag--outline">{{ protoLabel[t.proto] || t.proto }}</span>
                 <b>{{ t.name }}</b>
                 <span class="bt-text-muted mono">{{ t.local_ip }}:{{ t.local_port }} → {{ t.remote || '未分配' }}</span>
+                <span v-if="deployTunnelTaken(t)" class="bt-text-muted frp-deploy-pool__note">
+                  已被 {{ deployByTunnel[t.id].server_name }} 托管（一条隧道同时只能有一个客户端）
+                </span>
               </label>
             </div>
           </div>
@@ -1916,6 +1989,18 @@ onBeforeUnmount(() => {
   color: var(--bt-info-600);
 }
 
+/* 离线：比裸 bt-tag 再实一点，别让「离线」看着像没有状态 */
+.frp-tag-offline {
+  background: rgba(120, 140, 190, 0.18);
+  color: var(--bt-text-2);
+}
+
+/* 面板托管标记：隧道走的是面板部署的客户端（与平台侧客户端区分） */
+.frp-tag-hosted {
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--bt-success-600);
+}
+
 .frp-tag-chml {
   background: rgba(167, 139, 250, 0.16);
   color: var(--bt-accent-600);
@@ -2025,6 +2110,17 @@ onBeforeUnmount(() => {
 .frp-endpoint {
   font-size: var(--bt-font-xs);
   letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* 数字/地址列不许折行：端口与 IP 从中间断开（3687 / 8）比窄一点更难读 */
+.frp-block .bt-table td {
+  white-space: nowrap;
+}
+
+.frp-block .bt-table td .frp-deploy-tunnels,
+.frp-block .bt-table td .frp-tunnel-name {
+  white-space: normal;
 }
 
 .frp-cell-note {
@@ -2117,6 +2213,16 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 已被其它托管占用的隧道：置灰并说明原因（同一条隧道只能有一个客户端） */
+.frp-deploy-pool__item.is-taken {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.frp-deploy-pool__note {
+  font-size: var(--bt-font-xs);
 }
 
 .frp-deploy-progress {

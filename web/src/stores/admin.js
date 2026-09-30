@@ -398,6 +398,26 @@ export const useAdminStore = defineStore('admin', {
       return this.frpRun(() => adminClient.frpTunnelAuth(tunnelId, ip), { detailId: platformId })
     },
 
+    // 页面级「刷新」：用户点刷新 = 现在就去平台看一眼，因此先做一轮轻量同步
+    // （full=false：只要账号与隧道，不带节点列表），再读本地快照。
+    // 单个平台失败不阻断其它平台（失败原因由平台卡的 last_error 呈现）。
+    async frpRefreshLive() {
+      const ids = (this.frpOverview?.platforms || []).map((p) => p.id)
+      this.frpSaving = true
+      try {
+        for (const id of ids) {
+          try {
+            await adminClient.frpSync(id, false)
+          } catch {
+            /* 见上：错误留给平台卡 */
+          }
+        }
+        await this.loadFrp()
+      } finally {
+        this.frpSaving = false
+      }
+    },
+
     frpFlow(id, kind) {
       return adminClient.frpFlow(id, kind)
     },
