@@ -60,7 +60,9 @@ echo pf_ifaces=$(wg show interfaces 2>/dev/null | tr '\n' ' ')
 ufw status 2>/dev/null | head -n1 | grep -qi active && pf_ufw=1 || pf_ufw=0
 echo pf_ufw=$pf_ufw
 command -v systemctl >/dev/null 2>&1 && pf_sd=1 || pf_sd=0
-echo pf_systemd=$pf_sd` + portPart + `
+echo pf_systemd=$pf_sd
+if command -v iptables >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then pf_fw=1; else pf_fw=0; fi
+echo pf_fw=$pf_fw` + portPart + `
 echo pf_end=1`
 }
 
@@ -110,6 +112,8 @@ func parseProbe(out string) *Probe {
 			p.UfwActive = v == "1"
 		case "pf_systemd":
 			p.Systemd = v == "1"
+		case "pf_fw": // iptables 或 nft 至少有一个
+			p.HasFirewall = v == "1"
 		case "pf_port_busy":
 			p.ListenPortBusy = v == "1"
 		}
@@ -150,11 +154,34 @@ yum install -y wireguard-tools`
 	}
 }
 
+// firewallInstallScript 补装 iptables（wg-quick 建路由/规则要用，极简系统常缺）。
+// 尽力而为：失败不阻断（宿主机本身极可能已装，容器/LXC 里装不上也有 nft 兜底）。
+func firewallInstallScript(pkg string) string {
+	switch pkg {
+	case "apt":
+		return `apt-get install -y -qq iptables >/dev/null 2>&1 || apt-get install -y iptables >/dev/null 2>&1 || true`
+	case "dnf":
+		return `dnf install -y iptables >/dev/null 2>&1 || true`
+	case "yum":
+		return `yum install -y iptables >/dev/null 2>&1 || true`
+	case "apk":
+		return `apk add --no-cache iptables >/dev/null 2>&1 || true`
+	case "pacman":
+		return `pacman -Sy --noconfirm iptables >/dev/null 2>&1 || true`
+	default:
+		return `true`
+	}
+}
+
 // InstallWireGuard 安装 wireguard-tools（依据预检的包管理器），安装后复核 wg 可用。
-// 返回是否实际执行了安装。
+// 返回是否实际执行了安装。wg 已在但缺少 iptables/nft 时也会补装（否则 wg-quick up 必失败）。
 func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe) (bool, error) {
 	if p.HasWg && p.HasWgQuick {
-		return false, nil
+		if p.HasFirewall || p.PkgManager == "" {
+			return false, nil
+		}
+		_, _ = conn.Run(ctx, firewallInstallScript(p.PkgManager))
+		return true, nil
 	}
 	if p.PkgManager == "" {
 		return false, fmt.Errorf("无法识别包管理器，请手动安装 wireguard-tools")
@@ -168,6 +195,9 @@ func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe) (bool, err
 	}
 	if strings.TrimSpace(out) != "ok" {
 		return true, fmt.Errorf("安装后 wg 仍不可用（内核过旧或源缺失）")
+	}
+	if !p.HasFirewall {
+		_, _ = conn.Run(ctx, firewallInstallScript(p.PkgManager))
 	}
 	return true, nil
 }

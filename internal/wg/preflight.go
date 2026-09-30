@@ -31,6 +31,7 @@ type Probe struct {
 	UfwActive      bool     // ufw 是否启用
 	ListenPortBusy bool     // 目标 UDP 端口是否已被占用（hub/standby 才探测）
 	Systemd        bool     // systemctl 可用
+	HasFirewall    bool     // iptables 或 nft 存在（wg-quick 建规则要用；极简系统/容器里常缺）
 }
 
 // IssueLevel 预检问题级别。
@@ -114,6 +115,11 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bo
 		} else {
 			out = append(out, Issue{Warn, "wireguard-tools 未安装：将自动安装"})
 		}
+	}
+	if !p.HasFirewall {
+		// 实测：ubuntu:24.04 极简镜像/容器里只有 wireguard-tools 没有 iptables，
+		// wg-quick up 会在建规则时 exit 127（iptables: command not found），接口起不来。
+		out = append(out, Issue{Warn, "缺少 iptables/nft：wg-quick 建路由规则会失败，将尝试自动安装"})
 	}
 	return out
 }
