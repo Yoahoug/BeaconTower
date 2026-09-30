@@ -90,9 +90,11 @@ func wgZipSafeName(peerID int64, peerName, tag string) string {
 			b.WriteByte('_')
 		}
 	}
-	name := strings.Trim(b.String(), "_")
+	// 连着分隔符一起修剪：纯中文名「验证-临时」会被替换成 "_-_"，
+	// 只 Trim "_" 会剩下 "-"，文件名变成没有名字的 "--A.conf"（多个中文名还会互相覆盖）
+	name := strings.Trim(b.String(), "_.-")
 	if name == "" {
-		name = fmt.Sprintf("peer%d", peerID) // 全中文名：用成员 ID 兜底，避免同名互相覆盖
+		name = fmt.Sprintf("peer%d", peerID) // 全中文/全符号名：用成员 ID 兜底
 	}
 	return name + "-" + tag + ".conf"
 }
@@ -419,7 +421,7 @@ func (a *App) WGCredsZip(c *gin.Context) {
 	readme.WriteString("BeaconTower WG 使用端凭证\n")
 	readme.WriteString("文件名里的 A = 现役中心，B = 备援中心；导入 WireGuard 客户端后按需二选一。\n")
 	readme.WriteString("切换中心后旧凭证失效，请回到面板「中心节点」面板重新下载。\n")
-	readme.WriteString("（zip 里的文件名已转为 ASCII，中文名在下一列对照）\n\n")
+	readme.WriteString("（zip 里的文件名已转为 ASCII：中文替换为 _，纯中文名用 peer<ID>；原名见下一列）\n\n")
 	failN := 0
 	for _, it := range items {
 		conf, endpoint, err := a.wgRenderSpokeConf(netRow, it.peer, it.hub)
