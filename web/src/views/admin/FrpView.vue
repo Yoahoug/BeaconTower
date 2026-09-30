@@ -91,6 +91,12 @@ function toast(text, error = false) {
 const bindModal = ref(null) // NATFRP 绑定
 const deviceModal = ref(null) // ChmlFrp 设备码
 const tunnelModal = ref(null) // 建/改隧道
+// 建/改隧道弹窗针对 ChmlFrp 的额外提示：平台规则比 NATFRP 严（真机实测）
+const tunnelModalIsChml = computed(() => {
+  const m = tunnelModal.value
+  if (!m) return false
+  return platforms.value.find((p) => p.id === m.platformId)?.kind === 'chmlfrp'
+})
 const migrateModal = ref(null) // 迁移节点
 const lockModal = ref(null) // 锁定设置
 const confirmState = ref(null) // 删除确认
@@ -1137,7 +1143,7 @@ onBeforeUnmount(() => {
             <label v-if="tunnelModal.proto === 'tcp' || tunnelModal.proto === 'udp'" class="bt-field">
               <span class="bt-field__label">公网端口</span>
               <input v-model="tunnelModal.remotePort" class="bt-input" type="number" min="0" max="65535"
-                placeholder="0 = 由平台分配" autocomplete="off">
+                :placeholder="tunnelModalIsChml ? '需在节点允许范围内' : '0 = 由平台分配'" autocomplete="off">
             </label>
             <label v-else class="bt-field">
               <span class="bt-field__label">绑定域名 <span class="bt-text-danger">*</span></span>
@@ -1155,6 +1161,11 @@ onBeforeUnmount(() => {
           <p class="bt-hint frp-modal-hint">
             说明：NATFRP 的编辑只支持本地地址/端口与备注，改类型或节点需删除重建或使用「迁移」；
             ChmlFrp 官方标注 HTTP(S) 隧道暂不支持修改。
+          </p>
+          <p v-if="tunnelModalIsChml" class="bt-hint frp-modal-hint">
+            ChmlFrp 规则：隧道名只能用字母、数字与下划线（不能带连字符或中文）；
+            TCP/UDP 的公网端口必须填节点允许范围内的端口，填 0 平台不会代选
+            （允许范围以 ChmlFrp 官网节点页为准）。
           </p>
           <div v-if="tunnelModal.error" class="bt-alert bt-alert--error" role="alert">{{ tunnelModal.error }}</div>
         </div>

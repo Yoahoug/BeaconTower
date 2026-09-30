@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -660,6 +661,28 @@ type frpTunnelInput struct {
 
 var frpProtos = map[string]bool{"tcp": true, "udp": true, "http": true, "https": true}
 
+// chmlTunnelNameRe ChmlFrp 隧道名字符集：真机实测带连字符会回
+// 「隧道名不符合规范，仅允许字母、数字和下划线」，在面板侧先拦一道，
+// 免得用户对着平台原文猜。
+var chmlTunnelNameRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// checkTunnelName 平台侧隧道名规则不等价（NATFRP 宽松，ChmlFrp 只吃
+// 字母/数字/下划线）。平台读不到时不拦，交给下游报错。
+func (a *App) checkTunnelName(platformID int64, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	p, err := a.DB.GetFRPPlatform(platformID)
+	if err != nil || p == nil || p.Kind != frp.KindChmlfrp {
+		return nil
+	}
+	if !chmlTunnelNameRe.MatchString(name) {
+		return errors.New("ChmlFrp 隧道名只允许字母、数字与下划线（不能带连字符、中文或空格）")
+	}
+	return nil
+}
+
 func (in *frpTunnelInput) toDomain() (frp.TunnelInput, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Proto = strings.ToLower(strings.TrimSpace(in.Proto))
@@ -706,6 +729,10 @@ func (a *App) FRPTunnelCreate(c *gin.Context) {
 		middleware.Fail(c, 1001, err.Error())
 		return
 	}
+	if err := a.checkTunnelName(id, dom.Name); err != nil {
+		middleware.Fail(c, 1001, err.Error())
+		return
+	}
 	if strings.TrimSpace(dom.NodeID) == "" {
 		middleware.Fail(c, 1001, "请选择节点")
 		return
@@ -748,6 +775,10 @@ func (a *App) FRPTunnelUpdate(c *gin.Context) {
 	}
 	if dom.LocalPort < 0 || dom.LocalPort > 65535 {
 		middleware.Fail(c, 1001, "本地端口必须在 0-65535 之间（0 表示不修改）")
+		return
+	}
+	if err := a.checkTunnelName(t.PlatformID, dom.Name); err != nil {
+		middleware.Fail(c, 1001, err.Error())
 		return
 	}
 	ctx, cancel := frpCtx(c, frpWriteTimeout)

@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -402,20 +403,60 @@ func (r *Runner) CreateTunnel(ctx context.Context, platformID int64, in TunnelIn
 	lock := r.lockFor(platformID)
 	lock.Lock()
 	defer lock.Unlock()
-	_, cli, err := r.platform(ctx, platformID)
+	p, cli, err := r.platform(ctx, platformID)
 	if err != nil {
 		return "", err
 	}
+	if p.Kind == KindChmlfrp {
+		in.NodeID = r.chmlNodeName(platformID, in.NodeID)
+	}
 	return cli.CreateTunnel(ctx, in)
+}
+
+// chmlNodeName 把面板内部的节点标识（remote_id）翻成 ChmlFrp 要求的节点名。
+// 真机实测：/create_tunnel 的 node 参数只认节点名，传数字 ID 一律回
+// 「节点不存在」；而面板内部（列表/迁移/编辑）一律用 remote_id，所以
+// 出网前在这里翻一次。翻不到就原样透传，让平台自己的报错说话。
+func (r *Runner) chmlNodeName(platformID int64, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ref
+	}
+	nodes, err := r.DB.ListFRPNodes()
+	if err != nil {
+		return ref
+	}
+	return pickChmlNodeName(nodes, platformID, ref)
+}
+
+// pickChmlNodeName 纯函数便于单测：优先按 remote_id 匹配，其次按名字
+// （调用方可能已经传的是名字，比如 URL 里手填的节点名）。
+func pickChmlNodeName(nodes []*store.FRPNode, platformID int64, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ref
+	}
+	for _, n := range nodes {
+		if n == nil || n.PlatformID != platformID {
+			continue
+		}
+		if n.RemoteID == ref || n.Name == ref {
+			return n.Name
+		}
+	}
+	return ref
 }
 
 func (r *Runner) UpdateTunnel(ctx context.Context, platformID int64, remoteID string, in TunnelInput) error {
 	lock := r.lockFor(platformID)
 	lock.Lock()
 	defer lock.Unlock()
-	_, cli, err := r.platform(ctx, platformID)
+	p, cli, err := r.platform(ctx, platformID)
 	if err != nil {
 		return err
+	}
+	if p.Kind == KindChmlfrp {
+		in.NodeID = r.chmlNodeName(platformID, in.NodeID)
 	}
 	return cli.UpdateTunnel(ctx, remoteID, in)
 }
