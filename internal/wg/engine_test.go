@@ -69,3 +69,28 @@ func TestJudgeFirewallMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestHubConfPostUpTolerant 回归：hub conf 的 PostUp 必须 `|| true` 收尾——
+// 没有 iptables 的节点上（极简镜像）wg-quick 会因放行规则失败而拒绝拉起接口，
+// 实测导致整步「开启转发失败: context deadline exceeded」以外的更硬失败。
+func TestHubConfPostUpTolerant(t *testing.T) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := HubConfFile(kp.Private, "10.66.66.2/24", 51820, 1420, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(conf, "PostUp = iptables") {
+		t.Fatalf("hub conf 应有 PostUp 放行 FORWARD: %s", conf)
+	}
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(line, "PostUp =") && !strings.HasSuffix(strings.TrimSpace(line), "|| true") {
+			t.Fatalf("PostUp 应容忍 iptables 缺失（|| true 收尾）: %s", line)
+		}
+		if strings.HasPrefix(line, "PostDown =") && !strings.Contains(line, "|| true") {
+			t.Fatalf("PostDown 应容忍 iptables 缺失: %s", line)
+		}
+	}
+}

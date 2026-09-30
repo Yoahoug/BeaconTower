@@ -57,7 +57,11 @@ func (r *Runner) stopHeartbeat() {
 
 // 步骤级超时
 const (
-	probeTimeout = 25 * time.Second
+	// hubTimeout 覆盖中心节点整步：预检 + 装包（wireguard-tools/iptables，冷机器上
+	// apt-get update 就要几十秒）+ 写 conf + 拉起 + 真握手验证。
+	// 旧值 25s（原名 probeTimeout）在无 iptables 的机器上会被装包耗光，
+	// 后续「开启转发」拿到已超时的 ctx 报 context deadline exceeded，整步失败。
+	hubTimeout   = 120 * time.Second
 	spokeTimeout = 90 * time.Second
 )
 
@@ -307,7 +311,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 		return err
 	}
 	strict := r.strictHostKey()
-	dctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	dctx, cancel := context.WithTimeout(ctx, hubTimeout)
 	conn, closer, err := r.dial(dctx, serverID, strict)
 	if err != nil {
 		cancel()

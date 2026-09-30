@@ -3,6 +3,7 @@ package wg
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -200,7 +201,9 @@ func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe, needFirewa
 		installed = true
 	}
 	if needFirewall && !p.HasFirewall && p.PkgManager != "" {
-		_, _ = conn.Run(ctx, firewallInstallScript(p.PkgManager))
+		if _, err := conn.Run(ctx, firewallInstallScript(p.PkgManager)); err != nil {
+			log.Printf("[wg] 补装 iptables 失败（%s）：%v；conf 的 PostUp 已容错，节点仍可入网", p.PkgManager, err)
+		}
 		installed = true
 	}
 	return installed, nil
@@ -436,6 +439,9 @@ echo vf_ping=$ok`
 // ---------- 配置渲染 ----------
 
 // HubConfFile 生成 hub/standby 全量 conf（PostUp 幂等放行 FORWARD）。
+// PostUp/PostDown 一律以 `|| true` 收尾：节点没有 iptables 时（极简镜像/容器）
+// wg-quick 不能因为放行规则失败而拒绝拉起接口——成员间互通会因此降级（需 FORWARD 放行），
+// 但 hub 本身仍可用，且预检已提示会自动补装。
 func HubConfFile(priv string, hubIPCIDR string, listenPort, mtu int, peers []Peer) (string, error) {
 	ifc := &Interface{
 		Address:    []string{hubIPCIDR},
@@ -443,8 +449,8 @@ func HubConfFile(priv string, hubIPCIDR string, listenPort, mtu int, peers []Pee
 		ListenPort: listenPort,
 		MTU:        mtu,
 		PostUp: []string{
-			"iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -j ACCEPT",
-			"iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -o %i -j ACCEPT",
+			"iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -j ACCEPT || true",
+			"iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -o %i -j ACCEPT || true",
 		},
 		PostDown: []string{
 			"iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true",
