@@ -432,7 +432,8 @@ func (a *Allocator) InSubnet(ip string) bool {
 	return p != nil && a.ipnet.Contains(p)
 }
 
-// Take 占用指定 IP（须在子网内且未被占用）。
+// Take 占用指定 IP（须在子网内且未被占用）。Next 取址时已自动占用，
+// 重复 Take 会报错。
 func (a *Allocator) Take(ip string) error {
 	ip = strings.TrimSpace(ip)
 	p := net.ParseIP(ip)
@@ -456,7 +457,8 @@ func (a *Allocator) IsFree(ip string) bool {
 	return p != nil && a.ipnet.Contains(p) && !a.taken[p.String()]
 }
 
-// Next 返回下一个空闲主机地址（跳过网络地址与广播地址）。
+// Next 返回并占用下一个空闲主机地址（跳过网络地址与广播地址）。
+// 取到即占用：调用方连续取址不会拿到同一个 IP，也不需要再 Take。
 func (a *Allocator) Next() (string, error) {
 	base := a.ipnet.IP.To4()
 	if base == nil {
@@ -473,6 +475,7 @@ func (a *Allocator) Next() (string, error) {
 	if ones >= 31 {
 		for i := uint32(0); i < total; i++ {
 			if ip := uint32ToIP(baseV + i); a.IsFree(ip) {
+				a.taken[ip] = true
 				return ip, nil
 			}
 		}
@@ -480,6 +483,7 @@ func (a *Allocator) Next() (string, error) {
 	}
 	for i := uint32(1); i < total-1; i++ { // 跳过网络地址与广播地址
 		if ip := uint32ToIP(baseV + i); a.IsFree(ip) {
+			a.taken[ip] = true
 			return ip, nil
 		}
 	}

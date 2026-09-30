@@ -290,13 +290,15 @@ func TestAllocatorNextAndTake(t *testing.T) {
 	if got != "10.66.66.1" {
 		t.Fatalf("应分配 10.66.66.1，得到 %s", got)
 	}
-	if err := a.Take("10.66.66.1"); err != nil {
+	// Next 取到即占用：连续取址必须给出不同地址（回归：曾漏 Take 导致多成员同 IP）
+	next, err := a.Next()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Next(); err != nil {
-		t.Fatal(err)
+	if next != "10.66.66.3" {
+		t.Fatalf("第二个空闲应为 10.66.66.3，得到 %s", next)
 	}
-	// 重复占用应报错
+	// 重复占用应报错（Next 已占 .1）
 	if err := a.Take("10.66.66.1"); err == nil {
 		t.Fatal("重复占用应报错")
 	}
@@ -316,12 +318,10 @@ func TestAllocatorSkipsNetworkBroadcast(t *testing.T) {
 	if err != nil || ip1 != "10.66.66.1" {
 		t.Fatalf("应得 .1: %s %v", ip1, err)
 	}
-	_ = a.Take(ip1)
 	ip2, err := a.Next()
 	if err != nil || ip2 != "10.66.66.2" {
 		t.Fatalf("应得 .2: %s %v", ip2, err)
 	}
-	_ = a.Take(ip2)
 	if _, err := a.Next(); err == nil {
 		t.Fatal("耗尽后应报错")
 	}
@@ -394,9 +394,6 @@ func TestAllocatorWideSubnet(t *testing.T) {
 		t.Fatalf("首个地址应为 10.66.66.1（跳过网络地址），得到 %s %v", first, err)
 	}
 	seen[first] = true
-	if err := a.Take(first); err != nil {
-		t.Fatal(err)
-	}
 	for i := 1; i < 300; i++ {
 		ip, err := a.Next()
 		if err != nil {
@@ -406,9 +403,6 @@ func TestAllocatorWideSubnet(t *testing.T) {
 			t.Fatalf("地址重复分配: %s", ip)
 		}
 		seen[ip] = true
-		if err := a.Take(ip); err != nil {
-			t.Fatal(err)
-		}
 	}
 	// 越过 .255 之后必须进入第二个 /24
 	if !seen["10.66.67.1"] {

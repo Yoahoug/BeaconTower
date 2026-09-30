@@ -16,21 +16,21 @@ const (
 
 // Probe 预检探测结果（由引擎的探测脚本产出、parseProbe 解析后交 Judge）。
 type Probe struct {
-	Err          string   // 非空 = SSH/执行失败，整体不可用
-	OsID         string   // ubuntu / debian / centos / rocky / almalinux / alpine ...
-	OsVer        string
-	Arch         string
-	Kernel       string
-	Virt         string   // kvm / lxc / openvz / docker / physical...
-	UID0         bool     // 是否 root
-	PkgManager   string   // apt / dnf / yum / apk / pacman / ""
-	HasWg        bool     // wg 命令存在
-	HasWgQuick   bool     // wg-quick 命令存在
-	KernelModule bool     // modinfo wireguard 成功（内核态可用）
-	WgIfaces     []string // 现存 wg 接口名（wg show all interfaces）
-	UfwActive    bool     // ufw 是否启用
-	ListenPortBusy bool   // 目标 UDP 端口是否已被占用（hub/standby 才探测）
-	Systemd      bool     // systemctl 可用
+	Err            string // 非空 = SSH/执行失败，整体不可用
+	OsID           string // ubuntu / debian / centos / rocky / almalinux / alpine ...
+	OsVer          string
+	Arch           string
+	Kernel         string
+	Virt           string   // kvm / lxc / openvz / docker / physical...
+	UID0           bool     // 是否 root
+	PkgManager     string   // apt / dnf / yum / apk / pacman / ""
+	HasWg          bool     // wg 命令存在
+	HasWgQuick     bool     // wg-quick 命令存在
+	KernelModule   bool     // modinfo wireguard 成功（内核态可用）
+	WgIfaces       []string // 现存 wg 接口名（wg show all interfaces）
+	UfwActive      bool     // ufw 是否启用
+	ListenPortBusy bool     // 目标 UDP 端口是否已被占用（hub/standby 才探测）
+	Systemd        bool     // systemctl 可用
 }
 
 // IssueLevel 预检问题级别。
