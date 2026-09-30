@@ -112,20 +112,44 @@ func (b *LoginBlocker) Check(ip string) (blocked bool, retryAfter int64) {
 	if now < st.blockedTill {
 		return true, st.blockedTill - now
 	}
+	if st.blockedTill > 0 && now-st.blockedTill > int64(24*time.Hour/time.Second) {
+		// 封禁过期超过一个最长封禁期：这轮没有再失败过，计数清零重新起算，
+		// 否则「封禁期内每次失败都续期」会把共享出口 IP 永久锁死
+		delete(b.failures, ip)
+	}
 	return false, 0
 }
 
+// Fail 记一次失败。封禁期内不递增也不续期：封禁是「冷却期」而非「越多越久」，
+// 续期只会让 NAT 后的合法用户陪攻击者一起被无限锁死。
 func (b *LoginBlocker) Fail(ip string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	st := b.failures[ip]
+	now := time.Now().Unix()
 	if st == nil {
 		st = &failState{}
 		b.failures[ip] = st
 	}
+	if now < st.blockedTill {
+		return
+	}
 	st.count++
 	if st.count >= 5 {
-		st.blockedTill = time.Now().Add(blockDuration(st.count)).Unix()
+		st.blockedTill = now + int64(blockDuration(st.count)/time.Second)
+	}
+}
+
+// Sweep 周期清理：失败计数过期（距上次封禁结束超过 24h）即删除条目，
+// 防 map 无界增长；登录成功走 Success 即时清理。
+func (b *LoginBlocker) Sweep() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cut := time.Now().Unix() - int64(24*time.Hour/time.Second)
+	for ip, st := range b.failures {
+		if st.blockedTill > 0 && st.blockedTill < cut {
+			delete(b.failures, ip)
+		}
 	}
 }
 

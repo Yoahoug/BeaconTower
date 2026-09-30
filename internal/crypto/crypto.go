@@ -87,6 +87,18 @@ func SubtleEqualFold(a, b string) bool {
 	return subtleEqual([]byte(a), []byte(b))
 }
 
+// SubtleEqual 通用常量时间字符串比较（setup_token 等非定长密钥用）。
+func SubtleEqual(a, b string) bool {
+	return SubtleEqualFold(a, b)
+}
+
+// DummyHash 供登录用户名枚举防护使用：对不存在的用户名也执行一次同代价校验。
+// 固定盐的 argon2id 编码串，参数与 HashPassword 一致。
+func DummyHash() string {
+	return "argon2id$m=65536,t=3,p=2$5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8$" +
+		"a3a8e1e24b478ea5b7f0e0e5e93e6a2e58e1f5c95b2e6a1e4d3c2b1a0987654f"
+}
+
 // ---------- 会话 token ----------
 
 // NewSessionToken 生成 32 字节随机 token（hex）。

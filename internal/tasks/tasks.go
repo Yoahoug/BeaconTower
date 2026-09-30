@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Yoahoug/BeaconTower/internal/middleware"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
@@ -12,7 +13,7 @@ import (
 // Start 后台任务：采样清理（10min）+ 小时聚合（整点+5min 时触发检查）+ 会话清理（每小时）
 // + WG 组网巡检（5min：握手判活/hub 流量差值/配置漂移）+ 月累计 kWh 月初清零。
 // retention 天数从 setting 表读取（doc/03 §3）。
-func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
+func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}, blocker *middleware.LoginBlocker) {
 	go func() {
 		cleanTick := time.NewTicker(10 * time.Minute)
 		defer cleanTick.Stop()
@@ -39,10 +40,15 @@ func Start(db *store.DB, wgRunner *wg.Runner, stop <-chan struct{}) {
 					// 采样清理/小时聚合/会话清理/月度清零会一起静默停摆
 					safeRun("wg-patrol", func() { wgRunner.Patrol() })
 					safeRun("wg-task-watchdog", func() {
-						if n, err := db.FailStaleRunningTasks(time.Now().Unix(), 1800); err == nil && n > 0 {
+						// 心跳 5 分钟一跳；1 小时无心跳即判执行中断（老库 heartbeat_at=0
+						// 时新任务插入即写心跳，不受影响）
+						if n, err := db.FailStaleRunningTasks(time.Now().Unix(), 3600); err == nil && n > 0 {
 							log.Printf("[tasks] 回收 %d 个超时未收尾的组网任务", n)
 						}
 					})
+				}
+				if blocker != nil {
+					safeRun("login-blocker-sweep", blocker.Sweep)
 				}
 			}
 			// 月翻转检查放在所有 case 之后统一做（ticker 周期远小于月份粒度）

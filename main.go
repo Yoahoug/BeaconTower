@@ -51,9 +51,10 @@ func main() {
 	}
 
 	coll := collector.New(cfg, db, master)
+	blocker := middleware.NewLoginBlocker()
 	app := &handler.App{
 		DB: db, Cfg: cfg, Coll: coll, Master: master, WG: wg.NewRunner(db, master),
-		Blocker: middleware.NewLoginBlocker(),
+		Blocker: blocker,
 		SetupRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 	}
@@ -83,7 +84,7 @@ func main() {
 
 	// 后台任务 + 采集器
 	taskStop := make(chan struct{})
-	tasks.Start(db, app.WG, taskStop)
+	tasks.Start(db, app.WG, taskStop, blocker)
 	coll.Start()
 
 	engine := router.New(app, webDist, hasDist)

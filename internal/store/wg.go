@@ -9,10 +9,10 @@ import (
 
 // WGNetwork 单张组网（v1 恒 id=1）。
 type WGNetwork struct {
-	Subnet            string `json:"subnet"`             // 10.66.66.0/24
-	HubIP             string `json:"hub_ip"`             // hub 虚拟 IP（浮动身份，裸 IP）
-	Iface             string `json:"iface"`              // wg0
-	Keepalive         int    `json:"keepalive"`          // 秒
+	Subnet            string `json:"subnet"`    // 10.66.66.0/24
+	HubIP             string `json:"hub_ip"`    // hub 虚拟 IP（浮动身份，裸 IP）
+	Iface             string `json:"iface"`     // wg0
+	Keepalive         int    `json:"keepalive"` // 秒
 	MTU               int    `json:"mtu"`
 	ActiveHubServerID int64  `json:"active_hub_server_id"` // 0 = 尚无
 	CreatedAt         int64  `json:"created_at"`
@@ -21,17 +21,17 @@ type WGNetwork struct {
 
 // WGHub hub/备胎槽位（server_id 为主键，公网机）。
 type WGHub struct {
-	ServerID     int64           `json:"server_id"`
-	ListenPort   int             `json:"listen_port"`
-	PublicKey    string          `json:"public_key"`
-	PrivateKeyEnc []byte         `json:"-"`
-	Endpoint     string          `json:"endpoint"` // 对外宣告 host:port（可 DDNS 域名）
-	Status       string          `json:"status"`   // pending/ok/error
-	LastError    string          `json:"last_error"`
-	QuotaGB      sql.NullFloat64 `json:"quota_gb"` // 月流量提醒阈值（GB），NULL=不限
-	CheckedAt    sql.NullInt64   `json:"checked_at"`
-	RxCum        int64           `json:"-"` // dump 累计计数器（按日差值用）
-	TxCum        int64           `json:"-"`
+	ServerID      int64           `json:"server_id"`
+	ListenPort    int             `json:"listen_port"`
+	PublicKey     string          `json:"public_key"`
+	PrivateKeyEnc []byte          `json:"-"`
+	Endpoint      string          `json:"endpoint"` // 对外宣告 host:port（可 DDNS 域名）
+	Status        string          `json:"status"`   // pending/ok/error
+	LastError     string          `json:"last_error"`
+	QuotaGB       sql.NullFloat64 `json:"quota_gb"` // 月流量提醒阈值（GB），NULL=不限
+	CheckedAt     sql.NullInt64   `json:"checked_at"`
+	RxCum         int64           `json:"-"` // dump 累计计数器（按日差值用）
+	TxCum         int64           `json:"-"`
 }
 
 // WGPeer 网内成员：服务器（SSH 管理）或设备（面板发凭证）。
@@ -153,6 +153,9 @@ func (db *DB) GetWGHub(serverID int64) (*WGHub, error) {
 }
 
 // UpsertWGHub 写入/更新 hub 槽位（private_key_enc 为空则保留原值）。
+// 不覆盖 rx_cum/tx_cum：调用方常持过期快照，而计数器基线只有巡检会推进，
+// 整行回写会让巡检刚累计的差值基线倒退、下轮流量被重复计入——计数器走
+// UpdateWGHubCounters。
 func (db *DB) UpsertWGHub(h *WGHub) error {
 	_, err := db.SQL.Exec(`INSERT INTO wg_hub
 		(server_id, listen_port, public_key, private_key_enc, endpoint, status, last_error, quota_gb, checked_at, rx_cum, tx_cum)
@@ -162,10 +165,16 @@ func (db *DB) UpsertWGHub(h *WGHub) error {
 			private_key_enc=CASE WHEN excluded.private_key_enc IS NULL THEN wg_hub.private_key_enc
 				ELSE excluded.private_key_enc END,
 			endpoint=excluded.endpoint, status=excluded.status, last_error=excluded.last_error,
-			quota_gb=excluded.quota_gb, checked_at=excluded.checked_at,
-			rx_cum=excluded.rx_cum, tx_cum=excluded.tx_cum`,
+			quota_gb=excluded.quota_gb, checked_at=excluded.checked_at`,
 		h.ServerID, h.ListenPort, h.PublicKey, h.PrivateKeyEnc, h.Endpoint,
 		h.Status, h.LastError, nullFloat(h.QuotaGB), h.CheckedAt, h.RxCum, h.TxCum)
+	return err
+}
+
+// UpdateWGHubCounters 只推进流量累计基线（巡检专用，防快照覆盖）。
+func (db *DB) UpdateWGHubCounters(serverID int64, rxCum, txCum int64) error {
+	_, err := db.SQL.Exec(`UPDATE wg_hub SET rx_cum = ?, tx_cum = ? WHERE server_id = ?`,
+		rxCum, txCum, serverID)
 	return err
 }
 
@@ -281,8 +290,8 @@ func (db *DB) DeleteWGPeer(id int64) error {
 // ---------- task ----------
 
 func (db *DB) InsertWGTask(t *WGTask) (int64, error) {
-	res, err := db.SQL.Exec(`INSERT INTO wg_task (kind, status, payload, created_at)
-		VALUES (?,?,?,?)`, t.Kind, t.Status, t.Payload, t.CreatedAt)
+	res, err := db.SQL.Exec(`INSERT INTO wg_task (kind, status, payload, created_at, heartbeat_at)
+		VALUES (?,?,?,?,?)`, t.Kind, t.Status, t.Payload, t.CreatedAt, t.CreatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -457,17 +466,25 @@ func (db *DB) FailStaleWGTasks(now int64) error {
 	return err
 }
 
-// FailStaleRunningTasks 运行超过 maxAge 秒的任务判为异常中断并收尾。
+// FailStaleRunningTasks 运行超过 maxAge 秒无心跳的任务判为异常中断并收尾。
 // 启动清理只覆盖「进程重启」这一种情况；执行 goroutine 意外退出（panic 逃逸、
 // 早退漏收尾）同样会留下 running 任务把组网锁死，故运行时也要有兜底。
+// 判活依据是 heartbeat_at（任务执行中定期续跳）而非 created_at：成员很多时
+// 正常任务也能跑满半小时以上，按创建时间判会误杀仍在执行的任务、提前解锁互斥。
 func (db *DB) FailStaleRunningTasks(now, maxAge int64) (int64, error) {
 	res, err := db.SQL.Exec(`UPDATE wg_task SET status='failed',
 		result='任务超时未收尾（执行中断），请核对节点实况后重试', finished_at=?
-		WHERE status='running' AND created_at < ?`, now, now-maxAge)
+		WHERE status='running' AND heartbeat_at < ?`, now, now-maxAge)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// HeartbeatWGTask 续跳：任务执行方周期调用，向 watchdog 证明自己还活着。
+func (db *DB) HeartbeatWGTask(id int64, now int64) error {
+	_, err := db.SQL.Exec(`UPDATE wg_task SET heartbeat_at = ? WHERE id = ?`, now, id)
+	return err
 }
 
 // SetCredentialFP 回写 host key 指纹（TOFU 记录/非严格更新；不动 last_error）。

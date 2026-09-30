@@ -218,7 +218,7 @@ func sanitizeComment(s string) string {
 	}, s)
 }
 
-func sanitizeIface(name string) string {	// 接口名仅允许字母数字与下划线/短横线（拼进 shell 用，须白名单）
+func sanitizeIface(name string) string { // 接口名仅允许字母数字与下划线/短横线（拼进 shell 用，须白名单）
 	var b strings.Builder
 	for _, r := range name {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
@@ -300,7 +300,7 @@ func HubAddPeer(ctx context.Context, conn *sshx.Conn, iface string, peer Peer, i
 	if peer.PersistentKeepalive > 0 {
 		cmd.WriteString(" persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive))
 	}
-	if _, err := conn.Run(ctx, cmd.String()+"\nrc=$?\nrm -f "+tmpPSK+"\nexit $rc"); err != nil {
+	if _, err := conn.Run(ctx, "trap 'rm -f "+tmpPSK+"' EXIT\n"+cmd.String()+"\nexit $?"); err != nil {
 		return err
 	}
 	// 2) conf 持久化：先查重，再以独立 exec 通道追加（cat >> 数据走 stdin）

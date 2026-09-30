@@ -54,6 +54,8 @@ func (r *Runner) RunTakeover(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
+	r.startHeartbeat(taskID)
+	defer r.stopHeartbeat()
 	var in TakeoverInput
 	_ = json.Unmarshal([]byte(task.Payload), &in)
 	network, err := r.DB.GetWGNetwork()
@@ -255,7 +257,16 @@ func (r *Runner) RunTakeover(taskID int64) {
 	}
 	now := time.Now().Unix()
 	if err := r.DB.SetActiveHub(in.TargetServerID, now); err != nil {
-		r.abortTakeover(taskID, "置现役失败: "+err.Error())
+		// 成员已经拨向目标机，这里不回滚——回滚会让「面板说现役是旧机、
+		// 实况成员在目标机」的状态雪上加霜；按「切换基本完成」如实收尾，
+		// 现役指针留待面板「切换为现役」或重跑接管补上。
+		if commitStep != nil {
+			_ = r.DB.FinishWGTaskStep(commitStep.ID, "failed", "置现役失败: "+err.Error(), now)
+		}
+		msg := fmt.Sprintf("接管基本完成：成员已翻转、目标机已在跑，但面板置现役失败（%s）——"+
+			"请到面板对 %s 执行「切换为现役」完成收尾", err.Error(), nameOf(in.TargetServerID))
+		_ = r.DB.FinishWGTask(taskID, "partial", msg, time.Now().Unix())
+		log.Printf("[wg] takeover task %d 置现役失败: %s", taskID, msg)
 		return
 	}
 	// 旧中心停用：关接口 + 取消开机自启 + 移走 conf（两台同身份同时在线会互相抢端点）

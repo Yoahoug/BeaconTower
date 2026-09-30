@@ -127,7 +127,9 @@ async function getStatus() {
   try {
     return await getCachedStatus()
   } catch {
-    return { initialized: true, loggedIn: false }
+    // status 拿不到结论（网络抖动/后端瞬时 5xx）时不能假装「已初始化且未登录」，
+    // 否则在线管理员会被误踢到登录页；抛出去让导航失败，恢复后重试即可
+    throw new Error('登录状态检查失败')
   }
 }
 

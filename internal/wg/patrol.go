@@ -106,6 +106,9 @@ func (r *Runner) patrolHub(network *store.WGNetwork, hub *store.WGHub, byPub map
 			log.Printf("[wg] patrol hub %d 流量写入失败: %v", hub.ServerID, err)
 		}
 	}
+	if err := r.DB.UpdateWGHubCounters(hub.ServerID, hub.RxCum, hub.TxCum); err != nil {
+		log.Printf("[wg] patrol hub %d 计数器写入失败: %v", hub.ServerID, err)
+	}
 	if err := r.DB.UpsertWGHub(hub); err != nil {
 		log.Printf("[wg] patrol hub %d 状态写入失败: %v", hub.ServerID, err)
 	}
@@ -149,7 +152,8 @@ func (r *Runner) patrolHub(network *store.WGNetwork, hub *store.WGHub, byPub map
 	}
 }
 
-// PatrolOnce 供外部触发一次巡检（手动刷新用）。
+// PatrolOnce 供外部触发一次巡检（手动刷新用）。同步执行（前端要拿到本轮结论），
+// 巡检已在跑时返回明确提示，不让用户误以为这轮刷新过了。
 func (r *Runner) PatrolOnce() error {
 	network, err := r.DB.GetWGNetwork()
 	if err != nil || network == nil {
@@ -159,7 +163,11 @@ func (r *Runner) PatrolOnce() error {
 	if len(hubs) == 0 {
 		return errors.New("尚无中心节点")
 	}
-	r.Patrol()
+	if !r.patrolMu.TryLock() {
+		return errors.New("已有巡检在进行中，请稍后再试")
+	}
+	r.patrolLocked()
+	r.patrolMu.Unlock()
 	return nil
 }
 

@@ -70,10 +70,13 @@ function envelopeError(code, msg, status) {
  */
 export async function request(path, options = {}) {
   const { method = 'GET', body, signal, timeoutMs = REQUEST_TIMEOUT_MS, retries = 1 } = options
+  // 非幂等方法默认不重试：POST 已达服务端但响应丢失时，自动重放会造成
+  // 重复创建（节点/设备）这类副作用；幂等调用可显式传 retries 覆盖。
+  const safeRetries = method.toUpperCase() === 'GET' ? retries : Math.min(retries, 0)
   const url = `${API_BASE}${path}`
   let lastError = null
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= safeRetries; attempt++) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeoutMs)
     // 外部 signal（如组件卸载）联动取消内部 controller
@@ -152,8 +155,13 @@ export async function request(path, options = {}) {
       clearTimeout(timer)
       if (signal) signal.removeEventListener('abort', onExternalAbort)
       lastError = toApiError(e, url)
+      // 外部已取消（组件卸载/切换）不是超时，不做退避重试
+      if (signal?.aborted) {
+        lastError = new ApiError({ code: 'ABORTED', message: '请求已取消' })
+        throw lastError
+      }
       // 不可重试的错误（401/403/取消）直接抛出
-      if (!lastError.retryable || attempt === retries) throw lastError
+      if (!lastError.retryable || attempt === safeRetries) throw lastError
       // 指数退避后重试：300ms / 600ms
       await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
     }

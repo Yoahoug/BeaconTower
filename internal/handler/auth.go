@@ -77,8 +77,8 @@ func (a *App) Setup(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
 		return
 	}
-	// 可选初始化令牌（doc/04 §2.2）
-	if a.Cfg.SetupToken != "" && req.SetupToken != a.Cfg.SetupToken {
+	// 可选初始化令牌（doc/04 §2.2；常量时间比较，防逐字节时序探测）
+	if a.Cfg.SetupToken != "" && !crypto.SubtleEqual(req.SetupToken, a.Cfg.SetupToken) {
 		middleware.Fail(c, 1001, "参数错误：setup_token 不正确")
 		return
 	}
@@ -123,10 +123,17 @@ func (a *App) Login(c *gin.Context) {
 	admin, _ := a.DB.GetAdmin()
 	fail := func() {
 		a.Blocker.Fail(ip)
-		a.audit(req.Username, "login_fail", "admin", "登录失败（"+orEmpty(req.Username)+")", ip)
+		// 用户名截断：巨型 payload 的用户名会原样进审计，把审计行撑爆
+		name := req.Username
+		if len(name) > 64 {
+			name = name[:64]
+		}
+		a.audit(name, "login_fail", "admin", "登录失败（"+orEmpty(name)+")", ip)
 		middleware.Fail(c, 1005, "用户名或密码错误")
 	}
 	if admin == nil || admin.Username != req.Username {
+		// 用户名不匹配也跑一次同代价的哈希验证：抹平「用户名是否存在」的时序差
+		_ = crypto.VerifyPassword(req.Password, crypto.DummyHash())
 		fail()
 		return
 	}

@@ -43,13 +43,13 @@ func (r *Runner) RegisterStandby(ctx context.Context, serverID int64) (*store.WG
 
 // hubPeerState 从现役 hub 读到的 peer 摘要。
 type hubPeerState struct {
-	PublicKey   string
-	WgIP        string
-	PSK         string
-	Comment     string
-	Endpoint    string
-	HandshakeA  int64
-	RX, TX      uint64
+	PublicKey  string
+	WgIP       string
+	PSK        string
+	Comment    string
+	Endpoint   string
+	HandshakeA int64
+	RX, TX     uint64
 }
 
 // RunImport 执行导入任务（阻塞；go RunImport）。
@@ -67,6 +67,8 @@ func (r *Runner) RunImport(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
+	r.startHeartbeat(taskID)
+	defer r.stopHeartbeat()
 	var in ImportInput
 	_ = json.Unmarshal([]byte(task.Payload), &in)
 	network, err := r.DB.GetWGNetwork()
@@ -266,10 +268,10 @@ func (r *Runner) ensureDevicePeers(states map[string]*hubPeerState, now int64) {
 		}
 		row := &store.WGPeer{
 			Kind: "device", Name: name, WgIP: st.WgIP, PublicKey: pub,
-			PskEnc:     r.encrypt(st.PSK),
-			Managed:    false,
-			Status:     "offline",
-			CreatedAt:  now,
+			PskEnc:    r.encrypt(st.PSK),
+			Managed:   false,
+			Status:    "offline",
+			CreatedAt: now,
 		}
 		if st.HandshakeA > 0 && time.Since(time.Unix(st.HandshakeA, 0)) <= 3*time.Minute {
 			row.Status = "online"
@@ -331,9 +333,11 @@ func (r *Runner) importCandidate(ctx context.Context, network *store.WGNetwork, 
 	if row == nil {
 		row = &store.WGPeer{Kind: "device", Name: name, WgIP: st.WgIP, PublicKey: pub,
 			Managed: false, CreatedAt: now}
-		if _, err := r.DB.InsertWGPeer(row); err != nil {
+		id, err := r.DB.InsertWGPeer(row)
+		if err != nil {
 			return "", err
 		}
+		row.ID = id
 	}
 	// 升级为 server 成员并收编密钥
 	row.Kind = "server"

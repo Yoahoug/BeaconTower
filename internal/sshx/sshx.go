@@ -334,7 +334,12 @@ func (c *Conn) runBoth(ctx context.Context, cmd string, stdin io.Reader) (stdout
 	select {
 	case <-ctx.Done():
 		_ = sess.Close() // 关通道使 Wait/拷贝 goroutine 退出
-		<-waitCh
+		// Close 触发 Wait 返回依赖连接可写；半开连接下 Close 可能长时间
+		// 阻塞，同步等 waitCh 会把上层流程卡死，这里只等一小段。
+		select {
+		case <-waitCh:
+		case <-time.After(2 * time.Second):
+		}
 		return nil, nil, fmt.Errorf("执行超时或已取消：%w", ctx.Err())
 	case werr := <-waitCh:
 		<-copyDone

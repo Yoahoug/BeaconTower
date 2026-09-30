@@ -37,6 +37,9 @@ onMounted(async () => {
       router.replace(st.loggedIn ? '/admin/servers' : '/admin/login')
       return
     }
+  } catch {
+    // status 不可达时不假装「未初始化」，如实提示让用户重试
+    error.value = '初始化状态检查失败，请刷新重试'
   } finally {
     checking.value = false
   }

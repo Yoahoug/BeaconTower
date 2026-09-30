@@ -63,6 +63,8 @@ async function remove() {
     confirmDelete.value = null
     ui.notify('节点已删除')
     await admin.loadServers()
+  } catch (e) {
+    ui.notify(e?.message || '删除失败')
   } finally {
     deleting.value = false
   }

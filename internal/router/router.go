@@ -19,6 +19,14 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(middleware.ClientIP(app.Cfg))
 	r.Use(middleware.SecurityHeaders())
+	// 请求体上限 1MB：面板所有接口的合法 JSON 都远小于此；不限的话未鉴权的
+	// login/setup 能把整个 body 读进内存（多 IP 并发即可打爆内存）
+	r.Use(func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		}
+		c.Next()
+	})
 
 	// /healthz：无鉴权、不进访问日志（doc/04 §5）
 	r.GET("/healthz", func(c *gin.Context) {
@@ -40,7 +48,7 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 			adm.GET("/status", app.Status)
 			adm.POST("/setup", app.SetupRL.Middleware(), app.Setup)
 			adm.POST("/login", app.LoginRL.Middleware(), app.Login)
-			adm.POST("/logout", app.Logout)
+			adm.POST("/logout", middleware.RequireCSRF(), app.Logout)
 			auth := adm.Group("", middleware.RequireAuth(app.DB), middleware.RequireCSRF())
 			{
 				auth.POST("/password", app.ChangePassword)

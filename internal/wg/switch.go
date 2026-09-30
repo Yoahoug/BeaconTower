@@ -17,8 +17,8 @@ import (
 
 // SwitchInput hub 切换任务载荷（A/B 流量额度轮换核心流程）。
 type SwitchInput struct {
-	TargetServerID int64 `json:"target_server_id"`       // 目标 hub（切换后的现役）
-	CanaryServerID int64 `json:"canary_server_id"`       // 金丝雀 spoke（先切先验；0=自动选）
+	TargetServerID int64 `json:"target_server_id"` // 目标 hub（切换后的现役）
+	CanaryServerID int64 `json:"canary_server_id"` // 金丝雀 spoke（先切先验；0=自动选）
 }
 
 // RunSwitchHub 执行 hub 切换任务（阻塞；go RunSwitchHub）。
@@ -37,6 +37,8 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
+	r.startHeartbeat(taskID)
+	defer r.stopHeartbeat()
 	var in SwitchInput
 	_ = json.Unmarshal([]byte(task.Payload), &in)
 	network, err := r.DB.GetWGNetwork()
@@ -227,7 +229,7 @@ func (r *Runner) PickCanary() *store.WGPeer {
 }
 
 // flipSpoke 将成员的拨出目标翻转到指定 hub：读原 conf → 改 [Peer] 段
-//（PublicKey/Endpoint/PSK/keepalive）→ 写回 → 重启接口 → 验证。
+// （PublicKey/Endpoint/PSK/keepalive）→ 写回 → 重启接口 → 验证。
 func (r *Runner) flipSpoke(ctx context.Context, network *store.WGNetwork, peer *store.WGPeer, targetHubID int64) error {
 	target, _ := r.DB.GetWGHub(targetHubID)
 	if target == nil || !ValidKey(target.PublicKey) {

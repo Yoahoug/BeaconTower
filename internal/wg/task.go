@@ -23,9 +23,37 @@ type Runner struct {
 	DB       *store.DB
 	Master   []byte
 	patrolMu sync.Mutex // Patrol 防重入（ticker 与手动触发并发时跳过本轮）
+	stopBeat chan struct{}
+	beatOnce sync.Once
 }
 
 func NewRunner(db *store.DB, master []byte) *Runner { return &Runner{DB: db, Master: master} }
+
+// startHeartbeat 周期给 running 任务续跳，watchdog（FailStaleRunningTasks）凭
+// heartbeat_at 判活。成员很多时任务可远超 30 分钟，不能按创建时间判。
+func (r *Runner) startHeartbeat(taskID int64) {
+	if r.stopBeat == nil {
+		r.stopBeat = make(chan struct{})
+	}
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_ = r.DB.HeartbeatWGTask(taskID, time.Now().Unix())
+			case <-r.stopBeat:
+				return
+			}
+		}
+	}()
+}
+
+func (r *Runner) stopHeartbeat() {
+	if r.stopBeat != nil {
+		r.beatOnce.Do(func() { close(r.stopBeat) })
+	}
+}
 
 // 步骤级超时
 const (
@@ -95,13 +123,15 @@ func (r *Runner) strictHostKey() bool {
 	return s["strict_host_key"] == "true"
 }
 
-// decrypt 私钥/PSK 解密（空 BLOB 返回空串）。
+// decrypt 私钥/PSK 解密（空 BLOB 返回空串）。解密失败显式记日志：静默空串会让
+// 下游报「私钥无效」，把 BEACON_MASTER_KEY 被换/库被搬这类环境问题引向 WG 配置排障。
 func (r *Runner) decrypt(blob []byte) string {
 	if len(blob) == 0 {
 		return ""
 	}
 	s, err := crypto.DecryptString(r.Master, blob)
 	if err != nil {
+		log.Printf("[wg] 凭据解密失败（master key 与密文不匹配？）: %v", err)
 		return ""
 	}
 	return s
@@ -135,6 +165,8 @@ func (r *Runner) RunApply(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
+	r.startHeartbeat(taskID)
+	defer r.stopHeartbeat()
 	network, err := r.DB.GetWGNetwork()
 	if err != nil || network == nil {
 		_ = r.DB.FinishWGTask(taskID, "failed", "组网配置缺失", time.Now().Unix())

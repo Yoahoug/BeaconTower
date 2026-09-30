@@ -359,10 +359,12 @@ func (a *App) WGPeerSyncHubs(c *gin.Context) {
 	results := []gin.H{}
 	// 退役槽位不再下发（它的身份已经迁到别的机器上）
 	okN := 0
+	total := 0
 	for _, h := range hubs {
 		if h.Status == "retired" {
 			continue
 		}
+		total++
 		item := gin.H{"server_id": h.ServerID, "active": h.ServerID == netRow.ActiveHubServerID, "ok": false, "error": ""}
 		if srv, _ := a.DB.GetServer(h.ServerID); srv != nil {
 			item["name"] = srv.Name
@@ -376,8 +378,8 @@ func (a *App) WGPeerSyncHubs(c *gin.Context) {
 		results = append(results, item)
 	}
 	a.audit(a.actorOf(c), "wg_peer_sync_hubs", peer.Name,
-		fmt.Sprintf("ok=%d/%d", okN, len(hubs)), ipOf(c))
-	middleware.OK(c, gin.H{"synced": okN, "total": len(hubs), "results": results})
+		fmt.Sprintf("ok=%d/%d", okN, total), ipOf(c))
+	middleware.OK(c, gin.H{"synced": okN, "total": total, "results": results})
 }
 
 // WGCredsZip 打包下载全部使用端原生 conf（每个中心一份：A=现役 / B=备援）。

@@ -112,7 +112,7 @@ func (a *App) wgResolveNetwork(in *wgNetworkInput) (*store.WGNetwork, error) {
 	if !ifaceRe.MatchString(iface) {
 		return nil, fmt.Errorf("接口名仅允许字母数字与短横线（≤15 字符）: %q", iface)
 	}
-	if in.MTU < 0 || in.MTU > 9000 {
+	if in.MTU > 9000 || (in.MTU > 0 && in.MTU < 1280) {
 		return nil, fmt.Errorf("MTU 越界（1280-9000 或 0=默认）: %d", in.MTU)
 	}
 	if in.Keepalive < 0 || in.Keepalive > 3600 {
@@ -633,8 +633,10 @@ func (a *App) WGApply(c *gin.Context) {
 		middleware.Fail(c, 2012, fatal)
 		return
 	}
-	for _, al := range alloc {
-		for _, i := range issues[al.ServerID] {
+	// 有 error 级 issue 的成员拿不到分配（wgAllocate 全部 continue），不会出现在
+	// alloc 里——必须直接遍历 issues，否则这些错误会被静默吞掉、成员无声跳过
+	for _, list := range issues {
+		for _, i := range list {
 			if i.Level == wg.Err {
 				middleware.Fail(c, 2010, "成员预检分配失败: "+i.Msg)
 				return
@@ -912,7 +914,7 @@ func (a *App) WGPeerConf(c *gin.Context) {
 	// conf 含设备私钥与 PSK：禁止任何形式的缓存
 	c.Header("Cache-Control", "no-store")
 	middleware.OK(c, gin.H{
-		"conf": conf,
+		"conf":     conf,
 		"filename": wgConfFileName(peer.Name, tag),
 		"endpoint": endpoint, "wg_ip": peer.WgIP,
 	})
@@ -1600,6 +1602,10 @@ func (a *App) WGAssetPush(c *gin.Context) {
 	peer, err := a.DB.GetWGPeerByServer(in.ServerID)
 	if err != nil || peer == nil {
 		middleware.Fail(c, 2002, "目标节点不是网内成员")
+		return
+	}
+	if peer.Status == "left" {
+		middleware.Fail(c, 2002, "目标节点已移出组网")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

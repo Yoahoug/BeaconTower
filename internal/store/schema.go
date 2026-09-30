@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 8
+const schemaVersion = 9
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -372,6 +372,8 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 				updated_at INTEGER
 			)`,
 		)
+	case 9: // wg_task 心跳：watchdog 按 heartbeat_at 判活，长任务不再被误判中断
+		return exec(`ALTER TABLE wg_task ADD COLUMN heartbeat_at INTEGER DEFAULT 0`)
 	}
 	return fmt.Errorf("unknown migration %d", v)
 }

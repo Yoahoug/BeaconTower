@@ -60,11 +60,16 @@ async function logout() {
     // 动态引入管理 store：公开首屏 bundle 不含管理代码
     const { useAdminStore } = await import('../stores/admin')
     await useAdminStore().logout()
-  } finally {
+  } catch {
+    // 请求没到服务端就报错：会话其实还有效，跳登录页会被守卫弹回来；
+    // 如实提示，留在当前页让用户重试
     resetAuthCache()
-    ui.notify('已退出登录')
-    router.push('/admin/login')
+    ui.notify('退出失败，请重试')
+    return
   }
+  resetAuthCache()
+  ui.notify('已退出登录')
+  router.push('/admin/login')
 }
 
 function toggleDrawer() {
