@@ -418,6 +418,11 @@ func (c *ChmlfrpClient) CreateTunnel(ctx context.Context, in TunnelInput) (strin
 // UpdateTunnel 改隧道。注意官方文档标注 http/https 类型暂不支持修改。
 func (c *ChmlfrpClient) UpdateTunnel(ctx context.Context, id string, in TunnelInput) error {
 	body := map[string]any{"tunnelid": id}
+	// porttype 是这个接口的必填项（真机实测漏发会回「端口类型缺失」）；
+	// 编辑表单里类型不可改，Proto 由调用方带当前类型兜底。
+	if in.Proto != "" {
+		body["porttype"] = in.Proto
+	}
 	if in.Name != "" {
 		body["tunnelname"] = in.Name
 	}

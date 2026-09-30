@@ -767,8 +767,14 @@ func (a *App) FRPTunnelUpdate(c *gin.Context) {
 		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
 		return
 	}
+	// 类型不可改，但 ChmlFrp 的 /update_tunnel 把 porttype 当必填：
+	// 入参没带就用库里当前的类型兜底（真机实测漏发回「端口类型缺失」）。
+	proto := strings.ToLower(strings.TrimSpace(in.Proto))
+	if proto == "" {
+		proto = t.Proto
+	}
 	dom := frp.TunnelInput{
-		Name: strings.TrimSpace(in.Name), NodeID: in.NodeID,
+		Name: strings.TrimSpace(in.Name), Proto: proto, NodeID: in.NodeID,
 		LocalIP: strings.TrimSpace(in.LocalIP), LocalPort: in.LocalPort,
 		RemotePort: in.RemotePort, Domain: strings.TrimSpace(in.Domain),
 		Note: in.Note, Extra: in.Extra,
