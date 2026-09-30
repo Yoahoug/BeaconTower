@@ -817,7 +817,10 @@ onBeforeUnmount(() => {
                     <div class="frp-row-actions">
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openTunnelEdit(t)">编辑</button>
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="downloadingId === t.id" @click="downloadConfig(t)">
+                        :disabled="downloadingId === t.id" @click="downloadConfig(t)"
+                        :title="t.platform_kind === 'natfrp'
+                          ? '下载 frpc 配置（樱花分支 INI，配套 deploy/frpc-natfrp 镜像）'
+                          : '下载 frpc 配置（INI，配套 deploy/frpc-chmlfrp 镜像）'">
                         {{ downloadingId === t.id ? '…' : '配置' }}
                       </button>
                       <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"

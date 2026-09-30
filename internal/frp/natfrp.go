@@ -15,6 +15,13 @@ import (
 // NatfrpBase NATFRP OpenAPI v4 基址（官方 spec: https://api.natfrp.com/docs/）。
 const NatfrpBase = "https://api.natfrp.com/v4"
 
+// NatfrpFrpcVersion 是取 frpc 配置时声明的客户端版本，决定返回格式：
+// 樱花分支版本（0.51.0-sakura-N）返回 INI（sakura_mode = true），
+// 上游 frp 版本（如 0.59.0）返回 TOML。这里跟随 deploy/frpc-natfrp
+// 镜像 pin 的版本，保证面板下载的配置与容器里的客户端一致；升级镜像
+// 时同步改这里并重建面板镜像。
+const NatfrpFrpcVersion = "0.51.0-sakura-14"
+
 // NatfrpClient 樱花内网穿透 API 客户端。
 //
 // 鉴权用面板里生成的「访问密钥」（长期有效，与登录密码不同），直接
@@ -426,12 +433,14 @@ func (n *NatfrpClient) MigrateTunnel(ctx context.Context, id, nodeID string) err
 }
 
 // TunnelConfig 取 frpc 配置文本。query 是逗号分隔的启动目标
-// （隧道 ID 或 n+节点 ID），可直接被 frpc -c 加载。
+// （隧道 ID 或 n+节点 ID），可直接被 frpc -c 加载。frpcVer 留空表示
+// 不声明版本（平台按默认的樱花分支格式返回 INI），空串不能直接发给
+// 平台——实测会 400。
 func (n *NatfrpClient) TunnelConfig(ctx context.Context, query, frpcVer string) (string, error) {
-	if frpcVer == "" {
-		frpcVer = "0.59.0"
+	form := url.Values{"query": {query}}
+	if v := strings.TrimSpace(frpcVer); v != "" {
+		form.Set("frpc", v)
 	}
-	form := url.Values{"query": {query}, "frpc": {frpcVer}}
 	raw, err := n.call(ctx, http.MethodPost, "/tunnel/config", form, nil)
 	if err != nil {
 		return "", err
@@ -446,7 +455,7 @@ func (n *NatfrpClient) DeleteOne(ctx context.Context, id string) error {
 
 // ConfigFor 实现 platform 接口：NATFRP 按隧道 ID 取配置，不需要节点名。
 func (n *NatfrpClient) ConfigFor(ctx context.Context, tgt ConfigTarget) (string, error) {
-	return n.TunnelConfig(ctx, tgt.RemoteID, "")
+	return n.TunnelConfig(ctx, tgt.RemoteID, NatfrpFrpcVersion)
 }
 
 // TunnelTraffic 单隧道流量：{时间戳: 字节}。

@@ -41,7 +41,12 @@ push 之前，确认对外展示面与新版本一致——这是**每次发布�
 3. **仓库描述（GitHub About）**：`gh repo edit --description "..."` 与 README 开头简介同步，
    新版本的重要能力（如 v2.0 WG 组网、v2.1 穿透托管）要能从描述里看出来；
 4. **版本演进**：README / AppShell 版本号、doc 索引（doc/README.md）与新设计文档（doc/NN-*.md）
-   是否已互链。
+   是否已互链；
+5. **客户端镜像**（涉及内网穿透时）：`deploy/frpc-*` 两个客户端镜像**不跟推送构建**，
+   第三方客户端升级时才手动触发 `gh workflow run "FRP client images (manual)"`。
+   注意版本耦合：NATFRP 的配置格式跟着面板里的 `NatfrpFrpcVersion`（`internal/frp/natfrp.go`）
+   走——升级 `beacontower-frpc-natfrp` 镜像版本必须同步改这个常量并重建面板，
+   否则下载的配置格式与新镜像对不上。
 
 > 历史教训：v2.1 穿透模块首发时 README 只加了两行条目没配图，靠事后补——把这一步写进
 > SOP 就是为了避免每次都靠临场记忆。

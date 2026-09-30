@@ -431,7 +431,8 @@ func (r *Runner) DeleteTunnel(ctx context.Context, platformID int64, remoteID st
 	return cli.DeleteOne(ctx, remoteID)
 }
 
-// TunnelConfig 取 frpc 配置文本（NATFRP 返回 TOML，ChmlFrp 返回 ini）。
+// TunnelConfig 取 frpc 配置文本（两个平台都返回 INI：NATFRP 按
+// NatfrpFrpcVersion 声明的樱花分支版本取 sakura INI，ChmlFrp 直接给 ini）。
 func (r *Runner) TunnelConfig(ctx context.Context, platformID int64, tgt ConfigTarget) (string, error) {
 	_, cli, err := r.platform(ctx, platformID)
 	if err != nil {

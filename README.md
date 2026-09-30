@@ -124,6 +124,20 @@ docker compose up -d
 
 建议前置反向代理提供 HTTPS（Caddy 示例见 [doc/07-Docker部署方案.md](./doc/07-Docker部署方案.md)）。
 
+### frpc 客户端容器（按需）
+
+隧道建完后，还需要一台跑 frpc 的机器把流量接到本机服务。两个穿透平台的客户端都打成了本仓库镜像，
+**不跟随 main 推送构建**（Actions 页手动触发 `FRP client images (manual)`，可传版本号），干净服务器上：
+
+```sh
+# 在面板「内网穿透 → 隧道 → 配置」下载 ini，传到服务器，然后：
+FRPC_CONFIG_FILE=./natfrp-ssh.conf docker compose up -d   # compose 文件在 deploy/frpc-natfrp/
+```
+
+镜像 `ghcr.io/yoahoug/beacontower-frpc-natfrp`（樱花分支 `0.51.0-sakura-14`，含官方环境变量模式）与
+`ghcr.io/yoahoug/beacontower-frpc-chmlfrp`（上游 frp `0.61.2`），都默认 host 网络、配置文件只读挂载；
+为什么要 host 网络、配置格式和镜像版本怎么耦合，见 [deploy/](./deploy/) 下的说明。
+
 ## 隐私与安全
 
 - 公开页与公开 API 走**字段白名单**：不输出公网 IP、内网地址、主机名等敏感字段，隐藏节点对外统一「不存在」

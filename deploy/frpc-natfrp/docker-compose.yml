@@ -1,0 +1,20 @@
+# 樱花 frpc：把本机服务经 NATFRP 节点暴露到公网
+#
+#   FRPC_CONFIG_FILE=./natfrp-ssh.conf docker compose up -d
+#
+# 配置文件从面板「内网穿透 → 隧道 → 配置」下载（.conf 是 ini 文本，
+# 文件名随意，用 FRPC_CONFIG_FILE 指过去即可）。
+services:
+  frpc:
+    image: ghcr.io/yoahoug/beacontower-frpc-natfrp:latest
+    container_name: frpc-natfrp
+    restart: unless-stopped
+    # host 网络：隧道里的 local_ip 通常是 localhost/127.0.0.1，指宿主机上的服务；
+    # bridge 网络下容器里的 localhost 是容器自己，隧道会连不上
+    network_mode: host
+    volumes:
+      - ${FRPC_CONFIG_FILE:-./frpc.ini}:/etc/frp/frpc.ini:ro
+    # 环境变量模式（与上面的 volumes 二选一：删掉 volumes 再启用这两行）
+    # environment:
+    #   NATFRP_TOKEN: "访问密钥"
+    #   NATFRP_TARGET: "隧道ID1,隧道ID2"    # 逗号分隔的隧道 ID 列表

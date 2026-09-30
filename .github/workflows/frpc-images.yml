@@ -1,0 +1,118 @@
+# 手动构建两个 frpc 客户端镜像（NATFRP / ChmlFrp），推到 GHCR。
+#
+# 刻意不挂 push 触发：这俩是第三方客户端的封装，版本由上游决定，不该跟着
+# main 的每次提交重建。要升级就在 Actions 页 Run workflow，传新版本号。
+name: FRP client images (manual)
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      natfrp_version:
+        description: 'NATFRP 客户端版本（natfrp/frpc 镜像标签）'
+        required: true
+        default: '0.51.0-sakura-14'
+      chmlfrp_frpc_version:
+        description: 'ChmlFrp 客户端用的上游 frp 版本'
+        required: true
+        default: '0.61.2'
+      platforms:
+        description: '目标平台（逗号分隔）'
+        required: true
+        default: 'linux/amd64,linux/arm64'
+
+env:
+  NATFRP_IMAGE: ghcr.io/yoahoug/beacontower-frpc-natfrp
+  CHMLFRP_IMAGE: ghcr.io/yoahoug/beacontower-frpc-chmlfrp
+
+jobs:
+  natfrp:
+    name: frpc-natfrp (${{ inputs.natfrp_version }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/frpc-natfrp
+          platforms: ${{ inputs.platforms }}
+          push: true
+          build-args: |
+            NATFRP_VERSION=${{ inputs.natfrp_version }}
+          tags: |
+            ${{ env.NATFRP_IMAGE }}:${{ inputs.natfrp_version }}
+            ${{ env.NATFRP_IMAGE }}:latest
+          cache-from: type=gha,scope=frpc-natfrp
+          cache-to: type=gha,mode=max,scope=frpc-natfrp
+
+      - name: Summary
+        run: |
+          echo "### frpc-natfrp 已构建" >> $GITHUB_STEP_SUMMARY
+          echo "- 版本：\`${{ inputs.natfrp_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- 平台：\`${{ inputs.platforms }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Digest：\`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+  chmlfrp:
+    name: frpc-chmlfrp (frp ${{ inputs.chmlfrp_frpc_version }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/frpc-chmlfrp
+          platforms: ${{ inputs.platforms }}
+          push: true
+          build-args: |
+            FRPC_VERSION=${{ inputs.chmlfrp_frpc_version }}
+          tags: |
+            ${{ env.CHMLFRP_IMAGE }}:${{ inputs.chmlfrp_frpc_version }}
+            ${{ env.CHMLFRP_IMAGE }}:latest
+          cache-from: type=gha,scope=frpc-chmlfrp
+          cache-to: type=gha,mode=max,scope=frpc-chmlfrp
+
+      - name: Summary
+        run: |
+          echo "### frpc-chmlfrp 已构建" >> $GITHUB_STEP_SUMMARY
+          echo "- frp 版本：\`${{ inputs.chmlfrp_frpc_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- 平台：\`${{ inputs.platforms }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Digest：\`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
