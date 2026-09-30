@@ -21,6 +21,7 @@ type App struct {
 	Master  []byte
 	WG      *wg.Runner
 	FRP     *frp.Runner
+	Deploy  *frp.Deployer
 	Blocker *middleware.LoginBlocker
 	SetupRL *middleware.RateLimiter
 	LoginRL *middleware.RateLimiter
@@ -28,6 +29,10 @@ type App struct {
 	// wgOpMu 串行化 WG 任务型操作：HasRunningWGTask 是 check-then-act，
 	// 进程内互斥防止双击/并发请求同时通过检查插入两个 running 任务
 	wgOpMu sync.Mutex
+
+	// deployMu 串行化穿透客户端托管操作：同一时刻只跑一个「写节点」的动作，
+	// 避免两个请求同时 docker rm/run 同一个容器。
+	deployMu sync.Mutex
 }
 
 func nowUnix() int64 { return time.Now().Unix() }

@@ -53,10 +53,12 @@ func main() {
 
 	coll := collector.New(cfg, db, master)
 	blocker := middleware.NewLoginBlocker()
+	frpRunner := frp.NewRunner(db, master, cfg.ChmlfrpClientID)
 	app := &handler.App{
 		DB: db, Cfg: cfg, Coll: coll, Master: master,
 		WG:      wg.NewRunner(db, master),
-		FRP:     frp.NewRunner(db, master, cfg.ChmlfrpClientID),
+		FRP:     frpRunner,
+		Deploy:  frp.NewDeployer(db, master, frpRunner),
 		Blocker: blocker,
 		SetupRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),

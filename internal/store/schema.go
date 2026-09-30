@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 10
+const schemaVersion = 11
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -374,6 +374,26 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 		)
 	case 9: // wg_task 心跳：watchdog 按 heartbeat_at 判活，长任务不再被误判中断
 		return exec(`ALTER TABLE wg_task ADD COLUMN heartbeat_at INTEGER DEFAULT 0`)
+	case 11: // 内网穿透客户端托管（doc/13 §14）：面板经 SSH 在节点上跑/管 frpc 容器
+		return exec(
+			`CREATE TABLE IF NOT EXISTS frp_deploy (
+				id INTEGER PRIMARY KEY,
+				platform_id INTEGER NOT NULL REFERENCES frp_platform(id) ON DELETE CASCADE,
+				server_id INTEGER NOT NULL REFERENCES server(id) ON DELETE CASCADE,
+				tunnel_ids TEXT NOT NULL DEFAULT '[]',
+				image TEXT NOT NULL DEFAULT '',
+				container TEXT NOT NULL DEFAULT '',
+				config_path TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'pending',
+				last_error TEXT DEFAULT '',
+				docker_ver TEXT DEFAULT '',
+				dirty INTEGER NOT NULL DEFAULT 0,
+				last_sync_at INTEGER DEFAULT 0,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER DEFAULT 0
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_deploy_pair ON frp_deploy(platform_id, server_id)`,
+		)
 	case 10: // 内网穿透平台管理（doc/13）：NATFRP / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
 		return exec(
 			`CREATE TABLE IF NOT EXISTS frp_platform (

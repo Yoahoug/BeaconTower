@@ -173,7 +173,7 @@ onUnmounted(() => {
           <span>实时功耗</span>
           <strong class="tnum">{{ monitor.summary.measuredCount ? `${monitor.summary.watts.toFixed(1)} W` : '—' }}</strong>
         </div>
-        <div class="app-side-ver">v2.1 · SKY BEACON</div>
+        <div class="app-side-ver">v2.3 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -226,7 +226,7 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.1 · Sky Beacon</span>
+        <span class="tnum">v2.3 · Sky Beacon</span>
       </footer>
     </div>
 

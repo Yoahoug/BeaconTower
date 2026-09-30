@@ -541,6 +541,21 @@ func (a *App) FRPPlatformDelete(c *gin.Context) {
 		middleware.Fail(c, 2002, "平台不存在")
 		return
 	}
+	// 先清节点侧托管容器（外键级联不会去删服务器上的容器，留着会成孤儿）
+	if deps, err := a.DB.ListFRPDeploys(); err == nil {
+		dctx, dcancel := context.WithTimeout(c.Request.Context(), frpNodeTimeout)
+		for _, d := range deps {
+			if d.PlatformID != id {
+				continue
+			}
+			if err := a.Deploy.Remove(dctx, d, true); err != nil {
+				a.audit(a.actorOf(c), "frp_deploy_delete", fmt.Sprintf("deploy:%d", d.ID),
+					"解绑平台时清理托管容器失败（继续解绑）: "+err.Error(), ipOf(c))
+			}
+			_ = a.DB.DeleteFRPDeploy(d.ID)
+		}
+		dcancel()
+	}
 	// 外键级联已覆盖，但显式清理不依赖 foreign_keys pragma，避免换库时残留
 	_ = a.DB.DeleteFRPTunnelsOfPlatform(id)
 	_ = a.DB.DeleteFRPNodesOfPlatform(id)
@@ -793,8 +808,9 @@ func (a *App) FRPTunnelUpdate(c *gin.Context) {
 		failFRP(c, err)
 		return
 	}
+	dirty, _ := a.DB.MarkFRPDeploysDirtyByTunnel(t.ID)
 	a.audit(a.actorOf(c), "frp_tunnel_update", fmt.Sprintf("frp_tunnel:%d", t.ID),
-		"修改隧道 "+t.Name, ipOf(c))
+		fmt.Sprintf("修改隧道 %s（%d 个客户端托管待同步）", t.Name, dirty), ipOf(c))
 	syncErr := a.FRP.Sync(ctx, t.PlatformID, false)
 	out := gin.H{"ok": true}
 	if syncErr != nil {
@@ -820,8 +836,10 @@ func (a *App) FRPTunnelDelete(c *gin.Context) {
 		return
 	}
 	_ = a.DB.DeleteFRPTunnel(t.ID)
+	// 节点侧托管里若包含这条隧道，容器内的配置已过期：标记待同步（前端出「同步配置」角标）
+	dirty, _ := a.DB.MarkFRPDeploysDirtyByTunnel(t.ID)
 	a.audit(a.actorOf(c), "frp_tunnel_delete", fmt.Sprintf("frp_tunnel:%d", t.ID),
-		"删除隧道 "+t.Name, ipOf(c))
+		fmt.Sprintf("删除隧道 %s（%d 个客户端托管待同步）", t.Name, dirty), ipOf(c))
 	_ = a.FRP.Sync(ctx, t.PlatformID, false)
 	middleware.OK(c, gin.H{"ok": true})
 }

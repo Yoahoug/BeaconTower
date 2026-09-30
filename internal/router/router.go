@@ -118,6 +118,15 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.GET("/frp/tunnels/:id/config", app.FRPTunnelConfig)
 				auth.GET("/frp/tunnels/:id/traffic", app.FRPTunnelTraffic)
 				// ChmlFrp 授权走 OAuth2 设备码（交互式，无法用静态密钥替代）
+				// 客户端托管：面板经 SSH 在节点上部署/管理 frpc 容器（doc/13 §14）
+				auth.GET("/frp/deployments", app.FRPDeployList)
+				auth.POST("/frp/deployments", app.FRPDeployCreate)
+				auth.POST("/frp/deployments/:id/sync", app.FRPDeploySync)
+				auth.POST("/frp/deployments/:id/action", app.FRPDeployAction)
+				auth.POST("/frp/deployments/:id/status", app.FRPDeployStatus)
+				auth.GET("/frp/deployments/:id/logs", app.FRPDeployLogs)
+				auth.DELETE("/frp/deployments/:id", app.FRPDeployDelete)
+				auth.POST("/frp/servers/:id/docker", app.FRPServerDocker)
 				auth.POST("/frp/chmlfrp/device", app.FRPChmlfrpDeviceStart)
 				auth.GET("/frp/chmlfrp/device/:sid", app.FRPChmlfrpDevicePoll)
 				auth.DELETE("/frp/chmlfrp/device/:sid", app.FRPChmlfrpDeviceCancel)

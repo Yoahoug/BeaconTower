@@ -92,6 +92,16 @@ const realAdmin = {
   frpTunnelTraffic: (id) => http.get(`/v1/admin/frp/tunnels/${id}/traffic`, { retries: 0 }),
 
   // ChmlFrp 走 OAuth2 设备码；令牌 10 分钟过期由后端自动续期，续不上时前端弹重新授权
+  // 客户端托管（doc/13 §14）：面板经 SSH 在节点上部署/管理 frpc 容器
+  frpDeployments: (refresh = false) => http.get(`/v1/admin/frp/deployments${refresh ? '?refresh=1' : ''}`, { retries: 0 }),
+  frpDeployCreate: (payload) => http.post('/v1/admin/frp/deployments', payload, { timeoutMs: 720000, retries: 0 }),
+  frpDeploySync: (id) => http.post(`/v1/admin/frp/deployments/${id}/sync`, {}, { timeoutMs: 360000, retries: 0 }),
+  frpDeployAction: (id, action) => http.post(`/v1/admin/frp/deployments/${id}/action`, { action }, { timeoutMs: 60000, retries: 0 }),
+  frpDeployStatus: (id) => http.post(`/v1/admin/frp/deployments/${id}/status`, {}, { timeoutMs: 60000, retries: 0 }),
+  frpDeployLogs: (id, tail = 200) => http.get(`/v1/admin/frp/deployments/${id}/logs?tail=${tail}`, { retries: 0 }),
+  frpDeployDelete: (id, keep = false) => http.del(`/v1/admin/frp/deployments/${id}${keep ? '?keep=1' : ''}`, { retries: 0 }),
+  frpServerDocker: (serverId, install = false) => http.post(`/v1/admin/frp/servers/${serverId}/docker`, { install }, { timeoutMs: install ? 720000 : 60000, retries: 0 }),
+
   frpDeviceStart: (reuseId = 0) => http.post('/v1/admin/frp/chmlfrp/device', { reuse_id: reuseId }, { timeoutMs: 30000, retries: 0 }),
   frpDevicePoll: (sid) => http.get(`/v1/admin/frp/chmlfrp/device/${sid}`, { retries: 0 }),
   frpDeviceCancel: (sid) => http.del(`/v1/admin/frp/chmlfrp/device/${sid}`, { retries: 0 }),
@@ -175,6 +185,14 @@ export const adminClient = {
   frpTunnelOffline: (id) => withTimeout(realAdmin.frpTunnelOffline(id), 35000),
   frpTunnelAuth: (id, ip) => withTimeout(realAdmin.frpTunnelAuth(id, ip), 35000),
   frpTunnelTraffic: (id) => withTimeout(realAdmin.frpTunnelTraffic(id), 45000),
+  frpDeployments: (refresh) => withTimeout(realAdmin.frpDeployments(refresh), 60000),
+  frpDeployCreate: (payload) => withTimeout(realAdmin.frpDeployCreate(payload), 720000),
+  frpDeploySync: (id) => withTimeout(realAdmin.frpDeploySync(id), 360000),
+  frpDeployAction: (id, action) => withTimeout(realAdmin.frpDeployAction(id, action), 60000),
+  frpDeployStatus: (id) => withTimeout(realAdmin.frpDeployStatus(id), 60000),
+  frpDeployLogs: (id, tail) => withTimeout(realAdmin.frpDeployLogs(id, tail), 60000),
+  frpDeployDelete: (id, keep) => withTimeout(realAdmin.frpDeployDelete(id, keep), 60000),
+  frpServerDocker: (serverId, install) => withTimeout(realAdmin.frpServerDocker(serverId, install), install ? 720000 : 60000),
   frpDeviceStart: (reuseId) => withTimeout(realAdmin.frpDeviceStart(reuseId), 35000),
   frpDevicePoll: (sid) => withTimeout(realAdmin.frpDevicePoll(sid), 20000),
   frpDeviceCancel: (sid) => withTimeout(realAdmin.frpDeviceCancel(sid), 20000),

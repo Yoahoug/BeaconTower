@@ -402,6 +402,40 @@ export const useAdminStore = defineStore('admin', {
       return adminClient.frpFlow(id, kind)
     },
 
+    // ---------- 客户端托管（doc/13 §14）：面板经 SSH 在节点上跑 frpc 容器 ----------
+    // 装载/卸载/同步都要落库，统一走 frpRun 防重复提交；纯读接口不包。
+    frpDeployments(refreshLive = false) {
+      return adminClient.frpDeployments(refreshLive)
+    },
+
+    frpDeployCreate(payload) {
+      return this.frpRun(() => adminClient.frpDeployCreate(payload))
+    },
+
+    frpDeploySync(id) {
+      return this.frpRun(() => adminClient.frpDeploySync(id))
+    },
+
+    frpDeployAction(id, action) {
+      return this.frpRun(() => adminClient.frpDeployAction(id, action))
+    },
+
+    frpDeployStatus(id) {
+      return adminClient.frpDeployStatus(id)
+    },
+
+    frpDeployLogs(id, tail = 200) {
+      return adminClient.frpDeployLogs(id, tail)
+    },
+
+    frpDeployDelete(id, keep = false) {
+      return this.frpRun(() => adminClient.frpDeployDelete(id, keep))
+    },
+
+    frpServerDocker(serverId, install = false) {
+      return adminClient.frpServerDocker(serverId, install)
+    },
+
     frpTunnelTraffic(id) {
       return adminClient.frpTunnelTraffic(id)
     },

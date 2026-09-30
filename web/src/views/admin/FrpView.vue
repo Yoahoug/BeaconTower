@@ -63,6 +63,7 @@ async function refresh() {
   await admin.loadFrp()
   await loadDetails()
   await loadAllSubdomains()
+  await loadDeployments()
 }
 
 const syncingId = ref(0)
@@ -113,6 +114,8 @@ function closeModal() {
   tunnelModal.value = null
   migrateModal.value = null
   lockModal.value = null
+  deployModal.value = null
+  deployLogs.value = null
 }
 
 // ---------- 绑定 NATFRP ----------
@@ -450,6 +453,214 @@ async function downloadConfig(t) {
     toast(e?.message || '下载失败', true)
   } finally {
     downloadingId.value = 0
+  }
+}
+
+// ---------- 客户端托管（面板经 SSH 在节点上部署/管理 frpc 容器，doc/13 §14） ----------
+// 与「配置下载」互补：下载 = 手动拿去节点上跑；托管 = 面板拉镜像、起容器、随隧道变更同步。
+const deployments = ref([])
+const deployLoading = ref(false)
+const deployOpsId = ref(0) // 行内动作忙碌标记（同步/重启/停止/启动）
+const deployModal = ref(null) // 新建托管弹窗
+const deployLogs = ref(null) // 日志弹窗
+const deployServers = ref([])
+
+function deployStatusTag(d) {
+  if (d.dirty) return { cls: 'bt-tag--warning', text: '待同步' }
+  if (d.status === 'running') return { cls: 'bt-tag--success', text: '运行中' }
+  if (d.status === 'stopped') return { cls: 'bt-tag--info', text: '已停止' }
+  if (d.status === 'missing') return { cls: 'bt-tag--warning', text: '容器丢失' }
+  if (d.status === 'error') return { cls: 'bt-tag--danger', text: '异常' }
+  return { cls: '', text: '待部署' }
+}
+
+async function loadDeployments(refreshLive = false) {
+  deployLoading.value = true
+  try {
+    deployments.value = (await admin.frpDeployments(refreshLive)).deployments || []
+  } catch (e) {
+    toast(e?.message || '托管列表加载失败', true)
+  } finally {
+    deployLoading.value = false
+  }
+}
+
+// 一个节点同一平台只托管一份客户端（唯一键 platform_id+server_id），
+// 节点下拉里指出已被占用的，免得用户填完才被后端拒。
+function deployTakenServerIds(platformId, exceptId = 0) {
+  return deployments.value
+    .filter((d) => d.platform_id === platformId && d.id !== exceptId)
+    .map((d) => d.server_id)
+}
+
+async function openDeploy(t = null) {
+  const platformId = t?.platform_id || platforms.value[0]?.id || 0
+  deployModal.value = {
+    editId: 0,
+    platformId,
+    serverId: '',
+    tunnelIds: t ? [t.id] : [],
+    installDocker: false,
+    docker: null, // {present, version, daemon_ok, err}
+    probing: false,
+    busy: false,
+    elapsed: 0,
+    error: '',
+  }
+  if (!deployServers.value.length) {
+    await admin.loadServers()
+    deployServers.value = admin.servers || []
+  }
+}
+
+// 调整已有托管的隧道集合：平台/节点锁死（换机器走「移除」再部署，避免留下孤儿容器），
+// 提交走同一个 upsert 接口（唯一键是 平台+节点），因此直接重同步即可。
+function openDeployEdit(d) {
+  deployModal.value = {
+    editId: d.id,
+    platformId: d.platform_id,
+    serverId: String(d.server_id),
+    tunnelIds: [...d.tunnel_ids],
+    installDocker: false,
+    docker: { present: true, version: d.docker_ver, daemon_ok: true },
+    probing: false,
+    busy: false,
+    elapsed: 0,
+    error: '',
+  }
+}
+
+// 弹窗里换平台 → 清掉已勾隧道（隧道 id 跨平台不通用）与 Docker 探测结果
+function onDeployPlatformChange() {
+  const m = deployModal.value
+  if (!m) return
+  m.tunnelIds = []
+  m.docker = null
+}
+
+function deployTunnelPool(platformId) {
+  return allTunnels.value.filter((t) => t.platform_id === platformId)
+}
+
+// 节点能否被 SSH 管理：列表接口把凭据摘要放在 ssh 子对象里（凭据本身不回显）
+function deploySshReady(s) {
+  return !!(s?.ssh && s.ssh.ssh_ready)
+}
+
+// 当前弹窗里该平台已被其他托管占用的节点（用于下拉置灰）
+const deployTakenIds = computed(() => {
+  const m = deployModal.value
+  return m ? deployTakenServerIds(m.platformId, m.editId) : []
+})
+
+async function probeDocker() {
+  const m = deployModal.value
+  if (!m?.serverId) {
+    m.error = '请先选择节点'
+    return
+  }
+  m.probing = true
+  m.error = ''
+  try {
+    m.docker = (await admin.frpServerDocker(Number(m.serverId), false)).docker
+  } catch (e) {
+    m.docker = { present: false, err: e?.message || '检测失败' }
+  } finally {
+    m.probing = false
+  }
+}
+
+async function submitDeploy() {
+  const m = deployModal.value
+  if (!m) return
+  if (!m.serverId) {
+    m.error = '请选择节点'
+    return
+  }
+  if (!m.tunnelIds.length) {
+    m.error = '请至少勾选一条隧道'
+    return
+  }
+  m.busy = true
+  m.error = ''
+  // 装 Docker + 拉镜像可能好几分钟，走动的秒数让用户知道没卡死
+  const t0 = Date.now()
+  m.elapsed = 0
+  const tick = window.setInterval(() => {
+    if (deployModal.value) deployModal.value.elapsed = Math.round((Date.now() - t0) / 1000)
+  }, 1000)
+  try {
+    await admin.frpDeployCreate({
+      platform_id: m.platformId,
+      server_id: Number(m.serverId),
+      tunnel_ids: m.tunnelIds,
+      install_docker: m.installDocker,
+    })
+    toast(m.editId ? '已重新同步托管客户端' : '客户端已在节点上部署')
+    closeModal()
+    await loadDeployments(true)
+  } catch (e) {
+    m.error = e?.message || '部署失败'
+  } finally {
+    window.clearInterval(tick)
+    if (deployModal.value) deployModal.value.busy = false
+  }
+}
+
+async function runDeployOp(d, fn, okText) {
+  deployOpsId.value = d.id
+  try {
+    await fn()
+    if (okText) toast(okText)
+  } catch (e) {
+    toast(e?.message || '操作失败', true)
+  } finally {
+    deployOpsId.value = 0
+  }
+}
+
+function deploySync(d) {
+  return runDeployOp(d, async () => {
+    const r = await admin.frpDeploySync(d.id)
+    await loadDeployments()
+    toast(r?.log_tail ? '已同步（容器有输出，建议看日志）' : '配置已同步')
+  })
+}
+
+function deployAction(d, action) {
+  const text = { restart: '容器已重启', stop: '容器已停止', start: '容器已启动' }[action] || '已执行'
+  return runDeployOp(d, async () => {
+    await admin.frpDeployAction(d.id, action)
+    await loadDeployments()
+    toast(text)
+  })
+}
+
+async function openDeployLogs(d) {
+  deployLogs.value = { id: d.id, title: `${d.container} · ${d.server_name}`, loading: true, text: '', error: '' }
+  try {
+    const r = await admin.frpDeployLogs(d.id, 200)
+    if (deployLogs.value) deployLogs.value.text = r?.logs || ''
+  } catch (e) {
+    if (deployLogs.value) deployLogs.value.error = e?.message || '日志读取失败'
+  } finally {
+    if (deployLogs.value) deployLogs.value.loading = false
+  }
+}
+
+function askDeleteDeploy(d) {
+  confirmState.value = {
+    title: '移除托管',
+    message: `确认移除「${d.server_name}」上的 ${kindLabel[d.platform_kind] || d.platform_kind} 客户端？`
+      + '将停止并删除节点上的 frpc 容器、清除节点上的配置文件；平台侧隧道与其他机器上手动跑的客户端不受影响。',
+    confirmText: '移除',
+    danger: true,
+    busy: false,
+    run: async () => {
+      await admin.frpDeployDelete(d.id)
+      await loadDeployments()
+      toast('已移除托管')
+    },
   }
 }
 
@@ -829,6 +1040,10 @@ onBeforeUnmount(() => {
                           : '下载 frpc 配置（INI，配套 deploy/frpc-chmlfrp 镜像）'">
                         {{ downloadingId === t.id ? '…' : '配置' }}
                       </button>
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeploy(t)"
+                        title="把该平台的 frpc 客户端部署到节点上，由面板经 SSH 起容器并同步配置">
+                        托管
+                      </button>
                       <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
                         type="button" @click="openLock(t)">锁定</button>
                       <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
@@ -839,6 +1054,98 @@ onBeforeUnmount(() => {
                         type="button" @click="offlineTunnel(t)">下线</button>
                       <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
                         @click="askDeleteTunnel(t)">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 客户端托管：面板经 SSH 在节点上拉镜像、起容器（doc/13 §14） ===== -->
+      <div class="bt-card frp-block">
+        <div class="bt-card__head">
+          <h2 class="bt-card__title">
+            客户端托管 <span class="frp-count">{{ deployments.length }}</span>
+          </h2>
+          <div class="frp-deploy-head">
+            <span class="bt-text-muted frp-head-hint">面板经 SSH 在节点上拉起 frpc 容器 · 隧道变更后需重新同步</span>
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+              :disabled="deployLoading" @click="loadDeployments(true)">
+              <AppIcon name="refresh" aria-hidden="true" />刷新状态
+            </button>
+            <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openDeploy(null)">
+              <AppIcon name="plus" aria-hidden="true" />部署客户端
+            </button>
+          </div>
+        </div>
+        <div class="bt-card__body">
+          <StateSkeleton v-if="deployLoading && !deployments.length" :rows="2" />
+          <StateEmpty v-else-if="!deployments.length" title="尚未托管客户端"
+            desc="隧道建好后不必再手动登录节点跑 frpc：选一个平台与节点，面板会拉取镜像、生成配置并在节点上起容器，托管后可在隧道表「托管」列直接同步" />
+          <div v-else class="bt-table-wrap">
+            <table class="bt-table">
+              <caption class="bt-text-muted">节点上的 frpc 容器：运行状态、承载隧道与操作</caption>
+              <thead>
+                <tr>
+                  <th scope="col">状态</th>
+                  <th scope="col">节点</th>
+                  <th scope="col">平台</th>
+                  <th scope="col">承载隧道</th>
+                  <th scope="col">容器 / 镜像</th>
+                  <th scope="col">上次同步</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in deployments" :key="d.id">
+                  <td>
+                    <span class="bt-tag" :class="deployStatusTag(d).cls">{{ deployStatusTag(d).text }}</span>
+                    <div v-if="d.last_error" class="bt-text-muted frp-cell-note" :title="d.last_error">{{ d.last_error }}</div>
+                  </td>
+                  <td>
+                    <b>{{ d.server_name || `#${d.server_id}` }}</b>
+                    <div v-if="d.docker_ver" class="bt-text-muted frp-cell-note">Docker {{ d.docker_ver }}</div>
+                  </td>
+                  <td>
+                    <span class="bt-tag" :class="d.platform_kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                      {{ kindLabel[d.platform_kind] || d.platform_kind }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="frp-deploy-tunnels">
+                      <span v-for="t in d.tunnels" :key="t.id" class="bt-tag bt-tag--outline"
+                        :class="{ 'is-missing': t.missing }">
+                        {{ protoLabel[t.proto] || 'TCP' }} · {{ t.name }}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <span class="mono frp-endpoint">{{ d.container }}</span>
+                    <div class="bt-text-muted frp-cell-note" :title="`${d.image} · ${d.config_path}`">
+                      {{ d.image }} · {{ d.config_path }}
+                    </div>
+                  </td>
+                  <td>{{ d.last_sync_at ? agoFromTs(d.last_sync_at) : '—' }}</td>
+                  <td>
+                    <div class="frp-row-actions">
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="deployOpsId === d.id" @click="deploySync(d)"
+                        title="重新拉取隧道配置、重建容器（隧道增删改后用这个）">
+                        {{ deployOpsId === d.id ? '…' : '同步配置' }}
+                      </button>
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'restart')">重启</button>
+                      <button v-if="d.status === 'running'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'stop')">停止</button>
+                      <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'start')">启动</button>
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeployLogs(d)">日志</button>
+                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        @click="openDeployEdit(d)" title="增删该客户端承载的隧道（节点与平台不可改）">改隧道</button>
+                      <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
+                        @click="askDeleteDeploy(d)">移除</button>
                     </div>
                   </td>
                 </tr>
@@ -1298,6 +1605,113 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- ===== 弹窗：部署/调整客户端托管 ===== -->
+    <div v-if="deployModal" class="bt-modal-mask" @click.self="deployModal.busy ? null : closeModal()">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true"
+        :aria-label="deployModal.editId ? '调整托管隧道' : '部署穿透客户端'">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">{{ deployModal.editId ? '调整托管隧道' : '部署穿透客户端' }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-grid">
+            <label class="bt-field">
+              <span class="bt-field__label">平台 <span class="bt-text-danger">*</span></span>
+              <select v-model="deployModal.platformId" class="bt-select"
+                :disabled="deployModal.busy || deployModal.editId" @change="onDeployPlatformChange">
+                <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+            </label>
+            <label class="bt-field">
+              <span class="bt-field__label">节点（跑 frpc 的服务器）<span class="bt-text-danger">*</span></span>
+              <select v-model="deployModal.serverId" class="bt-select"
+                :disabled="deployModal.busy || deployModal.editId" @change="deployModal.docker = null">
+                <option value="">请选择节点</option>
+                <option v-for="s in deployServers" :key="s.id" :value="String(s.id)"
+                  :disabled="!deploySshReady(s) || deployTakenIds.includes(s.id)">
+                  {{ s.name }}{{ deploySshReady(s) ? ` · ${s.ssh?.username}@${s.ssh?.host}` : '（未录 SSH，先到节点管理补凭据）' }}{{ deployTakenIds.includes(s.id) ? '（该平台已托管）' : '' }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <div class="frp-deploy-docker">
+            <span class="bt-field__label">节点 Docker</span>
+            <button class="bt-btn bt-btn--default bt-btn--sm" type="button"
+              :disabled="deployModal.probing || deployModal.busy || !deployModal.serverId" @click="probeDocker">
+              {{ deployModal.probing ? '检测中…' : '检测' }}
+            </button>
+            <span v-if="deployModal.docker" class="frp-deploy-docker__state">
+              <span v-if="deployModal.docker.present" class="bt-tag bt-tag--success">
+                已安装 {{ deployModal.docker.version }}
+              </span>
+              <span v-else class="bt-tag bt-tag--warning">未安装</span>
+              <span v-if="deployModal.docker.daemon_ok === false" class="bt-text-danger">守护进程未运行，可能需要先启动 Docker</span>
+              <span v-else-if="deployModal.docker.err" class="bt-text-muted">{{ deployModal.docker.err }}</span>
+            </span>
+            <span v-else class="bt-text-muted">部署前先检测：面板会 SSH 到节点确认 docker 可用</span>
+          </div>
+          <label v-if="deployModal.editId || !deployModal.docker || !deployModal.docker.present" class="frp-deploy-check">
+            <input v-model="deployModal.installDocker" type="checkbox" :disabled="deployModal.busy">
+            <span>节点未安装 Docker 时自动安装（按系统选 apt/dnf/apk/pacman，可能耗时数分钟）</span>
+          </label>
+
+          <div class="bt-field">
+            <span class="bt-field__label">承载隧道 <span class="bt-text-danger">*</span>（勾选的隧道都由这台客户端跑）</span>
+            <p v-if="!deployTunnelPool(deployModal.platformId).length" class="bt-hint frp-modal-hint">
+              该平台下暂无隧道：先关掉本弹窗，在隧道表里「新建隧道」后再回来托管。
+            </p>
+            <div v-else class="frp-deploy-pool">
+              <label v-for="t in deployTunnelPool(deployModal.platformId)" :key="t.id" class="frp-deploy-pool__item">
+                <input v-model="deployModal.tunnelIds" type="checkbox" :value="t.id" :disabled="deployModal.busy">
+                <span class="bt-tag bt-tag--outline">{{ protoLabel[t.proto] || t.proto }}</span>
+                <b>{{ t.name }}</b>
+                <span class="bt-text-muted mono">{{ t.local_ip }}:{{ t.local_port }} → {{ t.remote || '未分配' }}</span>
+              </label>
+            </div>
+          </div>
+
+          <p class="bt-hint frp-modal-hint">
+            说明：同一节点同一平台只能托管一份客户端（一份配置可跑多条隧道）；
+            隧道增删改后到列表点「同步配置」即可下发，无需登录节点。
+            {{ deployModal.editId ? '当前为调整已有托管：平台与节点不可改，换机器请先「移除」。' : '' }}
+          </p>
+          <p v-if="deployModal.busy" class="bt-hint frp-modal-hint frp-deploy-progress">
+            正在节点上执行（拉镜像/写配置/起容器）… 已等待 {{ deployModal.elapsed }} 秒，首次拉镜像视网络而定
+          </p>
+          <div v-if="deployModal.error" class="bt-alert bt-alert--error" role="alert">{{ deployModal.error }}</div>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="deployModal.busy" @click="closeModal">取消</button>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="deployModal.busy" @click="submitDeploy">
+            {{ deployModal.busy ? '部署中…' : (deployModal.editId ? '保存并同步' : '部署') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：托管客户端日志 ===== -->
+    <div v-if="deployLogs" class="bt-modal-mask" @click.self="closeModal()">
+      <div class="bt-modal bt-modal--lg" role="dialog" aria-modal="true" aria-label="客户端日志">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">客户端日志 · {{ deployLogs.title }}</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <StateSkeleton v-if="deployLogs.loading" :rows="4" />
+          <div v-else-if="deployLogs.error" class="bt-alert bt-alert--error" role="alert">{{ deployLogs.error }}</div>
+          <pre v-else class="frp-logs">{{ deployLogs.text || '（暂无输出）' }}</pre>
+          <p class="bt-hint frp-modal-hint">
+            最近 200 行 stdout/stderr；frpc 连上后通常会打印 start proxy success。
+            配置里含平台 token，粘贴分享前请先脱敏。
+          </p>
+        </div>
+        <div class="bt-modal__foot">
+          <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="closeModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== 危险操作确认 ===== -->
     <ConfirmDialog v-if="confirmState" :title="confirmState.title" :message="confirmState.message"
       :confirm-text="confirmState.confirmText" :danger="confirmState.danger" :busy="confirmState.busy"
@@ -1625,6 +2039,102 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+/* ================= 客户端托管 ================= */
+
+.frp-deploy-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.frp-deploy-tunnels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 240px;
+}
+
+.frp-deploy-tunnels .bt-tag.is-missing {
+  color: var(--bt-danger-600);
+  text-decoration: line-through;
+}
+
+.frp-deploy-docker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 2px;
+}
+
+.frp-deploy-docker__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--bt-font-xs);
+}
+
+.frp-deploy-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: var(--bt-font-sm);
+  color: var(--bt-text-2);
+  cursor: pointer;
+}
+
+.frp-deploy-pool {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 10px;
+  border: var(--bt-hairline);
+  border-radius: var(--bt-radius-md);
+  background: var(--bt-bg-subtle);
+}
+
+.frp-deploy-pool__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: var(--bt-font-sm);
+  cursor: pointer;
+  border-bottom: var(--bt-hairline);
+}
+
+.frp-deploy-pool__item:last-child {
+  border-bottom: 0;
+}
+
+.frp-deploy-pool__item .mono {
+  font-size: var(--bt-font-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frp-deploy-progress {
+  color: var(--bt-info-600);
+}
+
+.frp-logs {
+  margin: 0;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 10px 12px;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: var(--bt-radius-xs);
+  font-family: var(--bt-font-mono);
+  font-size: var(--bt-font-sm);
+  line-height: var(--bt-line-md);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .frp-cap {
