@@ -116,10 +116,10 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bo
 			out = append(out, Issue{Warn, "wireguard-tools 未安装：将自动安装"})
 		}
 	}
-	if !p.HasFirewall {
-		// 实测：ubuntu:24.04 极简镜像/容器里只有 wireguard-tools 没有 iptables，
-		// wg-quick up 会在建规则时 exit 127（iptables: command not found），接口起不来。
-		out = append(out, Issue{Warn, "缺少 iptables/nft：wg-quick 建路由规则会失败，将尝试自动安装"})
+	if !p.HasFirewall && (role == RoleHub || role == RoleStandby) {
+		// hub/standby 的 conf 带 PostUp（iptables 放行 FORWARD），节点没有 iptables/nft 时
+		// wg-quick up 会在 PostUp 阶段 exit 127（实测容器/极简镜像）。spoke 不写 PostUp，不受影响。
+		out = append(out, Issue{Warn, "缺少 iptables/nft：中心节点 conf 的 PostUp 需要它，将尝试自动安装"})
 	}
 	return out
 }

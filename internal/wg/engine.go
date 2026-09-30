@@ -154,12 +154,17 @@ yum install -y wireguard-tools`
 	}
 }
 
-// firewallInstallScript 补装 iptables（wg-quick 建路由/规则要用，极简系统常缺）。
-// 尽力而为：失败不阻断（宿主机本身极可能已装，容器/LXC 里装不上也有 nft 兜底）。
+// firewallInstallScript 补装 iptables（hub/standby 的 conf PostUp 要用，极简系统常缺）。
+// 尽力而为：失败不阻断（宿主机本身极可能已装；容器/LXC 里装不上时 PostUp 会失败，
+// 但那是该环境不允许 iptables 的硬限制，给用户留出「手动装/换节点」的空间）。
+// apt 分支必须先 update：极简镜像常删掉 /var/lib/apt/lists（面板用的 ubuntu 基础镜像即如此），
+// 没有索引时 apt-get install 会直接失败——实测踩过，补装静默不生效。
 func firewallInstallScript(pkg string) string {
 	switch pkg {
 	case "apt":
-		return `apt-get install -y -qq iptables >/dev/null 2>&1 || apt-get install -y iptables >/dev/null 2>&1 || true`
+		return `export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y -qq iptables >/dev/null 2>&1 || apt-get install -y iptables >/dev/null 2>&1 || true`
 	case "dnf":
 		return `dnf install -y iptables >/dev/null 2>&1 || true`
 	case "yum":
@@ -174,32 +179,31 @@ func firewallInstallScript(pkg string) string {
 }
 
 // InstallWireGuard 安装 wireguard-tools（依据预检的包管理器），安装后复核 wg 可用。
-// 返回是否实际执行了安装。wg 已在但缺少 iptables/nft 时也会补装（否则 wg-quick up 必失败）。
-func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe) (bool, error) {
-	if p.HasWg && p.HasWgQuick {
-		if p.HasFirewall || p.PkgManager == "" {
-			return false, nil
+// 返回是否实际执行了安装。needFirewall=true 且节点缺 iptables/nft 时补装
+// （只有 hub/standby 的 conf 带 iptables PostUp；spoke 不需要，避免无谓装包）。
+func InstallWireGuard(ctx context.Context, conn *sshx.Conn, p *Probe, needFirewall bool) (bool, error) {
+	installed := false
+	if !(p.HasWg && p.HasWgQuick) {
+		if p.PkgManager == "" {
+			return false, fmt.Errorf("无法识别包管理器，请手动安装 wireguard-tools")
 		}
+		if _, err := conn.Run(ctx, installScript(p.PkgManager)); err != nil {
+			return false, fmt.Errorf("安装 wireguard-tools 失败: %w", err)
+		}
+		out, err := conn.Run(ctx, `command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && echo ok || echo missing`)
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(out) != "ok" {
+			return true, fmt.Errorf("安装后 wg 仍不可用（内核过旧或源缺失）")
+		}
+		installed = true
+	}
+	if needFirewall && !p.HasFirewall && p.PkgManager != "" {
 		_, _ = conn.Run(ctx, firewallInstallScript(p.PkgManager))
-		return true, nil
+		installed = true
 	}
-	if p.PkgManager == "" {
-		return false, fmt.Errorf("无法识别包管理器，请手动安装 wireguard-tools")
-	}
-	if _, err := conn.Run(ctx, installScript(p.PkgManager)); err != nil {
-		return false, fmt.Errorf("安装 wireguard-tools 失败: %w", err)
-	}
-	out, err := conn.Run(ctx, `command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && echo ok || echo missing`)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(out) != "ok" {
-		return true, fmt.Errorf("安装后 wg 仍不可用（内核过旧或源缺失）")
-	}
-	if !p.HasFirewall {
-		_, _ = conn.Run(ctx, firewallInstallScript(p.PkgManager))
-	}
-	return true, nil
+	return installed, nil
 }
 
 // EnsureForward 开启并持久化 IPv4 转发（hub/standby 需要）。

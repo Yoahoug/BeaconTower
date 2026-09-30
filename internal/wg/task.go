@@ -327,7 +327,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if issues := Judge(probe, wgRole, network.Iface, hub.ListenPort, reprovision); HasErr(issues) {
 		return fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
-	if _, err := InstallWireGuard(dctx, conn, probe); err != nil {
+	if _, err := InstallWireGuard(dctx, conn, probe, true); err != nil {
 		return err
 	}
 	if err := EnsureForward(dctx, conn); err != nil {
@@ -435,7 +435,7 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if issues := Judge(probe, RoleSpoke, network.Iface, 0, reprovision); HasErr(issues) {
 		return false, fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
-	if _, err := InstallWireGuard(dctx, conn, probe); err != nil {
+	if _, err := InstallWireGuard(dctx, conn, probe, false); err != nil {
 		return false, err
 	}
 	if err := BackupConf(dctx, conn, network.Iface); err != nil {
