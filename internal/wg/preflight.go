@@ -2,6 +2,7 @@ package wg
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -28,6 +29,8 @@ type Probe struct {
 	HasWgQuick     bool     // wg-quick 命令存在
 	KernelModule   bool     // modinfo wireguard 成功（内核态可用）
 	WgIfaces       []string // 现存 wg 接口名（wg show all interfaces）
+	WgCIDRs        []string // 现存 wg 接口的 IPv4 地址（"iface:cidr"，用于检测网段重叠）
+	TargetSubnet   string   // 调用方注入：本次计划使用的网段（空=跳过重叠检测）
 	UfwActive      bool     // ufw 是否启用
 	ListenPortBusy bool     // 目标 UDP 端口是否已被占用（hub/standby 才探测）
 	Systemd        bool     // systemctl 可用
@@ -94,6 +97,19 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bo
 			out = append(out, Issue{Warn, "存在其他 WG 接口 " + name + "（不受影响，仅提示）"})
 		}
 	}
+	// 网段重叠（真机实测：同一主机上一张既有 WG 网与本次计划网段相同，内核把网段路由
+	// 留给既有接口，新隧道能握手但主机流量全走旧网——表现为「通了但访问的是别的机器」）
+	for _, entry := range p.WgCIDRs {
+		name, cidr, ok := strings.Cut(entry, ":")
+		if !ok || name == ifaceName {
+			continue // 自身接口（重配场景）不参与判定
+		}
+		if cidrOverlap(cidr, p.TargetSubnet) {
+			out = append(out, Issue{Err, fmt.Sprintf(
+				"接口 %s 已有地址 %s，与本次网段 %s 重叠：同一主机不能同时接入两张同网段的 WG 网络（路由会被既有接口抢占），请改用不冲突的网段",
+				name, cidr, p.TargetSubnet)})
+		}
+	}
 	// hub/standby 特有
 	if role == RoleHub || role == RoleStandby {
 		if p.ListenPortBusy {
@@ -122,6 +138,19 @@ func Judge(p *Probe, role Role, ifaceName string, listenPort int, reprovision bo
 		out = append(out, Issue{Warn, "缺少 iptables/nft：中心节点 conf 的 PostUp 需要它，将尝试自动安装"})
 	}
 	return out
+}
+
+// cidrOverlap 判断两个 CIDR 是否重叠（含 /32 与网段互含的情形；任一无法解析视作不冲突）。
+func cidrOverlap(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	_, na, err1 := net.ParseCIDR(a)
+	_, nb, err2 := net.ParseCIDR(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return na.Contains(nb.IP) || nb.Contains(na.IP)
 }
 
 // HasErr 是否存在阻断级问题。

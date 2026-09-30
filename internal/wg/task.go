@@ -328,6 +328,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if role == string(RoleHub) {
 		wgRole = RoleHub
 	}
+	probe.TargetSubnet = network.Subnet
 	if issues := Judge(probe, wgRole, network.Iface, hub.ListenPort, reprovision); HasErr(issues) {
 		return fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
@@ -436,6 +437,7 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if err != nil {
 		return false, fmt.Errorf("预检失败: %w", err)
 	}
+	probe.TargetSubnet = network.Subnet
 	if issues := Judge(probe, RoleSpoke, network.Iface, 0, reprovision); HasErr(issues) {
 		return false, fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
@@ -512,7 +514,7 @@ func (r *Runner) resolveEndpoint(serverID int64, port int) string {
 }
 
 // ProbeServer 对节点执行 WG 预检探测并给出判定（plan 接口 dry-run 用）。
-func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role, reprovision bool, iface string) (*Probe, []Issue, error) {
+func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int, role Role, reprovision bool, iface, subnet string) (*Probe, []Issue, error) {
 	if strings.TrimSpace(iface) == "" {
 		iface = "wg0"
 	}
@@ -526,6 +528,7 @@ func (r *Runner) ProbeServer(ctx context.Context, serverID int64, listenPort int
 	if err != nil {
 		return nil, nil, err
 	}
+	probe.TargetSubnet = subnet
 	issues := Judge(probe, role, iface, listenPort, reprovision)
 	return probe, issues, nil
 }

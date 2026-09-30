@@ -332,7 +332,7 @@ func (a *App) WGPlan(c *gin.Context) {
 			if id == hubID {
 				port = hubPort
 			}
-			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id], reprovision[id], netRow.Iface)
+			_, issues, err := a.WG.ProbeServer(ctx, id, port, roles[id], reprovision[id], netRow.Iface, netRow.Subnet)
 			if err != nil {
 				issues = []wg.Issue{{Level: wg.Err, Msg: err.Error()}}
 			}

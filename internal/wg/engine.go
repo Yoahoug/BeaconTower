@@ -58,6 +58,13 @@ echo pf_wgq=$pf_wgq
 if modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then pf_mod=1; else pf_mod=0; fi
 echo pf_mod=$pf_mod
 echo pf_ifaces=$(wg show interfaces 2>/dev/null | tr '\n' ' ')
+wgcidr=""
+for _i in $(wg show interfaces 2>/dev/null); do
+  for _a in $(ip -4 -o addr show dev "$_i" 2>/dev/null | awk '{print $4}'); do
+    wgcidr="$wgcidr$_i:$_a,"
+  done
+done
+echo pf_wg_cidrs=$wgcidr
 ufw status 2>/dev/null | head -n1 | grep -qi active && pf_ufw=1 || pf_ufw=0
 echo pf_ufw=$pf_ufw
 command -v systemctl >/dev/null 2>&1 && pf_sd=1 || pf_sd=0
@@ -109,6 +116,12 @@ func parseProbe(out string) *Probe {
 			p.KernelModule = v == "1"
 		case "pf_ifaces":
 			p.WgIfaces = strings.Fields(v)
+		case "pf_wg_cidrs":
+			for _, it := range strings.Split(v, ",") {
+				if it = strings.TrimSpace(it); it != "" {
+					p.WgCIDRs = append(p.WgCIDRs, it)
+				}
+			}
 		case "pf_ufw":
 			p.UfwActive = v == "1"
 		case "pf_systemd":

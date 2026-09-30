@@ -94,3 +94,76 @@ func TestHubConfPostUpTolerant(t *testing.T) {
 		}
 	}
 }
+
+func TestParseProbeWgCIDRs(t *testing.T) {
+	p := parseProbe("pf_wg_cidrs=wg1:10.66.66.11/24,wg2:10.9.9.1/24,wg1:fd00::1/64,\n")
+	if len(p.WgCIDRs) != 3 {
+		t.Fatalf("应解析 3 条地址记录: %+v", p.WgCIDRs)
+	}
+	if p.WgCIDRs[0] != "wg1:10.66.66.11/24" {
+		t.Fatalf("条目格式应为 iface:cidr: %q", p.WgCIDRs[0])
+	}
+	if q := parseProbe("pf_ifaces=wg0 \n"); len(q.WgCIDRs) != 0 {
+		t.Fatalf("无 pf_wg_cidrs 时应为空: %+v", q.WgCIDRs)
+	}
+}
+
+func TestCidrOverlap(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"10.66.66.11/24", "10.66.66.0/24", true},
+		{"10.66.66.11/32", "10.66.66.0/24", true},
+		{"10.66.67.0/24", "10.66.66.0/24", false},
+		{"10.66.66.0/23", "10.66.66.0/24", true},
+		{"", "10.66.66.0/24", false},
+		{"bad", "10.66.66.0/24", false},
+		{"10.66.66.1/24", "", false},
+	}
+	for _, c := range cases {
+		if got := cidrOverlap(c.a, c.b); got != c.want {
+			t.Fatalf("cidrOverlap(%q,%q)=%v 期望 %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestJudgeSubnetOverlap 回归（真机实测）：Mac 上已有 10.66.66.0/24 的既有 WG 网，
+// 新建同网段测试网后内核把网段路由留给旧接口——新隧道能握手，但主机访问 10.66.66.x
+// 全走旧网（"通了但访问的是别的机器"）。预检必须阻断这种网段重叠。
+func TestJudgeSubnetOverlap(t *testing.T) {
+	p := &Probe{UID0: true, PkgManager: "apt", HasWg: true, HasWgQuick: true, HasFirewall: true,
+		WgIfaces: []string{"wg1"}, WgCIDRs: []string{"wg1:10.66.66.11/24"}}
+
+	p.TargetSubnet = "10.66.66.0/24"
+	issues := Judge(p, RoleSpoke, "wg0", 0, false)
+	found := false
+	for _, i := range issues {
+		if strings.Contains(i.Msg, "重叠") {
+			found = true
+			if i.Level != Err {
+				t.Fatalf("网段重叠应阻断（否则用户拿到的是「通了但连错机器」）: %+v", i)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("同网段的既有接口应触发重叠阻断: %+v", issues)
+	}
+
+	// 换不冲突的网段：只保留「存在其他 WG 接口」的提示，不阻断
+	p.TargetSubnet = "10.77.77.0/24"
+	for _, i := range Judge(p, RoleSpoke, "wg0", 0, false) {
+		if i.Level == Err {
+			t.Fatalf("不重叠的既有接口不应阻断: %+v", i)
+		}
+	}
+
+	// 自身接口（重配场景）参与重叠检测时跳过
+	p2 := &Probe{UID0: true, PkgManager: "apt", HasWg: true, HasWgQuick: true, HasFirewall: true,
+		WgIfaces: []string{"wg0"}, WgCIDRs: []string{"wg0:10.66.66.2/24"}, TargetSubnet: "10.66.66.0/24"}
+	for _, i := range Judge(p2, RoleHub, "wg0", 51820, true) {
+		if i.Level == Err && strings.Contains(i.Msg, "重叠") {
+			t.Fatalf("自身接口的重叠属重配，不该阻断: %+v", i)
+		}
+	}
+}
