@@ -26,7 +26,7 @@ const DEVICE_POLL_MS = 3000
 
 // 节点折叠区默认收起；展开状态按平台 id 记忆（解绑后重置无害）
 
-const kindLabel = { natfrp: 'NATFRP', chmlfrp: 'ChmlFrp' }
+const kindLabel = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp' }
 const protoLabel = { tcp: 'TCP', udp: 'UDP', http: 'HTTP', https: 'HTTPS' }
 
 const platforms = computed(() => admin.frpOverview?.platforms || [])
@@ -131,7 +131,7 @@ function closeModal() {
 
 // ---------- 绑定 NATFRP ----------
 function openBind() {
-  bindModal.value = { name: 'NATFRP', token: '', busy: false, error: '' }
+  bindModal.value = { name: 'Sakura', token: '', busy: false, error: '' }
 }
 async function submitBind() {
   const m = bindModal.value
@@ -142,10 +142,10 @@ async function submitBind() {
   m.busy = true
   m.error = ''
   try {
-    await admin.frpBindNatfrp({ name: m.name.trim() || 'NATFRP', token: m.token.trim() })
+    await admin.frpBindNatfrp({ name: m.name.trim() || 'Sakura', token: m.token.trim() })
     closeModal()
     await refresh()
-    toast('NATFRP 绑定成功')
+    toast('Sakura 绑定成功')
   } catch (e) {
     m.error = e?.message || '绑定失败'
   } finally {
@@ -881,7 +881,7 @@ onBeforeUnmount(() => {
       <div>
         <h1>内网穿透</h1>
         <p class="page-head__desc">
-          NATFRP / ChmlFrp 隧道统一管理 · 账号用量 · 节点负载 · 后台每 3 分钟同步（「刷新」= 立即向平台拉取）
+          Sakura / ChmlFrp 隧道统一管理 · 账号用量 · 节点负载 · 后台每 3 分钟同步（「刷新」= 立即向平台拉取）
         </p>
       </div>
       <div class="page-head__actions">
@@ -893,7 +893,7 @@ onBeforeUnmount(() => {
           <AppIcon name="plus" aria-hidden="true" />授权 ChmlFrp
         </button>
         <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">
-          <AppIcon name="plus" aria-hidden="true" />绑定 NATFRP
+          <AppIcon name="plus" aria-hidden="true" />绑定 Sakura
         </button>
       </div>
     </div>
@@ -908,9 +908,9 @@ onBeforeUnmount(() => {
 
     <StateEmpty v-if="!admin.frpLoading && !platforms.length && !admin.frpError"
       title="尚未接入穿透平台"
-      desc="绑定 NATFRP 访问密钥，或通过 OAuth 设备码授权 ChmlFrp 账号后即可在此管理隧道">
+      desc="绑定 Sakura 访问密钥，或通过 OAuth 设备码授权 ChmlFrp 账号后即可在此管理隧道">
       <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px">
-        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">绑定 NATFRP</button>
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">绑定 Sakura</button>
         <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">授权 ChmlFrp</button>
       </div>
     </StateEmpty>
@@ -1395,20 +1395,20 @@ onBeforeUnmount(() => {
 
     <!-- ===== 弹窗：绑定 NATFRP ===== -->
     <div v-if="bindModal" class="bt-modal-mask" @click.self="bindModal.busy ? null : closeModal()">
-      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="绑定 NATFRP 账号">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="绑定 Sakura 账号">
         <div class="bt-modal__head">
-          <div class="bt-modal__title">绑定 NATFRP 账号</div>
+          <div class="bt-modal__title">绑定 Sakura 账号</div>
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
         </div>
         <div class="bt-modal__body">
           <div class="bt-form-stack">
             <p class="bt-modal__desc">
-              访问密钥在 <b>NATFRP 面板 → 用户信息</b> 页查看（它不是登录密码）。密钥将加密存储，
+              访问密钥在 <b>Sakura 面板 → 用户信息</b> 页查看（它不是登录密码）。密钥将加密存储，
               面板只用于读取隧道与节点、并代为调用管理接口。
             </p>
             <label class="bt-field">
               <span class="bt-field__label">备注名称</span>
-              <input v-model="bindModal.name" class="bt-input" type="text" placeholder="NATFRP" autocomplete="off">
+              <input v-model="bindModal.name" class="bt-input" type="text" placeholder="Sakura" autocomplete="off">
             </label>
             <label class="bt-field">
               <span class="bt-field__label">访问密钥 <span class="bt-text-danger">*</span></span>
@@ -1534,7 +1534,7 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p class="bt-hint frp-modal-hint">
-            说明：NATFRP 的编辑只支持本地地址/端口与备注，改类型或节点需删除重建或使用「迁移」；
+            说明：Sakura 的编辑只支持本地地址/端口与备注，改类型或节点需删除重建或使用「迁移」；
             ChmlFrp 官方标注 HTTP(S) 隧道暂不支持修改。
           </p>
           <p v-if="tunnelModalIsChml" class="bt-hint frp-modal-hint">

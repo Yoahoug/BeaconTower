@@ -24,7 +24,7 @@ const hasPlatform = computed(() => platforms.value.length > 0)
 const LOAD_WARN = 60
 const LOAD_DANGER = 85
 
-const KIND_LABEL = { natfrp: 'NATFRP', chmlfrp: 'ChmlFrp' }
+const KIND_LABEL = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp' }
 
 function kindLabel(kind) {
   return KIND_LABEL[kind] || '穿透平台'
@@ -68,7 +68,7 @@ onUnmounted(() => monitor.stopFrp())
       <div>
         <h1>内网穿透状态</h1>
         <p class="page-head__desc">
-          NATFRP / ChmlFrp 隧道运行与在用节点健康度 · 每 60 秒刷新 ·
+          Sakura / ChmlFrp 隧道运行与在用节点健康度 · 每 60 秒刷新 ·
           更新于 {{ agoText(monitor.secondsSinceUpdate) }}
         </p>
       </div>
@@ -84,7 +84,7 @@ onUnmounted(() => monitor.stopFrp())
     <div v-else-if="!hasPlatform" class="bt-card">
       <StateEmpty
         title="尚未接入穿透平台"
-        desc="管理员在「管理面板 → 内网穿透」绑定 NATFRP 或 ChmlFrp 账号后，这里会显示隧道与节点状态。"
+        desc="管理员在「管理面板 → 内网穿透」绑定 Sakura 或 ChmlFrp 账号后，这里会显示隧道与节点状态。"
         icon="tunnel"
       />
     </div>

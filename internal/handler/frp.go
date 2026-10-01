@@ -469,11 +469,11 @@ func (a *App) FRPBindNatfrp(c *gin.Context) {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Token = strings.TrimSpace(in.Token)
 	if in.Token == "" {
-		middleware.Fail(c, 1001, "请填写 NATFRP 访问密钥（面板「用户信息」页可查看）")
+		middleware.Fail(c, 1001, "请填写 Sakura 访问密钥（面板「用户信息」页可查看）")
 		return
 	}
 	if in.Name == "" {
-		in.Name = "NATFRP"
+		in.Name = "Sakura"
 	}
 	ctx, cancel := frpCtx(c, frpTimeout)
 	defer cancel()
