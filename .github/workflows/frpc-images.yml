@@ -1,4 +1,4 @@
-# 手动构建两个 frpc 客户端镜像（NATFRP / ChmlFrp），推到 GHCR。
+# 手动构建两个 frpc 客户端镜像（Sakura / ChmlFrp），推到 GHCR。
 #
 # 刻意不挂 push 触发：这俩是第三方客户端的封装，版本由上游决定，不该跟着
 # main 的每次提交重建。要升级就在 Actions 页 Run workflow，传新版本号。
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       natfrp_version:
-        description: 'NATFRP 客户端版本（natfrp/frpc 镜像标签）'
+        description: 'Sakura 客户端版本（natfrp/frpc 镜像标签）'
         required: true
         default: '0.51.0-sakura-14'
       chmlfrp_frpc_version:

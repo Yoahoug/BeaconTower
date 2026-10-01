@@ -254,7 +254,7 @@ func (c *ChmlfrpClient) Tunnels(ctx context.Context) ([]*Tunnel, error) {
 			Status:    "normal",
 			Online:    yes(t.State),
 		}
-		// NATFRP 的 uptime 是「已运行秒数」，ChmlFrp 给的是「上次启动时刻」，
+		// Sakura 的 uptime 是「已运行秒数」，ChmlFrp 给的是「上次启动时刻」，
 		// 统一换算成时长才好在前端同列展示；离线时该值无意义，留 0
 		if item.Online {
 			if started, err := time.Parse(time.RFC3339, strings.TrimSpace(t.Uptime)); err == nil {

@@ -8,7 +8,7 @@ import (
 // ---------- 内网穿透平台领域模型（doc/13 §4） ----------
 
 // FRPPlatform 一个已接入的穿透平台账号。两个平台的凭据模型不同：
-// NATFRP 只有长期有效的访问密钥（TokenEnc）；ChmlFrp 走 OAuth2，
+// Sakura 只有长期有效的访问密钥（TokenEnc）；ChmlFrp 走 OAuth2，
 // 需要短期 access_token + refresh_token 两个字段，且过期时间必须落库，
 // 否则重启后无法判断是否需要先刷新。
 type FRPPlatform struct {
@@ -47,7 +47,7 @@ type FRPPlatform struct {
 // HasToken 前端只说"有没有凭据"，绝不下发凭据本身。
 func (p *FRPPlatform) HasToken() bool { return len(p.TokenEnc) > 0 }
 
-// FRPTunnel 平台侧隧道的本地镜像。remote_id 是平台侧主键（NATFRP 为数字 ID，
+// FRPTunnel 平台侧隧道的本地镜像。remote_id 是平台侧主键（Sakura 为数字 ID，
 // ChmlFrp 同为数字 ID 但以字符串存，避免两平台类型分叉）。
 type FRPTunnel struct {
 	ID         int64  `json:"id"`
@@ -415,7 +415,7 @@ func (db *DB) ListFRPNodes() ([]*FRPNode, error) {
 }
 
 // ListFRPNodesInUse 只返回「本账号真正在用」的节点：被任一隧道挂载的那些。
-// 平台节点表是全网节点（NATFRP 实测 71 条），全量下发对使用者毫无信息量，
+// 平台节点表是全网节点（Sakura 实测 71 条），全量下发对使用者毫无信息量，
 // 对访客还等于公开未使用的拓扑。隧道记录里的 node_id 存的就是节点 remote_id
 // （见 fillNodeNames），所以直接按 remote_id 关联即可。
 func (db *DB) ListFRPNodesInUse(platformID int64) ([]*FRPNode, error) {

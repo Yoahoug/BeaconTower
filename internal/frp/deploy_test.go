@@ -85,7 +85,7 @@ func TestContainerNameAndPath(t *testing.T) {
 
 func TestDefaultImage(t *testing.T) {
 	if DefaultImage("natfrp") != "ghcr.io/yoahoug/beacontower-frpc-natfrp:latest" {
-		t.Fatal("NATFRP 默认镜像不对")
+		t.Fatal("Sakura 默认镜像不对")
 	}
 	if DefaultImage("chmlfrp") != "ghcr.io/yoahoug/beacontower-frpc-chmlfrp:latest" {
 		t.Fatal("ChmlFrp 默认镜像不对")

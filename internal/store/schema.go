@@ -394,7 +394,7 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 			)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_deploy_pair ON frp_deploy(platform_id, server_id)`,
 		)
-	case 10: // 内网穿透平台管理（doc/13）：NATFRP / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
+	case 10: // 内网穿透平台管理（doc/13）：Sakura / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
 		return exec(
 			`CREATE TABLE IF NOT EXISTS frp_platform (
 				id INTEGER PRIMARY KEY,

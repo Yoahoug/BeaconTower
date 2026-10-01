@@ -15,6 +15,6 @@ COPY --from=upstream /frpc /usr/local/bin/frpc
 COPY entrypoint.sh /usr/local/bin/entrypoint-frpc.sh
 RUN chmod 0755 /usr/local/bin/frpc /usr/local/bin/entrypoint-frpc.sh
 LABEL org.opencontainers.image.title="beacontower-frpc-natfrp" \
-      org.opencontainers.image.description="NATFRP (SakuraFrp) frpc ${NATFRP_VERSION} client for BeaconTower" \
+      org.opencontainers.image.description="SakuraFrp frpc ${NATFRP_VERSION} client for BeaconTower" \
       org.opencontainers.image.source="https://github.com/Yoahoug/BeaconTower"
 ENTRYPOINT ["/usr/local/bin/entrypoint-frpc.sh"]

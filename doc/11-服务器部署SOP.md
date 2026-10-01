@@ -44,7 +44,7 @@ push 之前，确认对外展示面与新版本一致——这是**每次发布�
    是否已互链；
 5. **客户端镜像**（涉及内网穿透时）：`deploy/frpc-*` 两个客户端镜像**不跟推送构建**，
    第三方客户端升级时才手动触发 `gh workflow run "FRP client images (manual)"`。
-   注意版本耦合：NATFRP 的配置格式跟着面板里的 `NatfrpFrpcVersion`（`internal/frp/natfrp.go`）
+   注意版本耦合：Sakura 的配置格式跟着面板里的 `NatfrpFrpcVersion`（`internal/frp/natfrp.go`）
    走——升级 `beacontower-frpc-natfrp` 镜像版本必须同步改这个常量并重建面板，
    否则下载的配置格式与新镜像对不上。
 

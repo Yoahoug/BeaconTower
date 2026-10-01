@@ -75,7 +75,7 @@
 > 只回答访客关心的三件事——接了哪几个平台、隧道通不通、今天走了多少流量、在用的节点健不健康。
 > **不下发**：账号画像（`username`/`uid`/`realname`/账号分组）、套餐信息（剩余流量、限速）、
 > 内网拓扑（节点域名 `host`、隧道名与本地/公网端点、节点 `remote_id`）。
-> 节点只回「被隧道挂载的那些」，平台全网节点表（NATFRP 实测 71 条）不会出现在这里。
+> 节点只回「被隧道挂载的那些」，平台全网节点表（Sakura 实测 71 条）不会出现在这里。
 > 回归测试：`internal/handler/frp_public_test.go` 对响应体做禁止串扫描，漏字段即 CI 失败。
 
 ```json
@@ -83,7 +83,7 @@
   "code": 0,
   "data": {
     "platforms": [{
-      "name": "NATFRP（樱花）", "kind": "natfrp", "online": true,
+      "name": "Sakura", "kind": "natfrp", "online": true,
       "tunnel_total": 2, "tunnel_online": 2, "conns": 0,
       "traffic_today": 2294754205,
       "nodes": [{ "name": "长沙电信PLUS2", "group": "普通节点", "online": true, "load": 34.3, "uptime": 306200 }],
@@ -95,7 +95,7 @@
 }
 ```
 
-- `traffic_today`：NATFRP 取账号级当日消耗；ChmlFrp 账号级无当日值，用其名下隧道当日进出之和兜底；
+- `traffic_today`：Sakura 取账号级当日消耗；ChmlFrp 账号级无当日值，用其名下隧道当日进出之和兜底；
 - `online`：平台最近一次同步是否成功（同步失败的平台为 `false`，不下发上游错误原文）；
 - `uptime`：ChmlFrp 节点接口不报在线时长（恒 0），前端为 0 时不显示；
 - `private_mode=true` 且未登录时返回 `401 {code:1002}`（与其余公开接口一致）；
@@ -207,7 +207,7 @@ POST /api/v1/admin/logout   → 清除会话
 ```
 GET     /frp/overview                          平台卡片 + 跨平台隧道 + 汇总
 GET     /frp/nodes                             跨平台节点列表
-POST    /frp/platforms                         绑定 NATFRP（访问密钥）
+POST    /frp/platforms                         绑定 Sakura（访问密钥）
 PUT     /frp/platforms/:id                     改名
 DELETE  /frp/platforms/:id                     解绑
 GET     /frp/platforms/:id                     详情（账号 + 隧道 + 节点 + 用量快照）
@@ -221,10 +221,10 @@ PUT     /frp/platforms/:id/subdomains          修改解析
 DELETE  /frp/platforms/:id/subdomains          删除解析（domain/record 走查询参数）
 PUT     /frp/tunnels/:id                       修改隧道
 DELETE  /frp/tunnels/:id                       删除隧道
-POST    /frp/tunnels/:id/lock                  锁定编辑/删除/迁移（仅 NATFRP）
-POST    /frp/tunnels/:id/migrate               迁移节点（仅 NATFRP）
+POST    /frp/tunnels/:id/lock                  锁定编辑/删除/迁移（仅 Sakura）
+POST    /frp/tunnels/:id/migrate               迁移节点（仅 Sakura）
 POST    /frp/tunnels/:id/offline               强制下线（仅 ChmlFrp）
-POST    /frp/tunnels/:id/auth                  通过访问认证（仅 NATFRP）
+POST    /frp/tunnels/:id/auth                  通过访问认证（仅 Sakura）
 GET     /frp/tunnels/:id/config                下载 frpc 配置（裸文本附件）
 GET     /frp/tunnels/:id/traffic               单隧道流量曲线
 POST    /frp/chmlfrp/device                    发起 ChmlFrp 设备码授权
@@ -237,5 +237,5 @@ DELETE  /frp/chmlfrp/device/:sid               取消授权会话
 > （与 WG 凭证 zip 同一处理方式）。
 >
 > `GET /frp/nodes` 与 `GET /frp/platforms/:id` 的节点项都带 **`in_use`**：
-> 平台节点表是全网节点（NATFRP 实测 71 条），面板默认只展示被本账号隧道挂载的那些，
+> 平台节点表是全网节点（Sakura 实测 71 条），面板默认只展示被本账号隧道挂载的那些，
 > 后端只提供标记、不替前端决定筛选口径。游客侧（§1.5）则直接只回在用节点。

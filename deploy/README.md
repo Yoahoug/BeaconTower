@@ -4,7 +4,7 @@
 
 | 目录 | 内容 | 什么时候用 |
 | --- | --- | --- |
-| [`frpc-natfrp/`](./frpc-natfrp/) | NATFRP（樱花）frpc 客户端容器 | 面板里绑了 NATFRP 账号，要把本机服务经樱花节点暴露 |
+| [`frpc-natfrp/`](./frpc-natfrp/) | Sakura frpc 客户端容器 | 面板里绑了 Sakura 账号，要把本机服务经樱花节点暴露 |
 | [`frpc-chmlfrp/`](./frpc-chmlfrp/) | ChmlFrp frpc 客户端容器 | 面板里绑了 ChmlFrp 账号，同上 |
 
 <div align="center">
@@ -23,7 +23,7 @@
 面板自己把客户端装上去，并跟着隧道变更同步：
 
 ```sh
-# 1. 起面板 → 初始化 → 绑定 NATFRP / ChmlFrp 账号 → 建隧道
+# 1. 起面板 → 初始化 → 绑定 Sakura / ChmlFrp 账号 → 建隧道
 # 2. 隧道页「客户端托管」→ 部署客户端 → 选平台 + 节点 + 勾隧道
 #    （节点没装 Docker 时勾「自动安装」，面板按 apt/dnf/yum/apk/pacman 自己装）
 # 3. 之后隧道增删改，列表里点「同步配置」即可，不用再登录那台机器
@@ -47,10 +47,10 @@
 
 | 平台 | 面板请求的客户端版本 | 配置格式 | 对应镜像 |
 | --- | --- | --- | --- |
-| NATFRP | `NatfrpFrpcVersion = 0.51.0-sakura-14` | INI（`sakura_mode = true`） | `beacontower-frpc-natfrp` |
+| Sakura | `NatfrpFrpcVersion = 0.51.0-sakura-14` | INI（`sakura_mode = true`） | `beacontower-frpc-natfrp` |
 | ChmlFrp | 不适用（平台固定返回 INI） | INI | `beacontower-frpc-chmlfrp`（上游 frp `0.61.2`） |
 
-NATFRP 的配置格式跟着「声明的客户端版本」走：樱花分支版本给 INI，上游 frp 版本
+Sakura 的配置格式跟着「声明的客户端版本」走：樱花分支版本给 INI，上游 frp 版本
 （如 `0.59.0`）给 TOML。**升级 `beacontower-frpc-natfrp` 的版本时，要同步改
 `internal/frp/natfrp.go` 里的 `NatfrpFrpcVersion` 并重建面板镜像**，否则下载的配置
 和新镜像里的客户端对不上。ChmlFrp 没有这个问题：平台只发 INI，上游 frp 一直兼容。

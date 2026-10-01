@@ -1,10 +1,10 @@
-// 内网穿透平台管理（doc/13）：NATFRP / ChmlFrp 账号绑定、隧道与节点镜像、
+// 内网穿透平台管理（doc/13）：Sakura / ChmlFrp 账号绑定、隧道与节点镜像、
 // 用量趋势、隧道写操作与 frpc 配置下发。
 //
 // 设计要点：
 //   - 所有外部调用都带 15~30s 超时，慢操作（同步）走同步阻塞 + 前端轮询任务态；
 //   - 平台侧凭据只进不出：接口仅返回 has_token，绝不下发密钥本身；
-//   - 平台能力不等价（锁定/迁移只有 NATFRP 有，强制下线只有 ChmlFrp 有），
+//   - 平台能力不等价（锁定/迁移只有 Sakura 有，强制下线只有 ChmlFrp 有），
 //     不支持的操作用 2020 明确拒绝而不是静默失败。
 package handler
 
@@ -125,7 +125,7 @@ func frpTunnelView(t *store.FRPTunnel, platformName, platformKind string) gin.H 
 }
 
 // frpNodeView 单节点视图。inUse 表示该节点是否被本账号某条隧道挂着——
-// 平台节点表是全网节点（NATFRP 实测 71 条），面板默认只看在用的那几条，
+// 平台节点表是全网节点（Sakura 实测 71 条），面板默认只看在用的那几条，
 // 由前端按 in_use 过滤（后端不替前端决定筛选口径）。
 func frpNodeView(n *store.FRPNode, platformName string, inUse bool) gin.H {
 	return gin.H{
@@ -244,7 +244,7 @@ func (a *App) FRPOverview(c *gin.Context) {
 // 内网拓扑（节点域名 host、隧道名与本地/公网端点、节点 remote_id）。
 // 后两类泄露的不是「平台公开信息」而是「这台机器在用什么」，加字段前先过这一条。
 //
-// 节点只下发「在用」的那些（被隧道挂载的），平台全网节点表（NATFRP 实测 71 条）
+// 节点只下发「在用」的那些（被隧道挂载的），平台全网节点表（Sakura 实测 71 条）
 // 对访客既无意义也在泄露未使用的拓扑，见 store.ListFRPNodesInUse。
 func (a *App) FRPPublicSnapshot(c *gin.Context) {
 	if a.privateMode() && !a.loggedIn(c) {
@@ -287,7 +287,7 @@ func (a *App) FRPPublicSnapshot(c *gin.Context) {
 		if st == nil {
 			st = &agg{}
 		}
-		// NATFRP 的 /user/info 直接给当日消耗；ChmlFrp 账号级无当日值（恒 0），
+		// Sakura 的 /user/info 直接给当日消耗；ChmlFrp 账号级无当日值（恒 0），
 		// 用它名下隧道的当日进出之和兜底，两平台都能出一致的「今日流量」。
 		today := p.TrafficDayUsed
 		if today == 0 {
@@ -459,7 +459,7 @@ type frpNatfrpBindInput struct {
 	Token string `json:"token"`
 }
 
-// FRPBindNatfrp 用访问密钥绑定 NATFRP 账号（先验活再落库）。
+// FRPBindNatfrp 用访问密钥绑定 Sakura 账号（先验活再落库）。
 func (a *App) FRPBindNatfrp(c *gin.Context) {
 	var in frpNatfrpBindInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -483,7 +483,7 @@ func (a *App) FRPBindNatfrp(c *gin.Context) {
 		return
 	}
 	a.audit(a.actorOf(c), "frp_platform_bind", fmt.Sprintf("frp_platform:%d", p.ID),
-		fmt.Sprintf("绑定 NATFRP 账号 %s", p.Username), ipOf(c))
+		fmt.Sprintf("绑定 Sakura 账号 %s", p.Username), ipOf(c))
 	// 绑定后立刻做一次全量同步，让面板马上有数据
 	if err := a.FRP.Sync(ctx, p.ID, true); err != nil {
 		middleware.OK(c, gin.H{"id": p.ID, "sync_error": err.Error()})
@@ -681,7 +681,7 @@ var frpProtos = map[string]bool{"tcp": true, "udp": true, "http": true, "https":
 // 免得用户对着平台原文猜。
 var chmlTunnelNameRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-// checkTunnelName 平台侧隧道名规则不等价（NATFRP 宽松，ChmlFrp 只吃
+// checkTunnelName 平台侧隧道名规则不等价（Sakura 宽松，ChmlFrp 只吃
 // 字母/数字/下划线）。平台读不到时不拦，交给下游报错。
 func (a *App) checkTunnelName(platformID int64, name string) error {
 	name = strings.TrimSpace(name)
@@ -770,7 +770,7 @@ func (a *App) FRPTunnelCreate(c *gin.Context) {
 	middleware.OK(c, out)
 }
 
-// FRPTunnelUpdate 修改隧道。NATFRP 只支持备注/本地地址端口；
+// FRPTunnelUpdate 修改隧道。Sakura 只支持备注/本地地址端口；
 // ChmlFrp 额外支持节点与端口，但 http/https 类型官方标注暂不支持修改。
 func (a *App) FRPTunnelUpdate(c *gin.Context) {
 	t, ok := a.frpTunnelByParam(c)
@@ -850,7 +850,7 @@ type frpLockInput struct {
 	Migrate bool `json:"migrate"`
 }
 
-// FRPTunnelLock NATFRP 专属：锁定编辑/删除/迁移。
+// FRPTunnelLock Sakura 专属：锁定编辑/删除/迁移。
 func (a *App) FRPTunnelLock(c *gin.Context) {
 	t, ok := a.frpTunnelByParam(c)
 	if !ok {
@@ -877,7 +877,7 @@ type frpMigrateInput struct {
 	NodeID string `json:"node_id"`
 }
 
-// FRPTunnelMigrate NATFRP 专属：迁移隧道到另一节点。
+// FRPTunnelMigrate Sakura 专属：迁移隧道到另一节点。
 func (a *App) FRPTunnelMigrate(c *gin.Context) {
 	t, ok := a.frpTunnelByParam(c)
 	if !ok {
@@ -926,7 +926,7 @@ type frpAuthInput struct {
 	IP string `json:"ip"`
 }
 
-// FRPTunnelAuth NATFRP 专属：通过访问认证（ip 留空则授权请求来源 IP）。
+// FRPTunnelAuth Sakura 专属：通过访问认证（ip 留空则授权请求来源 IP）。
 func (a *App) FRPTunnelAuth(c *gin.Context) {
 	t, ok := a.frpTunnelByParam(c)
 	if !ok {

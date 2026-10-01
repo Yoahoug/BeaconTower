@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// NatfrpBase NATFRP OpenAPI v4 基址（官方 spec: https://api.natfrp.com/docs/）。
+// NatfrpBase Sakura OpenAPI v4 基址（官方 spec: https://api.natfrp.com/docs/）。
 const NatfrpBase = "https://api.natfrp.com/v4"
 
 // NatfrpFrpcVersion 是取 frpc 配置时声明的客户端版本，决定返回格式：
@@ -59,19 +59,19 @@ func (n *NatfrpClient) call(ctx context.Context, method, path string, form url.V
 	}
 	raw, status, err := request(ctx, n.hc, method, n.Base+path, hdr, body)
 	if err != nil {
-		return nil, fmt.Errorf("连接 NATFRP 失败: %w", err)
+		return nil, fmt.Errorf("连接 Sakura 失败: %w", err)
 	}
 	if status < 200 || status >= 300 {
 		var e natfrpResp
 		_ = decodeJSON(raw, &e)
 		if e.Code == 401 {
-			return nil, fmt.Errorf("%w（NATFRP 访问密钥无效）", ErrAuth)
+			return nil, fmt.Errorf("%w（Sakura 访问密钥无效）", ErrAuth)
 		}
 		msg := e.Msg
 		if msg == "" {
 			msg = trimErr(string(raw))
 		}
-		return raw, &apiError{Platform: "NATFRP", Status: status, Code: e.Code, Msg: msg}
+		return raw, &apiError{Platform: "Sakura", Status: status, Code: e.Code, Msg: msg}
 	}
 	if out != nil {
 		if err := decodeJSON(raw, out); err != nil {
@@ -240,7 +240,7 @@ type natfrpNodeStat struct {
 	Load   float64 `json:"load"`
 }
 
-// NATFRP 节点 flag 位域（官方 spec /nodes 描述）。
+// Sakura 节点 flag 位域（官方 spec /nodes 描述）。
 //
 // 低两位是**独立的两个能力位**，不是"两位都置位才允许 HTTP"的掩码：
 // 实测 71 个节点里 flag&0b11 只有 0/1/2 三种取值，从不出现 3，
@@ -358,7 +358,7 @@ func (n *NatfrpClient) CreateTunnel(ctx context.Context, in TunnelInput) (string
 	// http/https 的 remote 是绑定域名；tcp/udp 是端口号（0 = 让平台分配）
 	if in.Proto == "http" || in.Proto == "https" {
 		if in.Domain == "" {
-			return "", errors.New("NATFRP 的 HTTP(S) 隧道必须填写绑定域名")
+			return "", errors.New("Sakura 的 HTTP(S) 隧道必须填写绑定域名")
 		}
 		form.Set("remote", in.Domain)
 	} else if in.RemotePort > 0 {
@@ -375,12 +375,12 @@ func (n *NatfrpClient) CreateTunnel(ctx context.Context, in TunnelInput) (string
 		return "", err
 	}
 	if res.ID == 0 {
-		return "", errors.New("NATFRP 未返回新建隧道 ID")
+		return "", errors.New("Sakura 未返回新建隧道 ID")
 	}
 	return strconv.Itoa(res.ID), nil
 }
 
-// UpdateTunnel 改隧道。NATFRP 只允许改备注 / 本地地址端口 / extra，
+// UpdateTunnel 改隧道。Sakura 只允许改备注 / 本地地址端口 / extra，
 // 类型与节点分别要删建和 migrate。
 func (n *NatfrpClient) UpdateTunnel(ctx context.Context, id string, in TunnelInput) error {
 	form := url.Values{"id": {id}}
@@ -406,7 +406,7 @@ func (n *NatfrpClient) DeleteTunnel(ctx context.Context, ids []string) error {
 		return nil
 	}
 	if len(ids) > 10 {
-		return errors.New("NATFRP 单次最多删除 10 条隧道")
+		return errors.New("Sakura 单次最多删除 10 条隧道")
 	}
 	form := url.Values{"ids": {strings.Join(ids, ",")}}
 	_, err := n.call(ctx, http.MethodPost, "/tunnel/delete", form, nil)
@@ -448,12 +448,12 @@ func (n *NatfrpClient) TunnelConfig(ctx context.Context, query, frpcVer string) 
 	return string(raw), nil
 }
 
-// DeleteOne 实现 platform 接口（NATFRP 的删除接口本身支持批量）。
+// DeleteOne 实现 platform 接口（Sakura 的删除接口本身支持批量）。
 func (n *NatfrpClient) DeleteOne(ctx context.Context, id string) error {
 	return n.DeleteTunnel(ctx, []string{id})
 }
 
-// ConfigFor 实现 platform 接口：NATFRP 按隧道 ID 取配置，不需要节点名。
+// ConfigFor 实现 platform 接口：Sakura 按隧道 ID 取配置，不需要节点名。
 func (n *NatfrpClient) ConfigFor(ctx context.Context, tgt ConfigTarget) (string, error) {
 	return n.TunnelConfig(ctx, tgt.RemoteID, NatfrpFrpcVersion)
 }

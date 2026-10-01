@@ -1,6 +1,6 @@
 # frpc-natfrp · 樱花穿透客户端容器
 
-NATFRP（SakuraFrp）官方 `natfrp/frpc` 二进制的容器封装，供 BeaconTower 的
+Sakura（SakuraFrp）官方 `natfrp/frpc` 二进制的容器封装，供 BeaconTower 的
 「内网穿透平台托管」模块配套使用：面板负责建隧道/取配置，这个容器负责把
 本机服务接到节点上。
 
@@ -34,7 +34,7 @@ docker run -d --name frpc-natfrp --restart unless-stopped --network host \
 
 ## 配置格式为什么是 ini
 
-面板取配置时会声明客户端版本，NATFRP 按版本返回不同格式：樱花分支版本
+面板取配置时会声明客户端版本，Sakura 按版本返回不同格式：樱花分支版本
 （`0.51.0-sakura-N`）返回 INI（`sakura_mode = true`），上游 frp 版本（如
 `0.59.0`）返回 TOML。面板固定声明樱花分支版本，与本镜像里的客户端一致 ——
 **升级镜像版本时要同步改 `internal/frp/natfrp.go` 的 `NatfrpFrpcVersion` 并重建面板镜像**，

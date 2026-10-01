@@ -3,7 +3,7 @@
      平台卡只做展示（各自特色指标），不做「点击切换下方视图」；
      下方是跨平台归一化的一份内容：合并隧道表（平台列标注归属）、
      合并在用节点表（在用展开 / 未在用折叠）、双平台同图流量历史。
-     平台差异（NATFRP 锁定/迁移/认证、ChmlFrp 下线/二级域名）以
+     平台差异（Sakura 锁定/迁移/认证、ChmlFrp 下线/二级域名）以
      附加列与独立小节出现，不另起版式。
      ============================================================ -->
 <script setup>
@@ -100,10 +100,10 @@ function toast(text, error = false) {
 }
 
 // ---------- 弹窗 ----------
-const bindModal = ref(null) // NATFRP 绑定
+const bindModal = ref(null) // Sakura 绑定
 const deviceModal = ref(null) // ChmlFrp 设备码
 const tunnelModal = ref(null) // 建/改隧道
-// 建/改隧道弹窗针对 ChmlFrp 的额外提示：平台规则比 NATFRP 严（真机实测）
+// 建/改隧道弹窗针对 ChmlFrp 的额外提示：平台规则比 Sakura 严（真机实测）
 const tunnelModalIsChml = computed(() => {
   const m = tunnelModal.value
   if (!m) return false
@@ -129,7 +129,7 @@ function closeModal() {
   deployLogs.value = null
 }
 
-// ---------- 绑定 NATFRP ----------
+// ---------- 绑定 Sakura ----------
 function openBind() {
   bindModal.value = { name: 'Sakura', token: '', busy: false, error: '' }
 }
@@ -761,7 +761,7 @@ async function submitSub() {
 const chmlPlatform = computed(() => platforms.value.find((p) => p.kind === 'chmlfrp') || null)
 
 // 双平台同图流量历史：每个平台一条序列（ChmlFrp 只有近 7 日，
-// NATFRP 的 day 口径同为 7 点，天然对齐）
+// Sakura 的 day 口径同为 7 点，天然对齐）
 const TREND_COLORS = { natfrp: '#0ea5e9', chmlfrp: '#8b5cf6' }
 const trend = ref({ loading: false })
 const trendSeries = ref([])
@@ -1393,7 +1393,7 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <!-- ===== 弹窗：绑定 NATFRP ===== -->
+    <!-- ===== 弹窗：绑定 Sakura ===== -->
     <div v-if="bindModal" class="bt-modal-mask" @click.self="bindModal.busy ? null : closeModal()">
       <div class="bt-modal" role="dialog" aria-modal="true" aria-label="绑定 Sakura 账号">
         <div class="bt-modal__head">

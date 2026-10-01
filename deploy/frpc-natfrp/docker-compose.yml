@@ -1,4 +1,4 @@
-# 樱花 frpc：把本机服务经 NATFRP 节点暴露到公网
+# 樱花 frpc：把本机服务经 Sakura 节点暴露到公网
 #
 #   FRPC_CONFIG_FILE=./natfrp-ssh.conf docker compose up -d
 #

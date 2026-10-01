@@ -1,8 +1,8 @@
-// Package frp 内网穿透平台管理（doc/13）：把 NATFRP（樱花）与 ChmlFrp 两个
+// Package frp 内网穿透平台管理（doc/13）：把 Sakura 与 ChmlFrp 两个
 // 国内穿透平台的账号、隧道、节点、用量收敛成统一的只读镜像 + 一组写操作。
 //
 // 两平台的协议差异全部封在本包内：
-//   - NATFRP 用长期有效的「访问密钥」直连 OpenAPI v4，失败也返回 HTTP 500
+//   - Sakura 用长期有效的「访问密钥」直连 OpenAPI v4，失败也返回 HTTP 500
 //     （真实错误码在 body 的 code 字段），且 Cloudflare WAF 会拦截空/脚本 UA；
 //   - ChmlFrp 走轻爪账户 OAuth2 设备码换 access_token（10 分钟过期，必须用
 //     refresh_token 续期），v2 API 的业务错误放在 HTTP 200 的 JSON 里。
@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// UA 必须显式设置：NATFRP 前置的 Cloudflare WAF 会把 Python-urllib 这类
+// UA 必须显式设置：Sakura 前置的 Cloudflare WAF 会把 Python-urllib 这类
 // 默认脚本 UA 判成攻击（实测直接 403 error code: 1010），空 UA 同理。
 const userAgent = "BeaconTower/2.1 (+https://github.com/Yoahoug/BeaconTower)"
 
@@ -36,8 +36,8 @@ const (
 )
 
 // Account 账号维度的统一视图。两平台字段语义对不齐的地方统一在此归一：
-//   - TrafficDayUsed：NATFRP 是「本日消耗」，ChmlFrp 无当日值（用近 7 日接口另算）
-//   - TrafficRemain：NATFRP 是套餐剩余流量，ChmlFrp 不限流量（恒 0）
+//   - TrafficDayUsed：Sakura 是「本日消耗」，ChmlFrp 无当日值（用近 7 日接口另算）
+//   - TrafficRemain：Sakura 是套餐剩余流量，ChmlFrp 不限流量（恒 0）
 type Account struct {
 	UID            string         `json:"uid"`
 	Username       string         `json:"username"`

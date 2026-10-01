@@ -33,7 +33,7 @@ func TestFRPPublicSnapshotWhitelist(t *testing.T) {
 
 	// 画像与用量走单独的回写通道（Insert 只落凭据与状态，见 store.InsertFRPPlatform）
 	p := &store.FRPPlatform{
-		Kind: "natfrp", Name: "NATFRP（樱花）", Status: "ok",
+		Kind: "natfrp", Name: "Sakura", Status: "ok",
 		TokenEnc:       []byte{0x01, 0x02},
 		Username:       "secretaccount",
 		UID:            "1819140",
@@ -122,7 +122,7 @@ func TestFRPPublicSnapshotWhitelist(t *testing.T) {
 		t.Fatalf("平台数 = %d，期望 1", len(out.Data.Platforms))
 	}
 	pv := out.Data.Platforms[0]
-	if pv.Name != "NATFRP（樱花）" || pv.Kind != "natfrp" || !pv.Online {
+	if pv.Name != "Sakura" || pv.Kind != "natfrp" || !pv.Online {
 		t.Errorf("平台字段不符: %+v", pv)
 	}
 	if pv.TunnelTotal != 1 || pv.TunnelOnline != 1 {

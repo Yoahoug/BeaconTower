@@ -282,7 +282,7 @@ func TestLiveChmlfrp(t *testing.T) {
 	}
 }
 
-// ---------- NATFRP ----------
+// ---------- Sakura ----------
 
 func TestLiveNatfrp(t *testing.T) {
 	token := os.Getenv("BT_NATFRP_TOKEN")
@@ -292,7 +292,7 @@ func TestLiveNatfrp(t *testing.T) {
 		}
 	}
 	if token == "" {
-		t.Skip("未设置 BT_NATFRP_TOKEN 且 /tmp/bt_natfrp_token 不存在：跳过 NATFRP 真机联调")
+		t.Skip("未设置 BT_NATFRP_TOKEN 且 /tmp/bt_natfrp_token 不存在：跳过 Sakura 真机联调")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

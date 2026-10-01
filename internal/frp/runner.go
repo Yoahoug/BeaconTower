@@ -23,7 +23,7 @@ var ErrNotFound = errors.New("平台不存在或已解绑")
 var ErrUnsupported = errors.New("该平台不支持此操作")
 
 // ConfigTarget 下载 frpc 配置所需的定位信息。两平台取参不同：
-// NATFRP 认隧道 ID，ChmlFrp 要「节点名 + 隧道名」。
+// Sakura 认隧道 ID，ChmlFrp 要「节点名 + 隧道名」。
 type ConfigTarget struct {
 	RemoteID string
 	NodeName string
@@ -103,7 +103,7 @@ func (r *Runner) encrypt(s string) []byte {
 // tokenFresh 判断当前 access_token 是否还够用（留 90s 余量覆盖一次请求往返）。
 func tokenFresh(p *store.FRPPlatform) bool {
 	if p.Kind != KindChmlfrp {
-		return true // NATFRP 访问密钥长期有效
+		return true // Sakura 访问密钥长期有效
 	}
 	if p.TokenExpireAt == 0 {
 		return false
@@ -152,7 +152,7 @@ func (r *Runner) client(ctx context.Context, p *store.FRPPlatform) (platform, er
 
 // ---------- 绑定 ----------
 
-// BindNatfrp 绑定 NATFRP 账号：先用访问密钥拉一次用户信息验活，成功才落库。
+// BindNatfrp 绑定 Sakura 账号：先用访问密钥拉一次用户信息验活，成功才落库。
 func (r *Runner) BindNatfrp(ctx context.Context, name, token string) (*store.FRPPlatform, error) {
 	c := NewNatfrp("", token)
 	acc, err := c.UserInfo(ctx)
@@ -270,7 +270,7 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 			online++
 		}
 	}
-	// NATFRP 的 /user/info 只返回隧道数上限（tunnels），不返回已用数，
+	// Sakura 的 /user/info 只返回隧道数上限（tunnels），不返回已用数，
 	// 直接用刚拉到的隧道条数补上，否则面板会显示成「0/2」这种自相矛盾的配额。
 	// ChmlFrp 自己报了准确值（tunnelCount），不要覆盖。
 	if p.Kind == KindNatfrp {
@@ -281,7 +281,7 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 		r.markError(p, err)
 		return err
 	}
-	// 回填节点名：NATFRP 的隧道只带节点 ID，展示时要名称
+	// 回填节点名：Sakura 的隧道只带节点 ID，展示时要名称
 	r.fillNodeNames(platformID, tuns, ids)
 
 	if full {
@@ -359,7 +359,7 @@ func (r *Runner) SyncAll(ctx context.Context) {
 }
 
 // fillNodeNames 补齐隧道与节点的对应关系：
-//   - NATFRP 的隧道只带节点 ID，反查节点表补名称；
+//   - Sakura 的隧道只带节点 ID，反查节点表补名称；
 //   - ChmlFrp 的隧道只带节点名（/tunnel 不返回节点 ID），反查节点表补
 //     remote_id —— in_use 判定、迁移、配置下载都依赖它。
 //     节点镜像可能还没同步过（首次同步隧道在节点拉取之前），此时留空，
@@ -382,7 +382,7 @@ func (r *Runner) fillNodeNames(platformID int64, tuns []*Tunnel, ids map[string]
 		if id, ok := ids[t.RemoteID]; ok {
 			switch {
 			case t.NodeName == "" && t.NodeID != "":
-				// NATFRP：有 ID 补名称
+				// Sakura：有 ID 补名称
 				if name, ok := byID[t.NodeID]; ok {
 					_, _ = r.DB.SQL.Exec(`UPDATE frp_tunnel SET node_name=? WHERE id=?`, name, id)
 				}
@@ -472,7 +472,7 @@ func (r *Runner) DeleteTunnel(ctx context.Context, platformID int64, remoteID st
 	return cli.DeleteOne(ctx, remoteID)
 }
 
-// TunnelConfig 取 frpc 配置文本（两个平台都返回 INI：NATFRP 按
+// TunnelConfig 取 frpc 配置文本（两个平台都返回 INI：Sakura 按
 // NatfrpFrpcVersion 声明的樱花分支版本取 sakura INI，ChmlFrp 直接给 ini）。
 func (r *Runner) TunnelConfig(ctx context.Context, platformID int64, tgt ConfigTarget) (string, error) {
 	_, cli, err := r.platform(ctx, platformID)
@@ -482,26 +482,26 @@ func (r *Runner) TunnelConfig(ctx context.Context, platformID int64, tgt ConfigT
 	return cli.ConfigFor(ctx, tgt)
 }
 
-// LockTunnel NATFRP 专属：锁定编辑/删除/迁移。
+// LockTunnel Sakura 专属：锁定编辑/删除/迁移。
 func (r *Runner) LockTunnel(ctx context.Context, platformID int64, remoteID string, edit, del, migrate bool) error {
 	p, cli, err := r.platform(ctx, platformID)
 	if err != nil {
 		return err
 	}
 	if p.Kind != KindNatfrp {
-		return fmt.Errorf("%w：锁定是 NATFRP 特有功能", ErrUnsupported)
+		return fmt.Errorf("%w：锁定是 Sakura 特有功能", ErrUnsupported)
 	}
 	return cli.(*NatfrpClient).LockTunnel(ctx, remoteID, edit, del, migrate)
 }
 
-// MigrateTunnel NATFRP 专属：把隧道迁到另一节点。
+// MigrateTunnel Sakura 专属：把隧道迁到另一节点。
 func (r *Runner) MigrateTunnel(ctx context.Context, platformID int64, remoteID, nodeID string) error {
 	p, cli, err := r.platform(ctx, platformID)
 	if err != nil {
 		return err
 	}
 	if p.Kind != KindNatfrp {
-		return fmt.Errorf("%w：节点迁移是 NATFRP 特有功能", ErrUnsupported)
+		return fmt.Errorf("%w：节点迁移是 Sakura 特有功能", ErrUnsupported)
 	}
 	return cli.(*NatfrpClient).MigrateTunnel(ctx, remoteID, nodeID)
 }
@@ -518,14 +518,14 @@ func (r *Runner) OfflineTunnel(ctx context.Context, platformID int64, name strin
 	return cli.(*ChmlfrpClient).OfflineTunnel(ctx, name)
 }
 
-// TunnelAuth NATFRP 专属：通过隧道访问认证。
+// TunnelAuth Sakura 专属：通过隧道访问认证。
 func (r *Runner) TunnelAuth(ctx context.Context, platformID int64, remoteID, ip string) (string, error) {
 	p, cli, err := r.platform(ctx, platformID)
 	if err != nil {
 		return "", err
 	}
 	if p.Kind != KindNatfrp {
-		return "", fmt.Errorf("%w：访问认证是 NATFRP 特有功能", ErrUnsupported)
+		return "", fmt.Errorf("%w：访问认证是 Sakura 特有功能", ErrUnsupported)
 	}
 	return cli.(*NatfrpClient).TunnelAuth(ctx, remoteID, ip)
 }
@@ -542,7 +542,7 @@ func (r *Runner) TunnelTraffic(ctx context.Context, platformID int64, t store.FR
 		if err != nil {
 			return nil, err
 		}
-		// NATFRP 返回 {unix 时间戳: 字节}，转成按时间升序的点
+		// Sakura 返回 {unix 时间戳: 字节}，转成按时间升序的点
 		pts := make([]TrafficPoint, 0, len(m))
 		for ts, v := range m {
 			pts = append(pts, TrafficPoint{Label: ts, Used: v})
@@ -555,7 +555,7 @@ func (r *Runner) TunnelTraffic(ctx context.Context, platformID int64, t store.FR
 	return nil, ErrUnsupported
 }
 
-// TrafficHistory NATFRP 专属：账号级日/周/月流量历史。
+// TrafficHistory Sakura 专属：账号级日/周/月流量历史。
 // ChmlFrp 用 /flow_last_7_days 代替，由 FlowHistory 处理。
 func (r *Runner) TrafficHistory(ctx context.Context, platformID int64, kind string) ([]TrafficPoint, error) {
 	p, cli, err := r.platform(ctx, platformID)
@@ -563,7 +563,7 @@ func (r *Runner) TrafficHistory(ctx context.Context, platformID int64, kind stri
 		return nil, err
 	}
 	if p.Kind != KindNatfrp {
-		return nil, fmt.Errorf("%w：日/周/月流量历史是 NATFRP 特有功能", ErrUnsupported)
+		return nil, fmt.Errorf("%w：日/周/月流量历史是 Sakura 特有功能", ErrUnsupported)
 	}
 	return cli.(*NatfrpClient).TrafficHistory(ctx, kind)
 }

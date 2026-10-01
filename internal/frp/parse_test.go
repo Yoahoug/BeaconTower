@@ -13,7 +13,7 @@ import (
 //   - ChmlFrp 把布尔语义字段序列化成字符串 "true"/"false"
 //   - ChmlFrp 的 uptime 是 ISO 时刻而不是秒数
 //   - ChmlFrp 的 tunnel 是上限、tunnelCount 是已用（与官方文档说明相反）
-//   - NATFRP 节点 flag 低两位是独立能力位，从不同时置位
+//   - Sakura 节点 flag 低两位是独立能力位，从不同时置位
 
 const chmlTunnelFixture = `{"msg":"获取隧道数据成功","code":200,"state":"success","data":[{
   "id":356713,"name":"new","localip":"192.168.0.10","type":"tcp","nport":3000,
@@ -132,7 +132,7 @@ func TestChmlfrpErrorSurfacesCode(t *testing.T) {
 }
 
 func TestNatfrpErrorIsHTTP500WithBodyCode(t *testing.T) {
-	// NATFRP 的错误统一返回 HTTP 500，真实错误码在 body 的 code 字段
+	// Sakura 的错误统一返回 HTTP 500，真实错误码在 body 的 code 字段
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"code":401,"msg":"访问密钥无效"}`))
@@ -311,7 +311,7 @@ func TestNormalizeRealname(t *testing.T) {
 }
 
 func TestTrafficPointSorting(t *testing.T) {
-	// NATFRP 的 {时间戳:字节} 映射是无序的，必须按数值升序（字符串序会把
+	// Sakura 的 {时间戳:字节} 映射是无序的，必须按数值升序（字符串序会把
 	// "999999" 排在 "1000000" 之后）
 	pts := []TrafficPoint{{Label: "999999"}, {Label: "1000000"}, {Label: "2"}}
 	sortTrafficPoints(pts)
