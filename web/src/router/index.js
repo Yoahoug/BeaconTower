@@ -18,6 +18,9 @@ import ServerDetailView from '../views/monitor/ServerDetailView.vue'
 // 穿透状态（公开只读，二级页）：懒加载，公开首屏 bundle 不含它
 const TunnelView = () => import('../views/monitor/TunnelView.vue')
 
+// WG 组网状态（公开只读，二级页）：懒加载，公开首屏 bundle 不含它
+const MeshPublicView = () => import('../views/monitor/MeshPublicView.vue')
+
 // 管理端按路由懒加载：公开页 bundle 不包含节点/凭据等管理代码。
 const AdminLayout = () => import('../views/admin/AdminLayout.vue')
 const ServersView = () => import('../views/admin/ServersView.vue')
@@ -55,6 +58,13 @@ const router = createRouter({
           name: 'tunnels',
           component: TunnelView,
           meta: { public: true, breadcrumb: [{ label: '总览', to: '/' }, { label: '穿透状态' }] },
+        },
+        {
+          // 公开只读：只下发组网健康度 / 成员在线 / 中转流量（doc/04 §1.6）
+          path: 'mesh',
+          name: 'mesh-public',
+          component: MeshPublicView,
+          meta: { public: true, breadcrumb: [{ label: '总览', to: '/' }, { label: '组网状态' }] },
         },
         {
           path: 'admin/setup',

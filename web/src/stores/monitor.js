@@ -14,6 +14,9 @@ const SSE_RETRY_MAX_MS = 30000
 // 穿透摘要由面板后台每 3 分钟同步一次平台侧，访客页跟着 10s 轮询毫无意义，
 // 单独给一条低频时间线；只在访客页挂载时跑（见 startFrp/stopFrp）。
 const FRP_REFRESH_MS = 60000
+// WG 组网摘要是巡检（5min ticker）回填的静态库表，同样走 60s 低频轮询
+//（见 startWg/stopWg），公开端点不做任何 SSH 实时探测。
+const WG_REFRESH_MS = 60000
 
 // 后端公开 metrics 速率字段（net_*_bps）实际是「字节/秒」（/proc/net/dev 字节
 // 计数器差分），前端按 B/s 展示 → 卡片字段（GB/天/单数）的换算见下
@@ -134,6 +137,13 @@ export const useMonitorStore = defineStore('monitor', {
     _frpTimer: 0,
     _frpBusy: false,
 
+    // WG 组网摘要（公开接口 /v1/public/wg，字段白名单见 doc/04 §1.6）
+    wg: null, // { initialized, hubs: [], peers: [], summary: {} }，未拉到时为 null
+    wgStatus: 'idle', // idle | loading | ready | error
+    wgError: '',
+    _wgTimer: 0,
+    _wgBusy: false,
+
     _timer: 0,
     _clock: 0,
     _seeded: false,
@@ -214,6 +224,7 @@ export const useMonitorStore = defineStore('monitor', {
       this._clock = 0
       this._sseTimer = 0
       this.stopFrp()
+      this.stopWg()
       this.closeSSE()
       document.removeEventListener('visibilitychange', this._onVisibility)
       this._boundVisibility = false
@@ -322,6 +333,53 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } finally {
         this._frpBusy = false
+      }
+    },
+
+    // ---------- WG 组网摘要（公开只读） ----------
+
+    startWg() {
+      if (this._wgTimer) return
+      this.fetchWg()
+      this._wgTimer = window.setInterval(() => {
+        if (document.hidden) return
+        this.fetchWg()
+      }, WG_REFRESH_MS)
+    },
+
+    stopWg() {
+      window.clearInterval(this._wgTimer)
+      this._wgTimer = 0
+    },
+
+    retryWg() {
+      this.wgStatus = 'loading'
+      this.wgError = ''
+      this.fetchWg()
+    },
+
+    async fetchWg() {
+      if (this._wgBusy) return
+      this._wgBusy = true
+      if (!this.wg) this.wgStatus = 'loading'
+      try {
+        const d = await http.get('/v1/public/wg')
+        this.wg = {
+          initialized: !!d?.initialized,
+          hubs: Array.isArray(d?.hubs) ? d.hubs : [],
+          peers: Array.isArray(d?.peers) ? d.peers : [],
+          summary: d?.summary || {},
+        }
+        this.wgStatus = 'ready'
+        this.wgError = ''
+      } catch (e) {
+        // 已有数据时静默失败：巡检口径的数据抖一下不该把整页打成错误态
+        if (!this.wg) {
+          this.wgStatus = 'error'
+          this.wgError = e?.message || '组网数据加载失败'
+        }
+      } finally {
+        this._wgBusy = false
       }
     },
 

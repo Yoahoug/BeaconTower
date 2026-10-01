@@ -44,6 +44,8 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 			pub.GET("/stream", app.PublicStream)
 			// 穿透摘要（doc/13 §12）：硬白名单，访客只看用量与在用节点健康度
 			pub.GET("/frp", app.FRPPublicSnapshot)
+			// WG 组网摘要（doc/04 §1.6）：硬白名单，访客只看健康度与成员在线数
+			pub.GET("/wg", app.WGPublicSnapshot)
 		}
 		adm := api.Group("/admin")
 		{

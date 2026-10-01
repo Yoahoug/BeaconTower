@@ -101,6 +101,44 @@
 - `private_mode=true` 且未登录时返回 `401 {code:1002}`（与其余公开接口一致）；
 - 前端 `/tunnels` 穿透状态页消费本接口（`stores/monitor.js` 的 `startFrp/stopFrp`，60s 独立轮询）。
 
+### 1.6 WG 组网摘要（游客版，v2.4 新增）
+
+`GET /api/v1/public/wg`
+
+> **白名单序列化**，与 1.5 同一套纪律。只回答访客四件事——组网跑没跑、中心健不健康、
+> 成员在线几个、今天/本月中转了多少流量。数据口径为 WG 巡检（5min ticker）回填的
+> `wg_peer` 与 `wg_hub_traffic`，**公开端点不做任何 SSH 实时探测**。
+> **不下发**：网段拓扑（`subnet`/`hub_ip`/`iface`/成员 `wg_ip`/中心 `endpoint`/`listen_port`）、
+> 密钥材料（`public_key`/指纹/`has_keys`——公钥指纹也是拓扑情报）、
+> 错误原文（巡检 `last_error` 内含 SSH host:port，只给健康布尔）、
+> 设备成员名（Mac/iPhone 等私人设备画像，只给数量）；
+> 隐藏节点成员沿用公开总览口径，不入公开成员表。
+> 回归测试：`internal/handler/wg_public_test.go` 对响应体做禁止串扫描，漏字段即 CI 失败。
+
+```json
+{
+  "code": 0,
+  "data": {
+    "initialized": true,
+    "hubs": [
+      { "name": "hub-aliyun", "is_active": true, "healthy": true, "month_rx": 1000, "month_tx": 2000 }
+    ],
+    "peers": [
+      { "name": "home-nas", "online": true }
+    ],
+    "summary": { "hub_active": 1, "hub_healthy": 1, "member_total": 1, "member_online": 1,
+                 "device_total": 1, "traffic_today": 3000, "traffic_month": 3000, "checked_at": 1790763685 }
+  }
+}
+```
+
+- `initialized=false`：尚未初始化组网，前端展示引导态（其余字段省略）；
+- `hubs`：现役 + 未退役备援槽位；`healthy` 取巡检 `status == "ok"`（备援巡检失败 = `false`，不下发原因）；
+- `month_rx/month_tx`：本月中转量（巡检按日差值累计，云厂商只对出方向计费时看 `month_tx`）；
+- `traffic_today`：全部未退役中心当日 `rx+tx` 差值合计；`checked_at` 为最近一次巡检回写时刻；
+- `private_mode=true` 且未登录时返回 `401 {code:1002}`（与其余公开接口一致）；
+- 前端 `/mesh` 组网状态页消费本接口（`stores/monitor.js` 的 `startWg/stopWg`，60s 独立轮询）。
+
 ## 2. 初始化与认证
 
 ### 2.1 查询初始化状态

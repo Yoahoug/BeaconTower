@@ -139,6 +139,17 @@ onUnmounted(() => {
           <AppIcon name="tunnel" aria-hidden="true" />
           <span>穿透状态</span>
         </RouterLink>
+        <RouterLink
+          to="/mesh"
+          class="app-nav__item"
+          :class="{ 'is-active': route.path === '/mesh' }"
+          :aria-current="route.path === '/mesh' ? 'page' : undefined"
+          title="组网状态"
+          @click="closeDrawer"
+        >
+          <AppIcon name="layers" aria-hidden="true" />
+          <span>组网状态</span>
+        </RouterLink>
 
         <template v-if="inAdmin">
           <div class="app-nav__group">管理面板</div>
@@ -173,7 +184,7 @@ onUnmounted(() => {
           <span>实时功耗</span>
           <strong class="tnum">{{ monitor.summary.measuredCount ? `${monitor.summary.watts.toFixed(1)} W` : '—' }}</strong>
         </div>
-        <div class="app-side-ver">v2.3 · SKY BEACON</div>
+        <div class="app-side-ver">v2.4 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -226,7 +237,7 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.3 · Sky Beacon</span>
+        <span class="tnum">v2.4 · Sky Beacon</span>
       </footer>
     </div>
 
