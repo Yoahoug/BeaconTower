@@ -31,6 +31,7 @@ type FRPPlatform struct {
 	TunnelUsed     int    `json:"tunnel_used"`
 	TunnelQuota    int    `json:"tunnel_quota"`
 	Conns          int    `json:"conns"`
+	ConnsSrc       string `json:"conns_src"` // platform=平台 API | local=节点侧 socket 计数 | 空=无数据
 	TrafficDayUsed int64  `json:"traffic_day_used"`
 	TrafficRemain  int64  `json:"traffic_remain"`
 	TrafficUp      int64  `json:"traffic_up"`
@@ -65,6 +66,7 @@ type FRPTunnel struct {
 	Status       string `json:"status"` // normal | banned | unknown
 	StatusReason string `json:"status_reason"`
 	Conns        int    `json:"conns"`
+	LocalConns   int    `json:"local_conns"` // 面板在 frpc 所在节点数到的活跃转发连接（Sakura 无平台值时的口径）
 	TodayUp      int64  `json:"today_up"`
 	TodayDown    int64  `json:"today_down"`
 	Uptime       int64  `json:"uptime"`
@@ -113,6 +115,7 @@ type FRPUsage struct {
 const frpPlatformCols = `id, kind, name, token_enc, refresh_enc, COALESCE(token_expire_at,0),
 	COALESCE(uid,''), COALESCE(username,''), COALESCE(group_name,''), COALESCE(speed_limit,''),
 	COALESCE(realname,''), COALESCE(tunnel_used,0), COALESCE(tunnel_quota,0), COALESCE(conns,0),
+	COALESCE(conns_src,''),
 	COALESCE(traffic_day_used,0), COALESCE(traffic_remain,0), COALESCE(traffic_up,0), COALESCE(traffic_down,0),
 	COALESCE(profile_json,'{}'), status, COALESCE(last_error,''), COALESCE(last_sync_at,0), created_at, COALESCE(updated_at,0)`
 
@@ -121,7 +124,7 @@ func scanFRPPlatform(p *FRPPlatform, row interface {
 }) error {
 	return row.Scan(&p.ID, &p.Kind, &p.Name, &p.TokenEnc, &p.RefreshEnc, &p.TokenExpireAt,
 		&p.UID, &p.Username, &p.GroupName, &p.SpeedLimit,
-		&p.Realname, &p.TunnelUsed, &p.TunnelQuota, &p.Conns,
+		&p.Realname, &p.TunnelUsed, &p.TunnelQuota, &p.Conns, &p.ConnsSrc,
 		&p.TrafficDayUsed, &p.TrafficRemain, &p.TrafficUp, &p.TrafficDown,
 		&p.ProfileJSON, &p.Status, &p.LastError, &p.LastSyncAt, &p.CreatedAt, &p.UpdatedAt)
 }
@@ -199,12 +202,12 @@ func (db *DB) RenameFRPPlatform(id int64, name string) error {
 func (db *DB) SaveFRPPlatformProfile(p *FRPPlatform) error {
 	_, err := db.SQL.Exec(`UPDATE frp_platform SET
 		uid = ?, username = ?, group_name = ?, speed_limit = ?, realname = ?,
-		tunnel_used = ?, tunnel_quota = ?, conns = ?,
+		tunnel_used = ?, tunnel_quota = ?, conns = ?, conns_src = ?,
 		traffic_day_used = ?, traffic_remain = ?, traffic_up = ?, traffic_down = ?,
 		profile_json = ?, status = ?, last_error = ?, last_sync_at = ?, updated_at = ?
 		WHERE id = ?`,
 		p.UID, p.Username, p.GroupName, p.SpeedLimit, p.Realname,
-		p.TunnelUsed, p.TunnelQuota, p.Conns,
+		p.TunnelUsed, p.TunnelQuota, p.Conns, p.ConnsSrc,
 		p.TrafficDayUsed, p.TrafficRemain, p.TrafficUp, p.TrafficDown,
 		p.ProfileJSON, p.Status, p.LastError, p.LastSyncAt, time.Now().Unix(), p.ID)
 	return err
@@ -232,7 +235,7 @@ func (db *DB) DeleteFRPPlatform(id int64) error {
 
 const frpTunnelCols = `id, platform_id, remote_id, name, proto, COALESCE(node_id,''), COALESCE(node_name,''),
 	COALESCE(local_ip,''), COALESCE(local_port,0), COALESCE(remote,''), COALESCE(online,0), status,
-	COALESCE(status_reason,''), COALESCE(conns,0), COALESCE(today_up,0), COALESCE(today_down,0),
+	COALESCE(status_reason,''), COALESCE(conns,0), COALESCE(local_conns,0), COALESCE(today_up,0), COALESCE(today_down,0),
 	COALESCE(uptime,0), COALESCE(client_ver,''), COALESCE(extra,''),
 	COALESCE(lock_edit,0), COALESCE(lock_delete,0), COALESCE(lock_migrate,0), COALESCE(synced_at,0)`
 
@@ -242,7 +245,7 @@ func scanFRPTunnel(t *FRPTunnel, row interface {
 	var online, lEdit, lDel, lMig int
 	if err := row.Scan(&t.ID, &t.PlatformID, &t.RemoteID, &t.Name, &t.Proto, &t.NodeID, &t.NodeName,
 		&t.LocalIP, &t.LocalPort, &t.Remote, &online, &t.Status,
-		&t.StatusReason, &t.Conns, &t.TodayUp, &t.TodayDown,
+		&t.StatusReason, &t.Conns, &t.LocalConns, &t.TodayUp, &t.TodayDown,
 		&t.Uptime, &t.ClientVer, &t.Extra,
 		&lEdit, &lDel, &lMig, &t.SyncedAt); err != nil {
 		return err
@@ -367,6 +370,27 @@ func (db *DB) InsertFRPTunnel(t *FRPTunnel) (int64, error) {
 
 func (db *DB) DeleteFRPTunnel(id int64) error {
 	_, err := db.SQL.Exec(`DELETE FROM frp_tunnel WHERE id = ?`, id)
+	return err
+}
+
+// SetFRPTunnelLocalConns 批量回写本地连接计数（key=平台侧 remote_id）。
+// 本地计数与平台同步是两条独立管线：这里只动 local_conns，不碰 synced_at，
+// 平台同步的 upsert 也不覆盖本列（列不在其 INSERT/UPDATE 清单里）。
+func (db *DB) SetFRPTunnelLocalConns(platformID int64, m map[string]int64) error {
+	for rid, n := range m {
+		if _, err := db.SQL.Exec(`UPDATE frp_tunnel SET local_conns = ? WHERE platform_id = ? AND remote_id = ?`,
+			n, platformID, rid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetFRPPlatformConns 平台级连接数与口径标记（local 计数管线回写用，
+// 不更新 last_sync_at——那是平台同步的时间戳，语义不能混）。
+func (db *DB) SetFRPPlatformConns(id int64, conns int, src string) error {
+	_, err := db.SQL.Exec(`UPDATE frp_platform SET conns = ?, conns_src = ?, updated_at = ? WHERE id = ?`,
+		conns, src, time.Now().Unix(), id)
 	return err
 }
 

@@ -26,6 +26,16 @@ const LOAD_DANGER = 85
 
 const KIND_LABEL = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp' }
 
+// 连接数口径（conns_src）：platform=平台 API 值；local=面板在 frpc 所在节点
+// 数 socket（Sakura 平台 API 无连接数字段，doc/13 §1）；空=无数据（未同步或
+// 非面板可见节点上自跑 frpc），显示「—」避免误导性的 0。
+const connsSupported = computed(() => platforms.value.some((p) => p.conns_src === 'local' || p.conns_src === 'platform'))
+
+function connsSub() {
+  if (!connsSupported.value) return '平台未提供 · 面板不可测'
+  return '活跃连接（面板节点实测）'
+}
+
 function kindLabel(kind) {
   return KIND_LABEL[kind] || '穿透平台'
 }
@@ -135,9 +145,10 @@ onUnmounted(() => monitor.stopFrp())
         <div class="kpi-card kpi-card--warn spot bt-enter" style="--i: 3" v-spotlight>
           <div class="kpi-card__label"><AppIcon name="activity" aria-hidden="true" />实时连接数</div>
           <div class="kpi-card__value">
-            <TweenNumber :value="summary.conns || 0" />
+            <span v-if="!connsSupported" class="bt-text-muted">—</span>
+            <TweenNumber v-else :value="summary.conns || 0" />
           </div>
-          <div class="kpi-card__sub">平台侧当前并发</div>
+          <div class="kpi-card__sub">{{ connsSub() }}</div>
         </div>
       </section>
 
@@ -181,7 +192,8 @@ onUnmounted(() => monitor.stopFrp())
               </div>
               <div class="frp-stat">
                 <span class="frp-stat__label">连接数</span>
-                <strong class="frp-stat__value">{{ p.conns || 0 }}</strong>
+                <strong v-if="p.conns_src !== 'local' && p.conns_src !== 'platform'" class="frp-stat__value bt-text-muted">—</strong>
+                <strong v-else class="frp-stat__value">{{ p.conns || 0 }}</strong>
               </div>
             </div>
 

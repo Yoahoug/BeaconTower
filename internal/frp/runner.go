@@ -48,6 +48,10 @@ type Runner struct {
 	Master []byte
 	Flow   *DeviceFlow
 
+	// DialForProbe 本地连接计数的节点拨号钩子（由 Deployer 注入实现，
+	// Runner 不直接持有凭据解密）。nil 时只采本机节点。
+	DialForProbe ProbeDialer
+
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
 }
@@ -303,6 +307,15 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 	p.TunnelUsed = acc.TunnelUsed
 	p.TunnelQuota = acc.TunnelQuota
 	p.Conns = acc.Conns
+	// 连接数口径：ChmlFrp 的 totalCurConns 是平台真实值；Sakura 的 API 无此
+	// 字段（acc.Conns 恒 0），先随同步写 0/空，本地计数管线随后覆盖为
+	// socket 计数并标 local——两条管线都走 SaveFRPPlatformProfile，避免
+	// 这里写空后 local 值被下次平台同步意外清掉时无标记可辨。
+	if p.Kind == KindChmlfrp {
+		p.ConnsSrc = connSrcPlatform
+	} else {
+		p.ConnsSrc = ""
+	}
 	p.TrafficDayUsed = acc.TrafficDayUsed
 	p.TrafficRemain = acc.TrafficRemain
 	p.TrafficUp = acc.TrafficUp
@@ -344,6 +357,8 @@ func (r *Runner) markError(p *store.FRPPlatform, err error) {
 }
 
 // SyncAll 周期任务入口：逐个平台轻同步，单平台失败不影响其余。
+// 同步完成后追加一轮本地连接计数（Sakura 无平台值的连接数由此补齐），
+// 失败只记日志，绝不影响同步结果。
 func (r *Runner) SyncAll(ctx context.Context) {
 	list, err := r.DB.ListFRPPlatforms()
 	if err != nil {
@@ -356,6 +371,7 @@ func (r *Runner) SyncAll(ctx context.Context) {
 			continue
 		}
 	}
+	r.CollectLocalConns(ctx)
 }
 
 // fillNodeNames 补齐隧道与节点的对应关系：

@@ -1089,7 +1089,12 @@ onBeforeUnmount(() => {
                     <span v-if="t.remote" class="mono frp-endpoint">{{ t.remote }}</span>
                     <span v-else class="bt-text-muted">—</span>
                   </td>
-                  <td class="num tnum">{{ t.conns || 0 }}</td>
+                  <td class="num tnum">
+                    <!-- Sakura 平台 API 无连接数（doc/13 §1），显示面板节点侧实测值；都无则「—」 -->
+                    <span v-if="(t.conns || 0) > 0" :title="`平台侧连接数 ${t.conns}`">{{ t.conns }}</span>
+                    <span v-else-if="(t.local_conns || 0) > 0" title="面板在 frpc 所在节点实测的活跃连接数（Sakura 平台不提供连接数）">{{ t.local_conns }}</span>
+                    <span v-else class="bt-text-muted">—</span>
+                  </td>
                   <td class="num tnum">{{ fmtBytes((t.today_up || 0) + (t.today_down || 0)) }}</td>
                   <td>
                     <div class="frp-row-actions">

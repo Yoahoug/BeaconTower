@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 11
+const schemaVersion = 12
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -393,6 +393,13 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 				updated_at INTEGER DEFAULT 0
 			)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_deploy_pair ON frp_deploy(platform_id, server_id)`,
+		)
+	case 12: // 连接数本地计数（doc/13 §1 能力边界：Sakura API 无连接数字段）：
+		// frp_tunnel.local_conns 由面板在 frpc 所在节点上数 socket 得出；
+		// frp_platform.conns_src 标记平台连接数口径（platform=平台 API / local=本地 socket 计数）
+		return exec(
+			`ALTER TABLE frp_tunnel ADD COLUMN local_conns INTEGER DEFAULT 0`,
+			`ALTER TABLE frp_platform ADD COLUMN conns_src TEXT DEFAULT ''`,
 		)
 	case 10: // 内网穿透平台管理（doc/13）：Sakura / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
 		return exec(

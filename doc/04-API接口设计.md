@@ -84,12 +84,12 @@
   "data": {
     "platforms": [{
       "name": "Sakura", "kind": "natfrp", "online": true,
-      "tunnel_total": 2, "tunnel_online": 2, "conns": 0,
+      "tunnel_total": 2, "tunnel_online": 2, "conns": 1, "conns_src": "local",
       "traffic_today": 2294754205,
       "nodes": [{ "name": "长沙电信PLUS2", "group": "普通节点", "online": true, "load": 34.3, "uptime": 306200 }],
       "updated_at": 1790763685
     }],
-    "summary": { "platform_total": 1, "tunnel_total": 2, "tunnel_online": 2, "conns": 0,
+    "summary": { "platform_total": 1, "tunnel_total": 2, "tunnel_online": 2, "conns": 1,
                  "traffic_today": 2294754205, "node_in_use": 2, "node_online": 2, "updated_at": 1790763685 }
   }
 }
@@ -97,6 +97,10 @@
 
 - `traffic_today`：Sakura 取账号级当日消耗；ChmlFrp 账号级无当日值，用其名下隧道当日进出之和兜底；
 - `online`：平台最近一次同步是否成功（同步失败的平台为 `false`，不下发上游错误原文）；
+- `conns` / `conns_src`：连接数与口径标记。`platform`=平台 API 值（ChmlFrp）；
+  `local`=面板在 frpc 所在节点数 socket 的活跃转发连接数（Sakura 平台 API 无连接数字段，
+  见 doc/13 §15，约 2 分钟采样）；两者皆无（未同步或 frpc 在面板不可达的机器上）时
+  `conns_src` 为空串，前端显示「—」而不是误导性的 0；
 - `uptime`：ChmlFrp 节点接口不报在线时长（恒 0），前端为 0 时不显示；
 - `private_mode=true` 且未登录时返回 `401 {code:1002}`（与其余公开接口一致）；
 - 前端 `/tunnels` 穿透状态页消费本接口（`stores/monitor.js` 的 `startFrp/stopFrp`，60s 独立轮询）。

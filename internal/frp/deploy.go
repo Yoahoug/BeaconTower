@@ -66,7 +66,13 @@ type Deployer struct {
 }
 
 func NewDeployer(db *store.DB, master []byte, r *Runner) *Deployer {
-	return &Deployer{DB: db, Master: master, Runner: r}
+	d := &Deployer{DB: db, Master: master, Runner: r}
+	// Runner 需要在非托管节点上数 socket（本地连接计数）时借用本执行器的
+	// SSH 通道；Deployer 自身不持有 Runner 之外的引用，无环。
+	if r != nil {
+		r.DialForProbe = d.dial
+	}
+	return d
 }
 
 // ImageFor 读取镜像（设置里可覆盖，缺省用 DefaultImage）。
