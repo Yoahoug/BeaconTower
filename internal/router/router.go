@@ -3,7 +3,9 @@ package router
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,15 +35,21 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 		c.String(http.StatusOK, "ok")
 	})
 
+	// 公开路由按 IP 限速（doc/14：挂公网后防止脚本爬取与滥用拖垮面板）。
+	// healthz 除外（容器健康检查本机自访）。GET-only 白名单在组内逐条注册。
+	pubRL := middleware.NewPublicRateLimiter().Middleware()
+
 	api := r.Group("/api/v1")
 	{
-		pub := api.Group("/public")
+		pub := api.Group("/public", pubRL)
 		{
 			pub.GET("/summary", app.PublicSummary)
 			pub.GET("/servers", app.PublicServers)
 			pub.GET("/servers/:id/history", app.PublicHistory)
 			pub.GET("/servers/:id/traffic", app.PublicTraffic)
-			pub.GET("/stream", app.PublicStream)
+			// SSE：先限单 IP 并发数再进 handler（doc/14 滥用面收敛），
+			// 限速器对长连接只在握手时计一次，不惩罚长连。
+			pub.GET("/stream", middleware.SSEGate(4), app.PublicStream)
 			// 穿透摘要（doc/13 §12）：硬白名单，访客只看用量与在用节点健康度
 			pub.GET("/frp", app.FRPPublicSnapshot)
 			// WG 组网摘要（doc/04 §1.6）：硬白名单，访客只看健康度与成员在线数
@@ -140,9 +148,33 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 	if hasDist {
 		distFS, err := fs.Sub(webDist, "web/dist")
 		if err == nil {
+			// PWA 端点（.webmanifest 等）不在 Go 默认 mime 表内，Content-Type
+			// 错了 iOS/Safari 会拒绝装为 Web App（doc/14 §6）
+			for ext, typ := range map[string]string{
+				".webmanifest": "application/manifest+json; charset=utf-8",
+				".json":        "application/json; charset=utf-8",
+				".js":          "text/javascript; charset=utf-8",
+				".css":         "text/css; charset=utf-8",
+				".svg":         "image/svg+xml",
+				".png":         "image/png",
+				".ico":         "image/x-icon",
+				".txt":         "text/plain; charset=utf-8",
+			} {
+				_ = mime.AddExtensionType(ext, typ)
+			}
 			// 带 hash 资源长缓存；index.html no-cache
 			r.GET("/assets/*filepath", func(c *gin.Context) {
 				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+				c.FileFromFS(strings.TrimPrefix(c.Request.URL.Path, "/"), http.FS(distFS))
+			})
+			// 根级静态文件（manifest.webmanifest、图标、robots.txt 等）：
+			// 短缓存，文件更新后分钟级生效；目录穿越由 embed FS 天然免疫
+			r.GET("/favicon.ico", func(c *gin.Context) { serveRootFile(c, distFS, "favicon.ico") })
+			r.GET("/robots.txt", func(c *gin.Context) { serveRootFile(c, distFS, "robots.txt") })
+			r.GET("/manifest.webmanifest", func(c *gin.Context) { serveRootFile(c, distFS, "manifest.webmanifest") })
+			r.GET("/manifest.json", func(c *gin.Context) { serveRootFile(c, distFS, "manifest.webmanifest") })
+			r.GET("/icons/*filepath", func(c *gin.Context) {
+				c.Header("Cache-Control", "public, max-age=86400")
 				c.FileFromFS(strings.TrimPrefix(c.Request.URL.Path, "/"), http.FS(distFS))
 			})
 			indexHTML := mustReadIndex(distFS)
@@ -152,7 +184,7 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 					c.JSON(http.StatusNotFound, gin.H{"code": 2002, "msg": "接口不存在", "data": nil})
 					return
 				}
-				if strings.HasPrefix(p, "/assets/") {
+				if strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/icons/") {
 					c.Status(http.StatusNotFound)
 					return
 				}
@@ -179,6 +211,18 @@ func mustReadIndex(distFS fs.FS) []byte {
 		return []byte("<h1>BeaconTower</h1>")
 	}
 	return b
+}
+
+// serveRootFile 按精确名字提供 dist 根文件：embed FS 不接受带 .. 的路径，
+// 加白名单双保险，文件不存在回退 SPA（避免安装引导期 404）。
+func serveRootFile(c *gin.Context, distFS fs.FS, name string) {
+	b, err := fs.ReadFile(distFS, name)
+	if err != nil {
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", mustReadIndex(distFS))
+		return
+	}
+	c.Data(http.StatusOK, mime.TypeByExtension(filepath.Ext(name)), b)
 }
 
 var _ = time.Now

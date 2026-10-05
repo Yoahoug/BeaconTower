@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -253,12 +254,15 @@ func (a *App) FRPPublicSnapshot(c *gin.Context) {
 	}
 	platforms, err := a.DB.ListFRPPlatforms()
 	if err != nil {
-		middleware.Fail(c, 5000, "读取平台列表失败: "+err.Error())
+		// 公开端点不回显错误原文（可能含 SQL/路径细节，doc/14 §2）
+		log.Printf("[frp-public] 读取平台列表失败: %v", err)
+		middleware.Fail(c, 5000, "读取平台列表失败")
 		return
 	}
 	tunnels, err := a.DB.ListFRPTunnels()
 	if err != nil {
-		middleware.Fail(c, 5000, "读取隧道列表失败: "+err.Error())
+		log.Printf("[frp-public] 读取隧道列表失败: %v", err)
+		middleware.Fail(c, 5000, "读取隧道列表失败")
 		return
 	}
 
@@ -295,7 +299,8 @@ func (a *App) FRPPublicSnapshot(c *gin.Context) {
 		}
 		nodes, err := a.DB.ListFRPNodesInUse(p.ID)
 		if err != nil {
-			middleware.Fail(c, 5000, "读取节点列表失败: "+err.Error())
+			log.Printf("[frp-public] 读取节点列表失败: %v", err)
+			middleware.Fail(c, 5000, "读取节点列表失败")
 			return
 		}
 		nodeViews := make([]gin.H, 0, len(nodes))

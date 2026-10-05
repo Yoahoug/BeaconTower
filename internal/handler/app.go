@@ -33,9 +33,32 @@ type App struct {
 	// deployMu 串行化穿透客户端托管操作：同一时刻只跑一个「写节点」的动作，
 	// 避免两个请求同时 docker rm/run 同一个容器。
 	deployMu sync.Mutex
+
+	// histCache 公开 history/traffic 的短 TTL 缓存（doc/14 滥用面收敛）
+	histCache *historyCache
 }
 
 func nowUnix() int64 { return time.Now().Unix() }
+
+func init() { DefaultHistCache = newHistoryCache() }
+
+// DefaultHistCache 测试可直接构造 App 的兜底缓存；main 路径经 InitHistCache 覆盖。
+var DefaultHistCache *historyCache
+
+// InitHistCache 装配公开曲线缓存（main.go 启动时调用）。
+func (a *App) InitHistCache() {
+	if a.histCache == nil {
+		a.histCache = DefaultHistCache
+	}
+}
+
+// histCacheOf 取缓存（测试构造的 App 可能未初始化，懒建一个本地实例）。
+func (a *App) histCacheOf() *historyCache {
+	if a.histCache == nil {
+		return DefaultHistCache
+	}
+	return a.histCache
+}
 
 // audit 记录审计日志（写失败不阻塞主流程）。
 func (a *App) audit(actor, action, target, detail, ip string) {

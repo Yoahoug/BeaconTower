@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,6 +64,7 @@ func main() {
 		SetupRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 		LoginRL: middleware.NewRateLimiter(5, time.Minute, 1006, "操作过于频繁，请稍后再试"),
 	}
+	app.InitHistCache()
 
 	// 上次进程中断遗留的 running WG 任务无人收尾会锁死组网操作，启动即标记失败
 	if err := db.FailStaleWGTasks(time.Now().Unix()); err != nil {
@@ -95,7 +97,18 @@ func main() {
 	engine := router.New(app, webDist, hasDist)
 	addr := "0.0.0.0:" + cfg.Port
 	fmt.Printf("[beacontower] listening on %s (data=%s)\n", addr, cfg.DataDir)
-	if err := engine.Run(addr); err != nil {
+	// 公网暴露面收敛（doc/14 §5）：http.Server 显式超时取代 engine.Run 的零超时。
+	// SSE 是长连接，走 IdleTimeout + ConnContext；WriteTimeout 不能设（会掐断长连），
+	// 慢速攻击由 ReadHeaderTimeout（Slowloris）+ 请求体上限（MaxBytesReader）覆盖。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           engine,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       75 * time.Second,
+		ConnContext:       middleware.WithConn,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("启动失败: %v", err)
 	}
 	close(taskStop)

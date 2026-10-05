@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/config"
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
@@ -57,7 +60,8 @@ func clientIPOf(c *gin.Context) string {
 	return c.ClientIP()
 }
 
-// SecurityHeaders 安全响应头（doc/05 §3）。
+// SecurityHeaders 安全响应头（doc/05 §3）。HSTS 由 TLS 终结的反代下发
+// （应用侧看不到 TLS 状态，盲设会污染组网内的明文访问）。
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.Writer.Header()
@@ -65,8 +69,74 @@ func SecurityHeaders() gin.HandlerFunc {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		// 全站无摄像头/麦克风/定位/传感器需求，显式禁用最小化恶意脚本面
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 		c.Next()
 	}
+}
+
+// NewPublicRateLimiter 公开路由按来源 IP 的滑动窗口限速（doc/14）。
+// 与 setup/login 的限速同一实现；量级放宽到浏览器正常翻页远够用、
+// 脚本爬取被拖慢的水平。
+func NewPublicRateLimiter() *RateLimiter {
+	return NewRateLimiter(120, time.Minute, 1006, "请求过于频繁，请稍后再试")
+}
+
+// SSEGate 限制单 IP 并发 SSE 连接数（doc/14 滥用面收敛）。
+// SSE 连接挂住不退出期间持续占用一个事件循环与订阅槽位，不设上限时
+// 单 IP 可用纯 TCP 慢连接把面板的连接预算耗尽。超限直接 429。
+func SSEGate(maxPerIP int) gin.HandlerFunc {
+	var mu sync.Mutex
+	perIP := map[string]int{}
+	release := func(ip string) {
+		mu.Lock()
+		if perIP[ip] <= 1 {
+			delete(perIP, ip)
+		} else {
+			perIP[ip]--
+		}
+		mu.Unlock()
+	}
+	return func(c *gin.Context) {
+		ip := clientIPOf(c)
+		mu.Lock()
+		perIP[ip]++
+		over := perIP[ip] > maxPerIP
+		mu.Unlock()
+		if over {
+			release(ip)
+			c.AbortWithStatusJSON(http.StatusTooManyRequests,
+				gin.H{"code": 1006, "msg": "实时流连接数超限", "data": nil})
+			return
+		}
+		c.Set("bt_sse_release", func() { release(ip) })
+		c.Next()
+	}
+}
+
+// ReleaseSSE 释放 SSEGate 占用的并发名额（handler defer 调用）。
+func ReleaseSSE(c *gin.Context) {
+	if v, ok := c.Get("bt_sse_release"); ok {
+		if f, ok := v.(func()); ok {
+			f()
+		}
+	}
+}
+
+// ---------- 连接上下文（http.Server.ConnContext 装配，SSE 写超时用） ----------
+
+type connCtxKey struct{}
+
+// WithConn 作为 http.Server.ConnContext：把底层 net.Conn 放进请求上下文，
+// SSE 等 streaming handler 据此设置写超时，写端卡死的客户端不会无限占用 goroutine。
+func WithConn(ctx context.Context, c net.Conn) context.Context {
+	return context.WithValue(ctx, connCtxKey{}, c)
+}
+
+// ConnOf 从请求上下文取底层连接（未装配时返回 nil，调用方须判空）。
+func ConnOf(ctx context.Context) net.Conn {
+	c, _ := ctx.Value(connCtxKey{}).(net.Conn)
+	return c
 }
 
 // RequireAuth 管理 API 会话校验（滑动过期 24h）。

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
@@ -68,40 +69,39 @@ func (a *App) PublicHistory(c *gin.Context) {
 		return
 	}
 	now := nowUnix()
-	var from int64
-	switch rng {
-	case "1h":
-		from = now - 3600
-	case "6h":
-		from = now - 6*3600
-	case "24h":
-		from = now - 24*3600
-	default:
-		// 7d 走小时聚合
-		rows, err := a.DB.HourlyInRange(id, hourFloor(now-7*86400), hourFloor(now))
-		if err != nil {
-			middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
-			return
+	key := "h|" + itoa(id) + "|" + rng
+	a.respondCached(c, key, func() (any, error) {
+		var from int64
+		switch rng {
+		case "1h":
+			from = now - 3600
+		case "6h":
+			from = now - 6*3600
+		case "24h":
+			from = now - 24*3600
+		default:
+			// 7d 走小时聚合
+			rows, err := a.DB.HourlyInRange(id, hourFloor(now-7*86400), hourFloor(now))
+			if err != nil {
+				return nil, err
+			}
+			return gin.H{"range": rng, "points": rows}, nil
 		}
-		middleware.OK(c, gin.H{"range": rng, "points": rows})
-		return
-	}
-	// 短期走原始采样。窗口聚合（等宽分桶取均值）而非 LIMIT 截断：
-	// 6h/24h 在 10s 采样下有 2k/8k 点，截断会让曲线只画到半程。
-	// 分桶数按范围定：1h→60 点，6h→120，24h→144（每点 10/3/10 分钟）。
-	buckets := 60
-	if rng == "6h" {
-		buckets = 120
-	} else if rng == "24h" {
-		buckets = 144
-	}
-	rows, err := a.DB.SampleWindows(id, from, now, buckets)
-	if err != nil {
-		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
-		return
-	}
-	middleware.OK(c, gin.H{"range": rng, "points": windowPoints(rows, showPowerPublic(settings))})
-	return
+		// 短期走原始采样。窗口聚合（等宽分桶取均值）而非 LIMIT 截断：
+		// 6h/24h 在 10s 采样下有 2k/8k 点，截断会让曲线只画到半程。
+		// 分桶数按范围定：1h→60 点，6h→120，24h→144（每点 10/3/10 分钟）。
+		buckets := 60
+		if rng == "6h" {
+			buckets = 120
+		} else if rng == "24h" {
+			buckets = 144
+		}
+		rows, err := a.DB.SampleWindows(id, from, now, buckets)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"range": rng, "points": windowPoints(rows, showPowerPublic(settings))}, nil
+	})
 }
 
 // GET /api/v1/public/servers/:id/traffic?days=30 （按日流量记录：收发字节）
@@ -126,17 +126,82 @@ func (a *App) PublicTraffic(c *gin.Context) {
 	}
 	now := nowUnix()
 	today := dayFloor(now)
-	rows, err := a.DB.DailyTrafficRange(id, today-int64(days-1)*86400, today)
-	if err != nil {
-		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
-		return
-	}
-	middleware.OK(c, gin.H{"days": days, "points": rows})
+	key := "t|" + itoa(id) + "|" + itoa(int64(days))
+	a.respondCached(c, key, func() (any, error) {
+		rows, err := a.DB.DailyTrafficRange(id, today-int64(days-1)*86400, today)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"days": days, "points": rows}, nil
+	})
 }
 
 func dayFloor(ts int64) int64 {
 	t := time.Unix(ts, 0)
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Unix()
+}
+
+// historyCache history/traffic 响应的进程内短 TTL 缓存（doc/14 滥用面收敛）：
+// 公网匿名可无限刷这两类 SQL 重接口，缓存把单 IP 限速之外的全局成本钉死。
+// 键 = id|range（history）与 id|days（traffic）；值 = 预序列化响应体。
+type historyCache struct {
+	mu    sync.Mutex
+	byKey map[string]cacheEntry
+}
+
+type cacheEntry struct {
+	body    []byte
+	expires int64
+}
+
+// historyCacheTTL 缓存存活秒数。曲线粒度最小 10s 一点、轮询 10s 一轮，
+// 5s 的缓存对页面观感无影响，但把无限并发刷库收敛成每键每 5s 至多一次 SQL。
+const historyCacheTTL = 5
+
+// historyCacheMax 条目上限（id × range 组合有限，正常远到不了；防御性兜底）。
+const historyCacheMax = 1024
+
+func newHistoryCache() *historyCache { return &historyCache{byKey: map[string]cacheEntry{}} }
+
+func (h *historyCache) get(key string) ([]byte, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.byKey[key]
+	if !ok || e.expires < nowUnix() {
+		return nil, false
+	}
+	return e.body, true
+}
+
+func (h *historyCache) put(key string, body []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.byKey) >= historyCacheMax {
+		// 简单防膨胀：整体清空重来（过期条目下次 get 也会被忽略）
+		h.byKey = map[string]cacheEntry{}
+	}
+	h.byKey[key] = cacheEntry{body: body, expires: nowUnix() + historyCacheTTL}
+}
+
+// respondCached 命中缓存直接回预序列化包体；未命中由 produce 生成后回填。
+func (a *App) respondCached(c *gin.Context, key string, produce func() (any, error)) {
+	cache := a.histCacheOf()
+	if body, ok := cache.get(key); ok {
+		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+		return
+	}
+	data, err := produce()
+	if err != nil {
+		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+		return
+	}
+	body, merr := jsonMarshal(gin.H{"code": 0, "msg": "ok", "data": data})
+	if merr != nil {
+		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+		return
+	}
+	cache.put(key, body)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
 // windowPoints SQL 分桶聚合行 → 曲线点（字段白名单同 downsampleMetrics）。
@@ -161,10 +226,17 @@ func (a *App) PublicStream(c *gin.Context) {
 		middleware.AbortCode(c, http.StatusUnauthorized, 1002, "未登录或会话已过期")
 		return
 	}
+	// 释放 SSEGate 的单 IP 并发名额（含正常返回与 panic 两条路径）
+	defer middleware.ReleaseSSE(c)
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	// 每次写帧限时：客户端收包卡死时写端最多阻塞 30s，然后由写超时触发
+	// 连接关闭，flush goroutine 不会无限堆积（连接从 ConnContext 拿）。
+	if conn := middleware.ConnOf(c.Request.Context()); conn != nil {
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
+	}
 	writeSSE(c, "snapshot", a.Coll.SSEFrame())
 	c.Writer.Flush()
 
@@ -174,6 +246,9 @@ func (a *App) PublicStream(c *gin.Context) {
 	defer ping.Stop()
 	notify := c.Writer.CloseNotify()
 	for {
+		if conn := middleware.ConnOf(c.Request.Context()); conn != nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		}
 		select {
 		case <-notify:
 			return
