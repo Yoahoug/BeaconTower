@@ -19,3 +19,11 @@ app.use(router)
 // v-spotlight：指针辉光（写入 --mx/--my，配合 .spot::before 渐变）
 app.directive('spotlight', vSpotlight)
 app.mount('#app')
+
+// PWA Service Worker（vite-plugin-pwa 生成，registerType: autoUpdate）：
+// 新 SW 安装完成即接管，下次导航加载新版本；无弹窗打扰。
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    import('virtual:pwa-register').then(({ registerSW }) => registerSW({ immediate: true }))
+  })
+}

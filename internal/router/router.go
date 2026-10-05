@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -168,12 +169,26 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				c.FileFromFS(strings.TrimPrefix(c.Request.URL.Path, "/"), http.FS(distFS))
 			})
 			// 根级静态文件（manifest.webmanifest、图标、robots.txt 等）：
-			// 短缓存，文件更新后分钟级生效；目录穿越由 embed FS 天然免疫
-			r.GET("/favicon.ico", func(c *gin.Context) { serveRootFile(c, distFS, "favicon.ico") })
-			r.GET("/robots.txt", func(c *gin.Context) { serveRootFile(c, distFS, "robots.txt") })
-			r.GET("/manifest.webmanifest", func(c *gin.Context) { serveRootFile(c, distFS, "manifest.webmanifest") })
+			// 短缓存，文件更新后分钟级生效；目录穿越由 embed FS 天然免疫。
+			// HEAD 并行注册：gin 不会从 GET 自动派生 HEAD，漏了的话 HEAD 请求
+			// 会掉进 SPA 回退返回 text/html（iOS 安装预检走 HEAD，MIME 必须对）。
+			root := func(name string) {
+				r.GET(name, func(c *gin.Context) { serveRootFile(c, distFS, strings.TrimPrefix(name, "/")) })
+				r.HEAD(name, func(c *gin.Context) { serveRootFile(c, distFS, strings.TrimPrefix(name, "/")) })
+			}
+			root("/favicon.ico")
+			root("/robots.txt")
+			root("/manifest.webmanifest")
+			// Workbox Service Worker（vite-plugin-pwa 产出）：浏览器要求
+			// SW 脚本必须以 JS MIME 返回，掉进 SPA 回退（text/html）会拒注册
+			root("/sw.js")
 			r.GET("/manifest.json", func(c *gin.Context) { serveRootFile(c, distFS, "manifest.webmanifest") })
+			r.HEAD("/manifest.json", func(c *gin.Context) { serveRootFile(c, distFS, "manifest.webmanifest") })
 			r.GET("/icons/*filepath", func(c *gin.Context) {
+				c.Header("Cache-Control", "public, max-age=86400")
+				c.FileFromFS(strings.TrimPrefix(c.Request.URL.Path, "/"), http.FS(distFS))
+			})
+			r.HEAD("/icons/*filepath", func(c *gin.Context) {
 				c.Header("Cache-Control", "public, max-age=86400")
 				c.FileFromFS(strings.TrimPrefix(c.Request.URL.Path, "/"), http.FS(distFS))
 			})
@@ -186,6 +201,15 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				}
 				if strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/icons/") {
 					c.Status(http.StatusNotFound)
+					return
+				}
+				// Workbox 运行时（vite-plugin-pwa 产出 dist 根的 workbox-*.js）：
+				// 不在 /assets 下，掉进 SPA 回退会让 SW importScripts 拿到 HTML，
+				// install 静默失败。gin catch-all 的字面段必须以 / 结尾，
+				// "/workbox-*filepath" 注册不上，故在 NoRoute 里按文件名识别。
+				if n := path.Base(p); strings.HasPrefix(n, "workbox-") && strings.HasSuffix(n, ".js") {
+					c.Header("Cache-Control", "public, max-age=86400")
+					c.FileFromFS(n, http.FS(distFS))
 					return
 				}
 				c.Header("Cache-Control", "no-cache")

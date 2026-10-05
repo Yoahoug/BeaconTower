@@ -154,6 +154,10 @@
     <template v-else-if="name === 'arrow-down'">
       <path d="M8 3.2v9.6M4.4 9.2 8 12.8l3.6-3.6" />
     </template>
+    <!-- v2.5 新增：关闭（PWA 安装引导） -->
+    <template v-else-if="name === 'close'">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </template>
     <!-- CPU 芯片 -->
     <template v-else-if="name === 'cpu'">
       <rect x="4" y="4" width="8" height="8" rx="1.6" />

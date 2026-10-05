@@ -10,6 +10,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
+import TabBar from '../components/TabBar.vue'
+import InstallHint from '../components/InstallHint.vue'
 import { getCachedStatus, resetAuthCache } from '../api/auth'
 import { useMonitorStore } from '../stores/monitor'
 import { useUiStore } from '../stores/ui'
@@ -21,6 +23,14 @@ const monitor = useMonitorStore()
 const ui = useUiStore()
 
 const crumbs = computed(() => route.meta.breadcrumb || [{ label: '总览' }])
+
+// 离线快照提示文案（doc/15）：数据来自 localStorage 快照时显示数据时间
+const staleText = computed(() => {
+  if (!monitor.stale) return ''
+  const t = monitor.staleAt ? new Date(monitor.staleAt * 1000) : null
+  const hm = t ? `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}` : ''
+  return t ? `离线 · 数据时间 ${hm}` : '离线 · 展示最后快照'
+})
 
 // ---------- 管理端导航（并入主侧栏；仅在登录后的 /admin 子页出现，公开页不暴露入口） ----------
 const adminNav = [
@@ -213,6 +223,11 @@ onUnmounted(() => {
         <div class="app-topbar__spacer" />
 
         <div class="app-topbar__meta">
+          <!-- 离线快照提示（PWA 断网时显示，恢复在线自动消失） -->
+          <span v-if="staleText" class="bt-tag bt-tag--warning">
+            <AppIcon name="warn" aria-hidden="true" />
+            {{ staleText }}
+          </span>
           <span class="hide-sm tnum">更新于 {{ agoText(monitor.secondsSinceUpdate) }}</span>
           <span class="bt-tag" :class="monitor.summary.offline ? 'bt-tag--danger' : 'bt-tag--success'">
             <span
@@ -241,11 +256,17 @@ onUnmounted(() => {
       </footer>
     </div>
 
+    <!-- 移动端底部玻璃 tab bar（仅公开路由，桌面端不渲染） -->
+    <TabBar />
+
     <!-- 全局轻提示（上滑淡入） -->
     <Transition name="toast">
       <div v-if="ui.toast" class="app-toast" role="status" aria-live="polite">
         {{ ui.toast }}
       </div>
     </Transition>
+
+    <!-- iOS 安装引导（仅未安装时出现一次） -->
+    <InstallHint />
   </div>
 </template>

@@ -1,0 +1,33 @@
+{
+  "name": "BeaconTower · 信标塔 · 服务器监控",
+  "short_name": "信标塔",
+  "description": "自托管服务器监控面板：SSH 无 Agent 采集，公开页面不展示 IP 及敏感信息。",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#e8f0fd",
+  "background_color": "#edf1f9",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icons/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/pwa-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

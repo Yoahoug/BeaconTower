@@ -18,6 +18,13 @@ const FRP_REFRESH_MS = 60000
 //（见 startWg/stopWg），公开端点不做任何 SSH 实时探测。
 const WG_REFRESH_MS = 60000
 
+// 离线快照（doc/15 §离线体验）：最后一次成功的公开全量数据落 localStorage。
+// 选 localStorage 而非 IndexedDB：快照是单键 JSON（几十 KB 级），同步读写
+// 无 await 开销，启动路径零改造；IndexedDB 的事务/版本管理对这个量级是过度设计。
+// 断网打开 → 先渲染旧快照再刷 SSE，显示「数据时间」，不白屏。
+const OFFLINE_CACHE_KEY = 'beacontower.snapshot.v1'
+const OFFLINE_CACHE_MAX_AGE_S = 7 * 86400 // 超过一周的旧快照不再展示（避免误导）
+
 // 后端公开 metrics 速率字段（net_*_bps）实际是「字节/秒」（/proc/net/dev 字节
 // 计数器差分），前端按 B/s 展示 → 卡片字段（GB/天/单数）的换算见下
 const GB = 1024 ** 3
@@ -130,6 +137,11 @@ export const useMonitorStore = defineStore('monitor', {
     query: '',
     statusFilter: 'all', // all | online | offline
 
+    // 离线快照标记：stale=true 表示当前数据来自 localStorage 快照而非实时接口，
+    // 顶栏据此显示「离线 · 数据时间」提示（恢复在线后自动消失）
+    stale: false,
+    staleAt: 0, // 快照抓取时刻（秒级时间戳）
+
     // 内网穿透摘要（公开接口 /v1/public/frp，字段白名单见 doc/13 §12）
     frp: null, // { platforms: [], summary: {} }，未拉到时为 null
     frpStatus: 'idle', // idle | loading | ready | error
@@ -197,6 +209,7 @@ export const useMonitorStore = defineStore('monitor', {
   actions: {
     start() {
       if (this._timer) return
+      this.loadOfflineSnapshot() // 断网也能先渲染旧数据，再被实时数据覆盖
       this.fetchAll(true)
       this._timer = window.setInterval(() => {
         if (document.hidden) return // 不可见标签页暂停，省电省请求
@@ -231,8 +244,16 @@ export const useMonitorStore = defineStore('monitor', {
     },
 
     _onVisibility() {
-      // 回到可见时立即刷新一次，避免展示过期数据
-      if (!document.hidden) this.fetchAll()
+      if (document.hidden) {
+        // PWA 独立窗口（doc/15）：iOS 切后台不保证触发 SSE 的 onerror，
+        // 主动断开防止连接堆积（回到前台重连）；浏览器标签页语义相同。
+        this.closeSSE()
+        return
+      }
+      // 回到可见：先看 SSE 是否还活着（_sse 为空 = 切后台时被主动断开），
+      // 立即重连 + 刷新一次，避免展示过期数据
+      if (!this._sse) this.connectSSE()
+      this.fetchAll()
     },
 
     setQuery(q) {
@@ -259,14 +280,61 @@ export const useMonitorStore = defineStore('monitor', {
         this.applyList(Array.isArray(list) ? list : [], first)
         if (this.status !== 'ready') this.status = 'ready'
         this.error = ''
+        this.stale = false
+        this.saveOfflineSnapshot(list)
       } catch (e) {
         if (!this._seeded) {
-          this.status = 'error'
-          this.error = e?.message || '数据加载失败'
+          // 有离线快照垫底就不打错误页：旧数据好过白屏（doc/15）
+          if (this.stale) {
+            this.status = 'ready'
+            this.error = ''
+          } else {
+            this.status = 'error'
+            this.error = e?.message || '数据加载失败'
+          }
         }
       } finally {
         this._polling = false
       }
+    },
+
+    // ---------- 离线快照（localStorage，见文件头说明） ----------
+
+    saveOfflineSnapshot(rawList) {
+      if (!Array.isArray(rawList) || !rawList.length) return
+      try {
+        localStorage.setItem(
+          OFFLINE_CACHE_KEY,
+          JSON.stringify({ ts: Math.floor(Date.now() / 1000), servers: rawList }),
+        )
+      } catch {
+        /* 隐私模式/配额满：快照是增强功能，失败静默 */
+      }
+    },
+
+    loadOfflineSnapshot() {
+      let snap
+      try {
+        snap = JSON.parse(localStorage.getItem(OFFLINE_CACHE_KEY) || 'null')
+      } catch {
+        snap = null
+      }
+      if (!snap || !Array.isArray(snap.servers) || !snap.servers.length) return
+      const ageS = Math.floor(Date.now() / 1000) - (snap.ts || 0)
+      if (ageS < 0 || ageS > OFFLINE_CACHE_MAX_AGE_S) {
+        try {
+          localStorage.removeItem(OFFLINE_CACHE_KEY)
+        } catch {
+          /* 忽略 */
+        }
+        return
+      }
+      this.applyList(snap.servers, true)
+      // 快照垫底：标记 stale（顶栏显示「离线 · 数据时间」），实时数据到达后清除
+      this.stale = true
+      this.staleAt = snap.ts
+      // 快照里的走势窗口只有历史窗口尾帧，补间直接用快照值
+      this.secondsSinceUpdate = Math.min(ageS, 3600)
     },
 
     applyList(list, first = false) {
