@@ -311,8 +311,15 @@ func (a *App) FRPPublicSnapshot(c *gin.Context) {
 			if n.Online {
 				nodeOnline++
 			}
+			name := n.Name
+			if p.Kind == frp.KindCloudflared {
+				// CF 的「节点」是隧道的 connector，名字取自 cfd_tunnel 名
+				// （如用户的独立专线名）。隧道名对访客属于拓扑信息（本页
+				// 白名单明确不下发），统一换成通用标签，只保留健康与负载。
+				name = "Cloudflare 连接器"
+			}
 			nodeViews = append(nodeViews, gin.H{
-				"name":   n.Name,
+				"name":   name,
 				"group":  n.GroupName,
 				"online": n.Online,
 				"load":   n.Load,

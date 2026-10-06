@@ -35,6 +35,8 @@ const (
 var (
 	containerRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
 	imageRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,199}$`)
+	// dockerVerRe 从 `docker --version` 输出里抠版本号（"Docker version 29.2.0, build 0b9d198" → "29.2.0"）。
+	dockerVerRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
 )
 
 // DefaultImage 各平台默认客户端镜像（与 deploy/frpc-* 发布的一致；
@@ -192,6 +194,11 @@ func dockerCheck(ctx context.Context, conn *sshx.Conn) *DockerStatus {
 		return st
 	}
 	st.Present = true
+	// "Docker version 29.2.0, build xxx" → "29.2.0"：前端展示已带「Docker」前缀，
+	// 原文入库会出现「Docker Docker version …」的重复。
+	if m := dockerVerRe.FindString(v); m != "" {
+		v = m
+	}
 	st.Version = v
 	// daemon 是否在跑（无权限/未启动都会失败）
 	if _, err := conn.Run(ctx, `docker info >/dev/null 2>&1`); err != nil {

@@ -270,3 +270,48 @@ func TestFRPPublicTodayFallsBackToTunnels(t *testing.T) {
 		t.Errorf("在用节点 = %d，期望 0", out.Data.Summary.NodeInUse)
 	}
 }
+
+// TestFRPPublicSnapshotCFConnectorName 游客页隐私：Cloudflare 的「节点」是
+//隧道的 connector，名字取自 cfd_tunnel 名（用户的独立专线名，如 New-api）。
+// 隧道名对访客属于拓扑信息，公开快照必须统一替换成通用标签（doc/13 §12 白名单）。
+func TestFRPPublicSnapshotCFConnectorName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	app := newPublicTestApp(t)
+
+	pid, err := app.DB.InsertFRPPlatform(&store.FRPPlatform{Kind: "cloudflared", Name: "Cloudflare", Status: "ok", TokenEnc: []byte{1}})
+	if err != nil {
+		t.Fatalf("建平台: %v", err)
+	}
+	if _, err := app.DB.ReplaceFRPTunnels(pid, []*store.FRPTunnel{
+		{PlatformID: pid, RemoteID: "t1:h.ne", Name: "h.ne", Proto: "https", NodeID: "t1", Online: true, SyncedAt: 1},
+	}); err != nil {
+		t.Fatalf("写隧道: %v", err)
+	}
+	// connector 节点名 = 隧道名 + " 连接器"（frp.Nodes 归一时的命名）
+	if err := app.DB.ReplaceFRPNodes(pid, []*store.FRPNode{
+		{PlatformID: pid, RemoteID: "t1", Name: "New-api 连接器", GroupName: "Cloudflare", Online: true, SyncedAt: 1},
+	}); err != nil {
+		t.Fatalf("写节点: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/public/frp", nil)
+	app.FRPPublicSnapshot(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d，响应 %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for what, needle := range map[string]string{
+		"独立专线隧道名": "New-api",
+		"连接器原始名":  "连接器\"?:" ,
+	} {
+		_ = what // 只防原始名出现；「Cloudflare 连接器」通用标签允许出现
+		if strings.Contains(body, needle) && needle != "连接器\"?:" {
+			t.Errorf("公开响应泄露%s（命中 %q）：%s", what, needle, body)
+		}
+	}
+	if !strings.Contains(body, "Cloudflare 连接器") {
+		t.Errorf("公开响应应包含通用标签「Cloudflare 连接器」：%s", body)
+	}
+}

@@ -715,7 +715,7 @@ async function runDeployOp(d, fn, okText) {
 function deploySync(d) {
   return runDeployOp(d, async () => {
     const r = await admin.frpDeploySync(d.id)
-    await loadDeployments()
+    await loadDeployments(true)
     toast(r?.log_tail ? '已同步（容器有输出，建议看日志）' : '配置已同步')
   })
 }
@@ -724,7 +724,10 @@ function deployAction(d, action) {
   const text = { restart: '容器已重启', stop: '容器已停止', start: '容器已启动' }[action] || '已执行'
   return runDeployOp(d, async () => {
     await admin.frpDeployAction(d.id, action)
-    await loadDeployments()
+    // refresh=1 经 SSH 回读节点上的真实容器状态：action 的返回体只有本地
+    // 推断值，启动 cloudflared 这类容器后不回读会出现「点了启动但界面
+    // 还是已停止，要手动刷新才变」的假象（实测踩过）。
+    await loadDeployments(true)
     toast(text)
   })
 }
@@ -888,6 +891,18 @@ function tunnelStatus(t) {
   return { cls: 'frp-tag-offline', text: '离线' }
 }
 
+// Cloudflare 统一容器本体（无 ingress 规则的物理隧道行）不是可访问的服务：
+// 没有本地端点（local_ip 空、local_port=0），本地列显示「—」而不是「:0」。
+function isCfContainerRow(t) {
+  return t.platform_kind === 'cloudflared' && !t.remote && !t.local_ip && !t.local_port
+}
+
+// 隧道本地端点文本：CF 统一容器行显示「—」
+function tunnelLocalText(t) {
+  if (isCfContainerRow(t)) return ''
+  return `${t.local_ip || '127.0.0.1'}:${t.local_port}`
+}
+
 // 隧道 → 承载它的面板托管（用于「面板托管」标记与「释放占用」）
 const deployByTunnel = computed(() => {
   const m = {}
@@ -946,13 +961,33 @@ function capsText(caps) {
   return (caps || []).map((c) => map[c] || c)
 }
 
+// ---------- 行内「更多」菜单：点击外部关闭 + 同时只开一个 ----------
+function closeMenus() {
+  document.querySelectorAll('details.frp-menu[open]').forEach((d) => d.removeAttribute('open'))
+}
+
+function onMenuToggle(e, key) {
+  if (!e.target.open) return
+  document.querySelectorAll('details.frp-menu[open]').forEach((d) => {
+    if (d.dataset.menuKey !== key) d.removeAttribute('open')
+  })
+}
+
+function onDocClickCloseMenus(e) {
+  document.querySelectorAll('details.frp-menu[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.removeAttribute('open')
+  })
+}
+
 onMounted(async () => {
+  document.addEventListener('click', onDocClickCloseMenus)
   await refresh()
   await loadTrend()
   idleTimer = window.setInterval(idleReload, 60000)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClickCloseMenus)
   window.clearTimeout(tipTimer)
   if (pollTimer) window.clearInterval(pollTimer)
   if (idleTimer) window.clearInterval(idleTimer)
@@ -1206,7 +1241,10 @@ onBeforeUnmount(() => {
                     </span>
                   </td>
                   <td>{{ t.node_name || t.node_id || '—' }}</td>
-                  <td><span class="mono frp-endpoint">{{ t.local_ip }}:{{ t.local_port }}</span></td>
+                  <td>
+                    <span v-if="tunnelLocalText(t)" class="mono frp-endpoint">{{ tunnelLocalText(t) }}</span>
+                    <span v-else class="bt-text-muted">—</span>
+                  </td>
                   <td>
                     <span v-if="t.remote" class="mono frp-endpoint">{{ t.remote }}</span>
                     <span v-else class="bt-text-muted">—</span>
@@ -1217,46 +1255,44 @@ onBeforeUnmount(() => {
                     <span v-else-if="(t.local_conns || 0) > 0" title="面板在 frpc 所在节点实测的活跃连接数（Sakura 平台不提供连接数）">{{ t.local_conns }}</span>
                     <span v-else class="bt-text-muted">—</span>
                   </td>
-                  <td class="num tnum">{{ fmtBytes((t.today_up || 0) + (t.today_down || 0)) }}</td>
+                  <td class="num tnum">
+                    <span v-if="((t.today_up || 0) + (t.today_down || 0)) > 0">{{ fmtBytes((t.today_up || 0) + (t.today_down || 0)) }}</span>
+                    <span v-else class="bt-text-muted">—</span>
+                  </td>
                   <td>
-                    <div class="frp-row-actions">
+                    <div class="frp-row-actions frp-row-actions--tight">
                       <!-- Cloudflare 独立专线（非面板统一容器）只读：编辑/删除禁用 -->
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
                         :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : ''"
                         @click="openTunnelEdit(t)">编辑</button>
-                      <button v-if="t.platform_kind !== 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="downloadingId === t.id" @click="downloadConfig(t)"
-                        :title="t.platform_kind === 'natfrp'
-                          ? '下载 frpc 配置（樱花分支 INI，配套 deploy/frpc-natfrp 镜像）'
-                          : '下载 frpc 配置（INI，配套 deploy/frpc-chmlfrp 镜像）'">
-                        {{ downloadingId === t.id ? '…' : '配置' }}
-                      </button>
-                      <button v-if="t.platform_kind === 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : '把该平台的 cloudflared 客户端部署到节点上，由面板经 SSH 起容器'"
-                        @click="openDeploy(t)">
-                        托管
-                      </button>
-                      <button v-if="t.platform_kind !== 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeploy(t)"
-                        title="把该平台的 frpc 客户端部署到节点上，由面板经 SSH 起容器并同步配置">
-                        托管
-                      </button>
                       <button v-if="deployByTunnel[t.id]" class="bt-btn bt-btn--ghost bt-btn--sm"
                         type="button" :disabled="deployByTunnel[t.id].status !== 'running'"
                         @click="askReleaseTunnel(t)"
                         title="让面板托管的客户端停止占用这条隧道，交给其它机器/官方客户端接管">
-                        释放占用
+                        释放
                       </button>
-                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
-                        type="button" @click="openLock(t)">锁定</button>
-                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
-                        type="button" @click="openMigrate(t)">迁移</button>
-                      <button v-if="t.platform_kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
-                        type="button" @click="authTunnel(t)">认证</button>
-                      <button v-if="t.platform_kind === 'chmlfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
-                        type="button" @click="offlineTunnel(t)">下线</button>
-                      <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
-                        :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : ''"
-                        @click="askDeleteTunnel(t)">删除</button>
+                      <details class="frp-menu" :data-menu-key="`t-${t.id}`" @toggle="onMenuToggle($event, `t-${t.id}`)">
+                        <summary class="bt-btn bt-btn--ghost bt-btn--sm frp-menu__btn" title="更多操作"
+                          :aria-label="`隧道 ${t.name} 的更多操作`">⋯</summary>
+                        <div class="frp-menu__list" @click="closeMenus()">
+                          <button type="button" :disabled="downloadingId === t.id" @click="downloadConfig(t)"
+                            :title="t.platform_kind === 'natfrp'
+                              ? '下载 frpc 配置（樱花分支 INI，配套 deploy/frpc-natfrp 镜像）'
+                              : '下载 frpc 配置（INI，配套 deploy/frpc-chmlfrp 镜像）'">
+                            {{ downloadingId === t.id ? '下载中…' : '下载配置' }}
+                          </button>
+                          <button type="button" :disabled="isCfReadonly(t)"
+                            :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : '把该平台的客户端部署到节点上，由面板经 SSH 起容器'"
+                            @click="openDeploy(t)">托管到节点</button>
+                          <button v-if="t.platform_kind === 'natfrp'" type="button" @click="openLock(t)">锁定</button>
+                          <button v-if="t.platform_kind === 'natfrp'" type="button" @click="openMigrate(t)">迁移节点</button>
+                          <button v-if="t.platform_kind === 'natfrp'" type="button" @click="authTunnel(t)">访问认证</button>
+                          <button v-if="t.platform_kind === 'chmlfrp'" type="button" @click="offlineTunnel(t)">下线</button>
+                          <button type="button" class="frp-menu__danger" :disabled="isCfReadonly(t)"
+                            :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : ''"
+                            @click="askDeleteTunnel(t)">删除隧道</button>
+                        </div>
+                      </details>
                     </div>
                   </td>
                 </tr>
@@ -1332,24 +1368,25 @@ onBeforeUnmount(() => {
                   </td>
                   <td>{{ d.last_sync_at ? agoFromTs(d.last_sync_at) : '—' }}</td>
                   <td>
-                    <div class="frp-row-actions">
+                    <div class="frp-row-actions frp-row-actions--tight">
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
                         :disabled="deployOpsId === d.id" @click="deploySync(d)"
                         title="重新拉取隧道配置、重建容器（隧道增删改后用这个）">
-                        {{ deployOpsId === d.id ? '…' : '同步配置' }}
+                        {{ deployOpsId === d.id ? '…' : '同步' }}
                       </button>
-                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'restart')">重启</button>
-                      <button v-if="d.status === 'running'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'stop')"
-                        title="停止容器：同时把该客户端承载的隧道让出来，可供其它机器/官方客户端接管">停止</button>
-                      <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        :disabled="deployOpsId === d.id" @click="deployAction(d, 'start')">启动</button>
-                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeployLogs(d)">日志</button>
-                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-                        @click="openDeployEdit(d)" title="增删该客户端承载的隧道（节点与平台不可改）">改隧道</button>
-                      <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
-                        @click="askDeleteDeploy(d)">移除</button>
+                      <details class="frp-menu" :data-menu-key="`d-${d.id}`" @toggle="onMenuToggle($event, `d-${d.id}`)">
+                        <summary class="bt-btn bt-btn--ghost bt-btn--sm frp-menu__btn" title="更多操作"
+                          :aria-label="`客户端 ${d.container} 的更多操作`">⋯</summary>
+                        <div class="frp-menu__list" @click="closeMenus()">
+                          <button type="button" :disabled="deployOpsId === d.id" @click="deployAction(d, 'restart')">重启容器</button>
+                          <button v-if="d.status === 'running'" type="button" :disabled="deployOpsId === d.id" @click="deployAction(d, 'stop')"
+                            title="停止容器：同时把该客户端承载的隧道让出来，可供其它机器/官方客户端接管">停止</button>
+                          <button v-else type="button" :disabled="deployOpsId === d.id" @click="deployAction(d, 'start')">启动</button>
+                          <button type="button" @click="openDeployLogs(d)">日志</button>
+                          <button type="button" @click="openDeployEdit(d)" title="增删该客户端承载的隧道（节点与平台不可改）">改承载隧道</button>
+                          <button type="button" class="frp-menu__danger" @click="askDeleteDeploy(d)">移除托管</button>
+                        </div>
+                      </details>
                     </div>
                   </td>
                 </tr>
@@ -2477,6 +2514,70 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+/* 行内主操作 + 「更多」下拉：隧道/托管表操作列只放 1–2 个按钮，其余收进菜单，
+   避免八按钮竖排把行高撑爆（v2.6.1 重构前实测）。 */
+.frp-row-actions--tight {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.frp-menu {
+  position: relative;
+}
+
+.frp-menu__btn {
+  list-style: none;
+  min-width: 32px;
+  justify-content: center;
+  letter-spacing: 2px;
+}
+
+.frp-menu__btn::-webkit-details-marker {
+  display: none;
+}
+
+.frp-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--bt-surface, #fff);
+  border: 1px solid var(--bt-border, #e2e8f0);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgb(15 23 42 / 12%);
+}
+
+.frp-menu__list button {
+  appearance: none;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.frp-menu__list button:hover:not(:disabled) {
+  background: var(--bt-hover, #f1f5f9);
+}
+
+.frp-menu__list button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.frp-menu__list .frp-menu__danger {
+  color: var(--bt-danger, #dc2626);
 }
 
 /* ================= 客户端托管 ================= */
