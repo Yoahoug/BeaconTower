@@ -318,9 +318,27 @@ func MergeFrpcConfigs(cfgs []string) (string, error) {
 }
 
 // RenderConfig 拉取并合成该托管所辖隧道的客户端配置。
+//
+// Sakura 平台多隧道时走一次批量查询：隧道可能落在不同节点，逐条取回的
+// 配置各带自己的 [common].server_addr，合并只会留第一个，其余隧道会连到
+// 错误节点（平台报「隧道不存在」）。批量 query 让平台产出 [common.<节点>]
+// 分节 + 隧道段标 node=<id> 的多节点 INI，一个进程通吃。
 func (d *Deployer) RenderConfig(ctx context.Context, platform *store.FRPPlatform, tunnels []*store.FRPTunnel) (string, error) {
 	if len(tunnels) == 0 {
 		return "", errors.New("该托管未包含任何隧道")
+	}
+	if platform.Kind == KindNatfrp && len(tunnels) > 1 {
+		_, cli, err := d.Runner.platform(ctx, platform.ID)
+		if err != nil {
+			return "", err
+		}
+		ids := make([]string, 0, len(tunnels))
+		for _, t := range tunnels {
+			ids = append(ids, t.RemoteID)
+		}
+		if natcli, ok := cli.(*NatfrpClient); ok {
+			return natcli.ConfigForBatch(ctx, ids)
+		}
 	}
 	cfgs := make([]string, 0, len(tunnels))
 	for _, t := range tunnels {

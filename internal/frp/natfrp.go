@@ -458,6 +458,23 @@ func (n *NatfrpClient) ConfigFor(ctx context.Context, tgt ConfigTarget) (string,
 	return n.TunnelConfig(ctx, tgt.RemoteID, NatfrpFrpcVersion)
 }
 
+// ConfigForBatch 批量取配置：query 支持逗号分隔多个隧道 ID，平台会把同
+// 一批里的多节点入口拆成 [common.<节点>] 分节并在隧道段标注 node=<id>，
+// 一个 frpc 进程即可同时跑落在不同节点的隧道。逐条取再合并是做不到的
+// （[common] 只能有一个 server_addr），多隧道托管必须走这里。
+func (n *NatfrpClient) ConfigForBatch(ctx context.Context, remoteIDs []string) (string, error) {
+	ids := make([]string, 0, len(remoteIDs))
+	for _, id := range remoteIDs {
+		if v := strings.TrimSpace(id); v != "" {
+			ids = append(ids, v)
+		}
+	}
+	if len(ids) == 0 {
+		return "", errors.New("批量取配置需要至少一个隧道 ID")
+	}
+	return n.TunnelConfig(ctx, strings.Join(ids, ","), NatfrpFrpcVersion)
+}
+
 // TunnelTraffic 单隧道流量：{时间戳: 字节}。
 func (n *NatfrpClient) TunnelTraffic(ctx context.Context, id string) (map[string]int64, error) {
 	var m map[string]int64
