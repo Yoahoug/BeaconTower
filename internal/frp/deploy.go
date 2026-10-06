@@ -419,11 +419,20 @@ func (d *Deployer) Sync(ctx context.Context, dep *store.FRPDeploy, platform *sto
 		return nil, fmt.Errorf("拉取镜像 %s 失败（节点需能访问 GHCR）: %w", dep.Image, err)
 	}
 	// 3) 重建容器（host 网络：客户端要访问本机服务；restart 策略保证开机自启）
+	// natfrp 额外挂持久工作目录（FRPC_WORKDIR）：frpc 的 auto HTTPS 在 cwd
+	// 生成自签证书，也会优先加载目录里已有的 <域名>.crt/.key——挂出来才能
+	// 跨容器重建保留正式证书（如手工放置的 Let's Encrypt），否则每次重建
+	// 都回退自签、浏览器报证书告警（ops 真机实测）。
+	workdir := ""
+	if platform.Kind == KindNatfrp {
+		certDir := dir + "/certs"
+		workdir = " -v " + certDir + ":/data/frpc-work -e FRPC_WORKDIR=/data/frpc-work"
+	}
 	run := "docker rm -f " + dep.Container + " >/dev/null 2>&1 || true\n" +
 		"docker run -d --name " + dep.Container + " --restart unless-stopped --network host" +
 		" --label " + managedLabel + " --label beacontower.kind=" + platform.Kind +
 		" --label beacontower.deploy=" + strconv.FormatInt(dep.ID, 10) +
-		" -v " + dep.ConfigPath + ":" + containerConfPath + ":ro " + dep.Image
+		" -v " + dep.ConfigPath + ":" + containerConfPath + ":ro" + workdir + " " + dep.Image
 	if _, err := conn.Run(ctx, run); err != nil {
 		return nil, fmt.Errorf("启动容器失败: %w", err)
 	}
@@ -500,11 +509,14 @@ func (d *Deployer) syncCloudflared(ctx context.Context, dep *store.FRPDeploy, pl
 	}
 	// 重建容器（host 网络：ingress service 指向宿主 localhost 时需要；
 	// 指向 LAN IP 时亦无冲突）。token 只经 SSH 通道进命令行，不落盘。
+	// --protocol http2：默认 quic 走 UDP 7844，在 fake-IP 透明代理（mihomo/
+	// OpenClash）网关下 UDP 转发不通会一直 "no recent network activity"，
+	// TCP 7844 的 http2 不受影响（ops 真机实测，doc/16 §9）。
 	run := "docker rm -f " + dep.Container + " >/dev/null 2>&1 || true\n" +
 		"docker run -d --name " + dep.Container + " --restart unless-stopped --network host" +
 		" --label " + managedLabel + " --label beacontower.kind=" + platform.Kind +
 		" --label beacontower.deploy=" + strconv.FormatInt(dep.ID, 10) +
-		" " + dep.Image + " tunnel --no-autoupdate run --token " + tok
+		" " + dep.Image + " tunnel --no-autoupdate --protocol http2 run --token " + tok
 	if _, err := conn.Run(ctx, run); err != nil {
 		return nil, fmt.Errorf("启动容器失败: %w", err)
 	}

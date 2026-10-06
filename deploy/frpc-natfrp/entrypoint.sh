@@ -8,6 +8,12 @@ set -eu
 
 cfg="${FRPC_CONFIG:-/etc/frp/frpc.ini}"
 
+# frpc 的工作目录 = 进程 cwd：auto HTTPS 的自签证书、以及优先加载的
+# <域名>.crt/.key 都落在 cwd。默认 /（容器可写层，重建即丢）；面板托管
+# 会挂载持久目录并设 FRPC_WORKDIR，让证书跨容器重建保留（Launcher 时代
+# 即 FrpcWorkingDirectory 的等价物）。
+cd "${FRPC_WORKDIR:-/}"
+
 if [ -f "$cfg" ]; then
   exec /usr/local/bin/frpc -c "$cfg" -n "$@"
 fi
