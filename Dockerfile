@@ -2,7 +2,9 @@
 FROM node:22-alpine AS frontend
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --no-fund --no-audit
+# npm 缓存挂 BuildKit cache：package-lock 不变时 npm ci 只从本地缓存解包，不走网络
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-fund --no-audit --prefer-offline
 COPY web/ ./
 RUN npm run build            # 产出 /src/web/dist
 
@@ -10,11 +12,16 @@ RUN npm run build            # 产出 /src/web/dist
 FROM golang:1.26-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# 模块缓存挂 BuildKit cache：go.sum 不变时秒级完成（原每次全量下载 ~8s）
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
 # 将阶段 1 产物拷入 web/dist，供 main.go 的 //go:embed 打进二进制
 COPY --from=frontend /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/beacontower .
+# 编译缓存挂 BuildKit cache：GOCACHE 跨构建保留已编译包，
+# 代码小改时 go build 从 ~25s 降到 ~5s（每次 import 变化才重编受影响包）
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/beacontower .
 
 # ---------- 阶段 3：运行镜像 ----------
 FROM alpine:3.20

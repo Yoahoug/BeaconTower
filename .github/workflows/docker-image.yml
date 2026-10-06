@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -53,6 +53,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+          # gha 缓存保住基础镜像层；层内 go build / npm 的增量由 Dockerfile 里的
+          # --mount=type=cache 承担（cache scopes 隔离 mod/build/npm 三个缓存卷）
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
