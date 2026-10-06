@@ -65,6 +65,7 @@ type Profile struct {
 	BaseLoadW      float64
 	BaseLoadSource string
 	MonthKwh       float64
+	NetIfaces      string // 采集侧实际统计的网卡名（逗号分隔），供前端标注流量口径
 }
 
 type Metric struct {
@@ -517,12 +518,12 @@ func (db *DB) GetProfile(serverID int64) (*Profile, error) {
 		COALESCE(mem_total,0), COALESCE(swap_total,0), COALESCE(disk_total,0), COALESCE(disks_json,''),
 		COALESCE(virt,''), COALESCE(public_ip,''), COALESCE(geo_country,''), COALESCE(geo_city,''),
 		COALESCE(power_rapl,0), COALESCE(power_battery,0), COALESCE(base_load_w,0),
-		COALESCE(base_load_source,'default'), COALESCE(month_kwh,0)
+		COALESCE(base_load_source,'default'), COALESCE(month_kwh,0), COALESCE(net_ifaces,'')
 		FROM server_profile WHERE server_id = ?`, serverID).
 		Scan(&p.ServerID, &p.Hostname, &p.OsName, &p.OsVersion, &p.Kernel, &p.Arch, &p.CpuModel,
 			&p.CpuCores, &p.MemTotal, &p.SwapTotal, &p.DiskTotal, &p.DisksJSON, &p.Virt,
 			&p.PublicIP, &p.GeoCountry, &p.GeoCity,
-			&p.PowerRapL, &p.PowerBattery, &p.BaseLoadW, &p.BaseLoadSource, &p.MonthKwh)
+			&p.PowerRapL, &p.PowerBattery, &p.BaseLoadW, &p.BaseLoadSource, &p.MonthKwh, &p.NetIfaces)
 	// sqlite bool 列以整数存取
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -547,8 +548,8 @@ func (db *DB) QueueProfile(p *Profile, now int64) error {
 const profileUpsertSQL = `INSERT INTO server_profile
 	(server_id, hostname, os_name, os_version, kernel, arch, cpu_model, cpu_cores,
 	 mem_total, swap_total, disk_total, disks_json, virt, public_ip, geo_country, geo_city,
-	 power_rapl, power_battery, base_load_w, base_load_source, month_kwh, collected_at)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 power_rapl, power_battery, base_load_w, base_load_source, month_kwh, net_ifaces, collected_at)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(server_id) DO UPDATE SET hostname=excluded.hostname, os_name=excluded.os_name,
 		os_version=excluded.os_version, kernel=excluded.kernel, arch=excluded.arch,
 		cpu_model=excluded.cpu_model, cpu_cores=excluded.cpu_cores, mem_total=excluded.mem_total,
@@ -556,6 +557,7 @@ const profileUpsertSQL = `INSERT INTO server_profile
 		virt=excluded.virt, public_ip=excluded.public_ip, geo_country=excluded.geo_country,
 		geo_city=excluded.geo_city, power_rapl=excluded.power_rapl, power_battery=excluded.power_battery,
 		base_load_w=excluded.base_load_w, base_load_source=excluded.base_load_source,
+		net_ifaces=excluded.net_ifaces,
 		month_kwh=CASE WHEN excluded.collected_at > 0 THEN server_profile.month_kwh
 			ELSE excluded.month_kwh END,
 		collected_at=excluded.collected_at`
@@ -567,7 +569,7 @@ func upsertProfileExec(e execer, p *Profile, now int64) error {
 	_, err := e.Exec(profileUpsertSQL,
 		p.ServerID, p.Hostname, p.OsName, p.OsVersion, p.Kernel, p.Arch, p.CpuModel, p.CpuCores,
 		p.MemTotal, p.SwapTotal, p.DiskTotal, p.DisksJSON, p.Virt, p.PublicIP, p.GeoCountry, p.GeoCity,
-		boolInt(p.PowerRapL), boolInt(p.PowerBattery), p.BaseLoadW, p.BaseLoadSource, p.MonthKwh, now)
+		boolInt(p.PowerRapL), boolInt(p.PowerBattery), p.BaseLoadW, p.BaseLoadSource, p.MonthKwh, p.NetIfaces, now)
 	return err
 }
 
@@ -682,7 +684,7 @@ const snapshotJoinSQL = `SELECT s.id, s.name, s.region, s.region_source, s.tags,
 		COALESCE(p.mem_total,0), COALESCE(p.swap_total,0), COALESCE(p.disk_total,0), COALESCE(p.disks_json,''),
 		COALESCE(p.virt,''), COALESCE(p.public_ip,''), COALESCE(p.geo_country,''), COALESCE(p.geo_city,''),
 		COALESCE(p.power_rapl,0), COALESCE(p.power_battery,0), COALESCE(p.base_load_w,0),
-		COALESCE(p.base_load_source,'default'), COALESCE(p.month_kwh,0),
+		COALESCE(p.base_load_source,'default'), COALESCE(p.month_kwh,0), COALESCE(p.net_ifaces,''),
 		l.server_id, l.ts, l.status, COALESCE(l.cpu_pct,0),
 		COALESCE(l.mem_used,0), COALESCE(l.mem_total,0), COALESCE(l.swap_used,0), COALESCE(l.swap_total,0),
 		COALESCE(l.disk_used,0), COALESCE(l.disk_total,0),
@@ -718,7 +720,7 @@ func (db *DB) SnapshotRows() ([]*SnapshotRow, error) {
 			&p.MemTotal, &p.SwapTotal, &p.DiskTotal, &p.DisksJSON,
 			&p.Virt, &p.PublicIP, &p.GeoCountry, &p.GeoCity,
 			&p.PowerRapL, &p.PowerBattery, &p.BaseLoadW,
-			&p.BaseLoadSource, &p.MonthKwh,
+			&p.BaseLoadSource, &p.MonthKwh, &p.NetIfaces,
 			&mServerID, &m.Ts, &m.Status, &m.CpuPct,
 			&m.MemUsed, &m.MemTotal, &m.SwapUsed, &m.SwapTotal,
 			&m.DiskUsed, &m.DiskTotal,
@@ -1014,6 +1016,16 @@ func (db *DB) UpsertHourly(serverID, hourTs int64, cpuAvg, cpuMax float64, memAv
 
 func (db *DB) DeleteSamplesBefore(ts int64) (int64, error) {
 	res, err := db.SQL.Exec(`DELETE FROM metric_sample WHERE ts < ?`, ts)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteAuditBefore 清理早于 ts 的审计日志（audit_log 无界增长会拖慢
+// ListAudit 的 COUNT(*)，保留期由 tasks.cleanup 控制）。
+func (db *DB) DeleteAuditBefore(ts int64) (int64, error) {
+	res, err := db.SQL.Exec(`DELETE FROM audit_log WHERE ts < ?`, ts)
 	if err != nil {
 		return 0, err
 	}

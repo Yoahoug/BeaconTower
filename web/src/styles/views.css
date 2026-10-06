@@ -370,6 +370,21 @@
   background: var(--bt-accent-100);
 }
 
+/* 流量口径标注：实际统计的网卡（物理口径，不含桥/veth/隧道） */
+.node-net-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -2px;
+  padding: 0 4px;
+  color: var(--bt-text-3, var(--bt-text-2));
+  font-size: var(--bt-font-xs, 12px);
+}
+
+.node-net-scope svg {
+  flex-shrink: 0;
+}
+
 /* ---------- 功耗条 ---------- */
 .node-power {
   border-radius: var(--bt-radius-md);

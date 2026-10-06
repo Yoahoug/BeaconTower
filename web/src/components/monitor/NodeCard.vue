@@ -60,6 +60,19 @@ const cpuHistory = computed(() =>
 const powerHistory = computed(() =>
   props.server.online ? props.server.powerHistory || [] : [],
 )
+
+// 流量口径标注：netIfaces 为空＝采集侧未能判定（历史数据/老版本探针）
+const netScopeText = computed(() => {
+  const ifaces = props.server.profile?.netIfaces
+  if (!ifaces) return ''
+  const n = ifaces.split(',').filter(Boolean).length
+  return n > 1 ? `物理网卡 ×${n}` : `网卡 ${ifaces}`
+})
+const netScopeTitle = computed(() => {
+  const ifaces = props.server.profile?.netIfaces
+  const base = '上下行只统计此网卡：桥（br0/docker0）/veth/隧道（wg0 等）与物理网卡是同一份流量，不重复计入'
+  return ifaces ? `${base}；对比 1panel 等工具的「所有网卡」口径时请注意区分` : base
+})
 </script>
 
 <template>
@@ -134,6 +147,11 @@ const powerHistory = computed(() =>
           ↑{{ fmtBytes(server.trafficToday.out) }} · ↓{{ fmtBytes(server.trafficToday.in) }}
         </span>
       </div>
+    </div>
+
+    <div v-if="netScopeText" class="node-net-scope" :title="netScopeTitle">
+      <AppIcon name="pin" aria-hidden="true" />
+      <span class="ellipsis">{{ netScopeText }} · 不含桥/veth/隧道</span>
     </div>
 
     <div

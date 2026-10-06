@@ -56,6 +56,8 @@ func (c *Collector) rebuildSnapshot() {
 			"os": osName, "os_version": osVer, "arch": arch,
 			"cpu_cores": cpuCores, "mem_total": memTotal,
 			"disk_total": diskTotal, "virt": virt,
+			// 流量口径：采集侧实际统计的网卡名（物理口列表或退化时的单接口；空＝未知）
+			"net_ifaces": profNetIfaces(prof),
 		}
 		if status == "online" {
 			online++
@@ -123,6 +125,14 @@ func (c *Collector) rebuildSnapshot() {
 	}
 	c.snap = &Snapshot{Servers: servers, Summary: summary, Ts: now, sseFrame: b}
 	c.mu.Unlock()
+}
+
+// profNetIfaces 画像中的流量口径网卡名（空画像安全取值）。
+func profNetIfaces(prof *store.Profile) string {
+	if prof == nil {
+		return ""
+	}
+	return prof.NetIfaces
 }
 
 func powerOf(r *store.SnapshotRow, prof *store.Profile, price float64, showCost bool) map[string]any {

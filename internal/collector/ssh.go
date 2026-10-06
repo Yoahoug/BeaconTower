@@ -32,7 +32,9 @@ for d in $bt_sysnet/*/device; do
   i=${d%/device}; i=${i##*/}
   [ "$i" = lo ] || bt_phys="$bt_phys $i"
 done
-echo bt_net=$( [ -r $bt_netbase/dev ] && awk -v phys="$bt_phys" '/:/{n=$1; sub(/:$/,"",n); if(n=="lo") next; if(phys!=""){if(index(" "phys" ", " "n" ")==0) next; rx+=$2; tx+=$10; next} if($2+$10>best){best=$2+$10; rx=$2; tx=$10}} END{print rx+0":"tx+0}' $bt_netbase/dev 2>/dev/null || echo 0:0 )
+# bt_netif 供前端标注口径：参与统计的接口名（物理口列表或退化时的单接口）
+echo bt_net=$( [ -r $bt_netbase/dev ] && awk -v phys="$bt_phys" '/:/{n=$1; sub(/:$/,"",n); if(n=="lo") next; if(phys!=""){if(index(" "phys" ", " "n" ")==0) next; rx+=$2; tx+=$10; ifaces=(ifaces==""?n:ifaces","n); next} if($2+$10>best){best=$2+$10; rx=$2; tx=$10; bestn=n}} END{print rx+0":"tx+0}' $bt_netbase/dev 2>/dev/null || echo 0:0 )
+echo bt_netif=$( [ -r $bt_netbase/dev ] && awk -v phys="$bt_phys" '/:/{n=$1; sub(/:$/,"",n); if(n=="lo") next; if(phys!=""){if(index(" "phys" ", " "n" ")==0) next; ifaces=(ifaces==""?n:ifaces","n); next} if($2+$10>best){best=$2+$10; bestn=n}} END{if(ifaces!="")print ifaces; else print bestn}' $bt_netbase/dev 2>/dev/null || echo "" )
 echo bt_tcp=$( [ -r $bt_netbase/tcp ] && awk 'END{print NR-1+0}' $bt_netbase/tcp 2>/dev/null || echo 0 )
 echo bt_tcp6=$( [ -r $bt_netbase/tcp6 ] && awk 'END{print NR-1+0}' $bt_netbase/tcp6 2>/dev/null || echo 0 )
 echo bt_udp=$( [ -r $bt_netbase/udp ] && awk 'END{print NR-1+0}' $bt_netbase/udp 2>/dev/null || echo 0 )
@@ -57,10 +59,11 @@ echo bt_swap_t=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null)
 echo bt_swap_f=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null)
 echo bt_disk=$(df -kP / 2>/dev/null | awk 'END{print $2":"$4}')
 echo bt_disks=$(df -kP -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1{print $6"|"$2"|"$4}' | tr '\n' ';')
-` + collectScriptNet + `echo bt_os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-echo bt_hostname=$(hostname 2>/dev/null || uname -n 2>/dev/null || true)
-echo bt_os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-echo bt_os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+` + collectScriptNet + `bt_os_file=${BT_OS_RELEASE:-/etc/os-release}
+echo bt_os_name=$(grep '^NAME=' $bt_os_file 2>/dev/null | cut -d= -f2 | tr -d '"')
+echo bt_hostname=$(cat ${BT_HOSTNAME_FILE:-/etc/hostname} 2>/dev/null | head -1 || hostname 2>/dev/null || uname -n 2>/dev/null || true)
+echo bt_os_id=$(grep '^ID=' $bt_os_file 2>/dev/null | cut -d= -f2 | tr -d '"')
+echo bt_os_ver=$(grep '^VERSION_ID=' $bt_os_file 2>/dev/null | cut -d= -f2 | tr -d '"')
 echo bt_kernel=$(uname -r 2>/dev/null)
 echo bt_arch=$(uname -m 2>/dev/null)
 echo bt_cpu_model=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-)
@@ -127,6 +130,7 @@ type RawSample struct {
 	DisksRaw  string
 	NetRx     uint64
 	NetTx     uint64
+	NetIfaces string // 参与流量统计的接口名（逗号分隔），供前端标注口径
 	TcpConns  int
 	UdpConns  int
 	Processes int
@@ -230,6 +234,16 @@ func parseOutput(out []byte) (*RawSample, error) {
 				s.NetRx = clampU(parseU(a))
 				s.NetTx = clampU(parseU(b))
 			}
+		case k == "bt_netif":
+			// 接口名白名单字符集校验，逐个清洗（恶意输出注入防护，同 doc/05 §4）
+			var names []string
+			for _, n := range strings.Split(v, ",") {
+				n = strings.TrimSpace(n)
+				if validIfaceName(n) {
+					names = append(names, n)
+				}
+			}
+			s.NetIfaces = strings.Join(names, ",")
 		case k == "bt_tcp":
 			s.TcpConns = int(clampInt(parseInt(v), 0, 1<<30))
 		case k == "bt_tcp6":
@@ -309,7 +323,7 @@ func parseOutput(out []byte) (*RawSample, error) {
 func isSingle(k string) bool {
 	switch k {
 	case "bt_up_s", "bt_load", "bt_cpu", "bt_cpu_n", "bt_mem_t", "bt_mem_a", "bt_mem_f",
-		"bt_swap_t", "bt_swap_f", "bt_disk", "bt_disks", "bt_net", "bt_tcp", "bt_tcp6",
+		"bt_swap_t", "bt_swap_f", "bt_disk", "bt_disks", "bt_net", "bt_netif", "bt_tcp", "bt_tcp6",
 		"bt_udp", "bt_udp6", "bt_proc", "bt_hostname", "bt_os_name", "bt_os_id", "bt_os_ver",
 		"bt_kernel", "bt_arch", "bt_cpu_model", "bt_virt", "bt_pub_ip", "bt_freq",
 		"bat:status", "bat:power_now":
@@ -531,10 +545,10 @@ func darwinDisk(mount string) (total, used int64) {
 	return total, used
 }
 
-func darwinNetTotals() (rx, tx uint64) {
+func darwinNetTotals() (rx, tx uint64, ifaces string) {
 	out, err := exec.Command("netstat", "-ibn").Output()
 	if err != nil {
-		return 0, 0
+		return 0, 0, ""
 	}
 	// 口径与 Linux 侧一致：优先物理接口（en*＝以太网/雷电/USB/无线统一命名），
 	// utun*/awdl*/llw*/bridge*/gif*/stf*/vmenet*/ap*/p2p* 与 en* 是同一份流量（重复计数）。
@@ -542,6 +556,8 @@ func darwinNetTotals() (rx, tx uint64) {
 	var physRx, physTx uint64
 	var foundPhys bool
 	var bestRx, bestTx, bestSum uint64
+	var physNames []string
+	var bestName string
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		// Link 行固定 11 列：<name> <mtu> <Link#n> <mac> Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
@@ -555,16 +571,28 @@ func darwinNetTotals() (rx, tx uint64) {
 			foundPhys = true
 			physRx += r
 			physTx += t
+			if !containsName(physNames, f[0]) {
+				physNames = append(physNames, f[0])
+			}
 			continue
 		}
 		if s := r + t; s > bestSum {
-			bestSum, bestRx, bestTx = s, r, t
+			bestSum, bestRx, bestTx, bestName = s, r, t, f[0]
 		}
 	}
 	if foundPhys {
-		return physRx, physTx
+		return physRx, physTx, strings.Join(physNames, ",")
 	}
-	return bestRx, bestTx
+	return bestRx, bestTx, bestName
+}
+
+func containsName(names []string, n string) bool {
+	for _, x := range names {
+		if x == n {
+			return true
+		}
+	}
+	return false
 }
 
 func parseU(v string) uint64 {
@@ -720,7 +748,7 @@ func parseOutputDarwin(out []byte) (*RawSample, error) {
 	s.CpuTotal, s.CpuIdle = darwinCpuTicks()
 	s.CpuCores = int(darwinSysctlInt("hw.ncpu"))
 	s.DiskTotal, s.DiskUsed = darwinDisk("/")
-	s.NetRx, s.NetTx = darwinNetTotals()
+	s.NetRx, s.NetTx, s.NetIfaces = darwinNetTotals()
 	if s.CpuTotal == 0 || s.MemTotal == 0 {
 		return nil, fmt.Errorf("本机采集不完整（darwin sysctl 缺失）")
 	}

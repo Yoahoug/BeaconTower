@@ -25,6 +25,9 @@ services:
       # 以「mkdir /sys/devices/virtual/powercap: operation not permitted」失败——这类机器
       # 请删掉本行再 up -d（没有功耗数据的物理来源，其余指标不受影响）。
       - /sys/devices/virtual/powercap:/powercap-ro:ro
+      # 宿主系统标识：修正本机节点 OS/主机名显示（否则显示容器自己的 Alpine）
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/hostname:/host/etc/hostname:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 60s

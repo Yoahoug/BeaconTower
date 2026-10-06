@@ -11,6 +11,13 @@ services:
       # - BEACON_SETUP_TOKEN=...      # 可选：防初始化接口被抢注（值见容器日志）
     volumes:
       - ./data:/app/data             # SQLite 库 + master.key（如未显式提供主密钥）
+      # 宿主 /proc、/sys 只读挂载：本机节点流量按宿主「物理网卡」口径统计（排除
+      # 桥/veth/隧道重复计数）；不挂则读到容器自身 netns，速率与总量都会失真。
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # 宿主系统标识：修正本机节点 OS/主机名显示（否则显示容器自己的 Alpine）
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/hostname:/host/etc/hostname:ro
     deploy:
       resources:
         limits: { memory: 256M }

@@ -126,6 +126,47 @@ func TestNetCountersPhysicalWithSysfs(t *testing.T) {
 	}
 }
 
+// netCountersNamed 的接口名与字节数必须同源：物理口径返回物理口列表，
+// 退化口径返回单接口名，net/dev 缺失返回空串（前端不显示口径标注）。
+func TestNetCountersNamed(t *testing.T) {
+	dev := writeDevFile(t, netDevSample)
+	rx, tx, ifaces := netCountersNamed(dev, fakeSysNet(t, "enp3s0f1", "wlp2s0"))
+	if rx != 157188193941+1000 || tx != 147561994586+2000 {
+		t.Fatalf("物理口径求和错误 rx=%d tx=%d", rx, tx)
+	}
+	if ifaces != "enp3s0f1,wlp2s0" {
+		t.Fatalf("ifaces=%q want enp3s0f1,wlp2s0", ifaces)
+	}
+	devFB := writeDevFile(t, netDevFallbackSample)
+	if _, _, ifaces := netCountersNamed(devFB, ""); ifaces != "br0" {
+		t.Fatalf("退化口径 ifaces=%q want br0", ifaces)
+	}
+	if _, _, ifaces := netCountersNamed(filepath.Join(t.TempDir(), "nope"), ""); ifaces != "" {
+		t.Fatalf("缺失文件 ifaces 应为空，得到 %q", ifaces)
+	}
+}
+
+// bt_netif 经 parseOutput 解析：合法接口名保留，恶意/非法片段剔除。
+func TestParseOutputNetIfaces(t *testing.T) {
+	out := "bt_mem_t=1024\nbt_cpu=cpu  100 0 50 50 0 0 0 0 0 0\nbt_net=123:456\nbt_netif=enp3s0f1,wlp2s0\n"
+	s, err := parseOutput([]byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.NetIfaces != "enp3s0f1,wlp2s0" || s.NetRx != 123 || s.NetTx != 456 {
+		t.Fatalf("NetIfaces=%q NetRx=%d NetTx=%d", s.NetIfaces, s.NetRx, s.NetTx)
+	}
+	// 注入尝试：路径穿越与空白片段必须被白名单挡掉
+	out = "bt_mem_t=1024\nbt_cpu=cpu  100 0 50 50 0 0 0 0 0 0\nbt_netif=../../etc,eth0,bad name\n"
+	s, err = parseOutput([]byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.NetIfaces != "eth0" {
+		t.Fatalf("注入应被过滤，NetIfaces=%q", s.NetIfaces)
+	}
+}
+
 func TestValidIfaceName(t *testing.T) {
 	ok := []string{"eth0", "enp3s0f1", "br-61a34153e36f", "eth0.100", "wg0", "veth01aa750", "SakuraiTunnel", "eth0@if5", "en0"}
 	for _, n := range ok {
@@ -200,6 +241,9 @@ func TestCollectScriptNetSegment(t *testing.T) {
 	if got, want := m["bt_net"], "157188194941:147561996586"; got != want {
 		t.Fatalf("bt_net=%s want %s", got, want)
 	}
+	if got, want := m["bt_netif"], "enp3s0f1,wlp2s0"; got != want {
+		t.Fatalf("bt_netif=%s want %s", got, want)
+	}
 	if m["bt_tcp"] != "2" || m["bt_tcp6"] != "0" || m["bt_udp"] != "3" || m["bt_udp6"] != "1" {
 		t.Fatalf("连接数错误: %v", m)
 	}
@@ -212,10 +256,16 @@ func TestCollectScriptNetSegment(t *testing.T) {
 	if got, want := m["bt_net"], "9000:9000"; got != want {
 		t.Fatalf("降级 bt_net=%s want %s", got, want)
 	}
+	if got, want := m["bt_netif"], "br0"; got != want {
+		t.Fatalf("降级 bt_netif=%s want %s", got, want)
+	}
 
 	// 缺 dev 文件（老内核/权限）→ 0:0 且不报错
 	m = run(filepath.Join(base, "nope"), filepath.Join(base, "no-such-sysfs"))
 	if m["bt_net"] != "0:0" {
 		t.Fatalf("dev 缺失应输出 bt_net=0:0，实际 %q", m["bt_net"])
+	}
+	if m["bt_netif"] != "" {
+		t.Fatalf("dev 缺失 bt_netif 应为空，实际 %q", m["bt_netif"])
 	}
 }

@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 13
+const schemaVersion = 14
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -533,6 +533,9 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 			)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_node_remote ON frp_node(platform_id, remote_id)`,
 		)
+	case 14: // 流量口径标注：server_profile.net_ifaces 记录采集侧实际统计的网卡名
+		// （物理口列表或退化时的单接口），由前端展示，消除「与 1panel 全接口求和口径」的误解
+		return exec(`ALTER TABLE server_profile ADD COLUMN net_ifaces TEXT DEFAULT ''`)
 	}
 	return fmt.Errorf("unknown migration %d", v)
 }

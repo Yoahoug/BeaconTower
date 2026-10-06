@@ -106,15 +106,22 @@ func collectSelfLinux(ctx context.Context) (*RawSample, error) {
 	// 与「本机=宿主机」的 CPU/内存口径冲突。挂载了宿主 /proc（/host/proc）则优先，
 	// 保证本机节点全字段同口径（compose 需加 /proc:/host/proc:ro）。
 	netDir, sysNetRoot := selfNetDir()
-	s.NetRx, s.NetTx = netCounters(filepath.Join(netDir, "dev"), sysNetRoot)
+	s.NetRx, s.NetTx, s.NetIfaces = netCountersNamed(filepath.Join(netDir, "dev"), sysNetRoot)
 	s.TcpConns = connFileCount(filepath.Join(netDir, "tcp")) + connFileCount(filepath.Join(netDir, "tcp6"))
 	s.UdpConns = connFileCount(filepath.Join(netDir, "udp")) + connFileCount(filepath.Join(netDir, "udp6"))
 	s.Processes = pidCount(hostProcessDir())
 	// 主机名 / os-release / 内核 / 架构
-	if h, err := os.Hostname(); err == nil {
-		s.Hostname = cleanTrim(h, 64)
+	// 容器部署时 /etc/os-release、/etc/hostname 是面板容器自己的（Alpine），
+	// 与「本机＝宿主机」口径冲突：compose 挂宿主两文件到 /host/etc/ 后优先读宿主。
+	if b, err := os.ReadFile(hostEtcFile("hostname")); err == nil && strings.TrimSpace(string(b)) != "" {
+		s.Hostname = cleanTrim(string(b), 64)
 	}
-	if b, err := os.ReadFile("/etc/os-release"); err == nil {
+	if s.Hostname == "" {
+		if h, err := os.Hostname(); err == nil {
+			s.Hostname = cleanTrim(h, 64)
+		}
+	}
+	if b, err := os.ReadFile(hostEtcFile("os-release")); err == nil && len(b) > 0 {
 		s.OsName, s.OsID, s.OsVer = osReleaseGet(b)
 		s.OsName = cleanTrim(s.OsName, 64)
 		s.OsID = cleanTrim(s.OsID, 32)
@@ -240,14 +247,28 @@ func selfNetDir() (netDir, sysNetRoot string) {
 }
 
 // localScriptEnv 本机（is_self）走脚本路径时的路径注入：容器内 /proc/net、/proc 目录、
-// /sys/class/net 都是面板容器自己的，须指向宿主视图，脚本口径才与原生采集一致。
+// /sys/class/net、/etc/os-release、/etc/hostname 都是面板容器自己的，须指向宿主视图，
+// 脚本口径才与原生采集一致。
 func localScriptEnv() []string {
 	netDir, sysNet := selfNetDir()
 	return []string{
 		"BT_NETBASE=" + netDir,
 		"BT_SYSNET=" + sysNet,
 		"BT_PROCDIR=" + hostProcessDir(),
+		"BT_OS_RELEASE=" + hostEtcFile("os-release"),
+		"BT_HOSTNAME_FILE=" + hostEtcFile("hostname"),
 	}
+}
+
+// hostEtcFile 宿主 /etc 文件（compose 只读挂 /etc/os-release、/etc/hostname 到
+// /host/etc/），用于修正容器部署时本机节点的 OS/主机名口径；原生部署不存在该
+// 路径，返回容器自身路径由调用方回退。
+func hostEtcFile(name string) string {
+	if p := filepath.Join("/host/etc", name); fileExists(p) {
+		return p
+	}
+	// 未挂载（原生部署＝进程本身就跑在宿主）直接用本机 /etc
+	return "/etc/" + name
 }
 
 // hostProcRoot 宿主 /proc 挂载点（compose 只读挂宿主 /proc 到 /host/proc），未挂载返回空。

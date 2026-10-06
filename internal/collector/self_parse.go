@@ -145,18 +145,27 @@ func sumNetIfaces(entries []netDevEntry, names []string) (rx, tx uint64) {
 // netCounters 读 net/dev 文件并按「物理网卡优先」口径汇总收发字节。
 // sysNetRoot 为可用于物理判据的 sysfs class/net 目录（空则不判物理，退化取单接口）。
 func netCounters(devFile, sysNetRoot string) (rx, tx uint64) {
+	rx, tx, _ = netCountersNamed(devFile, sysNetRoot)
+	return
+}
+
+// netCountersNamed 同 netCounters，另返回参与统计的接口名（逗号分隔，供前端
+// 标注流量口径）。退化口径返回单个接口名；net/dev 不可读等极端情况返回空串。
+func netCountersNamed(devFile, sysNetRoot string) (rx, tx uint64, ifaces string) {
 	b, err := os.ReadFile(devFile)
 	if err != nil {
-		return 0, 0
+		return 0, 0, ""
 	}
 	entries := netDevEntries(b)
 	names := selectNetIfaces(entries, func(name string) bool {
 		return isPhysicalNetIface(sysNetRoot, name)
 	})
 	if len(names) == 0 {
-		return netDevSum(b)
+		rx, tx = netDevSum(b)
+		return rx, tx, ""
 	}
-	return sumNetIfaces(entries, names)
+	rx, tx = sumNetIfaces(entries, names)
+	return rx, tx, strings.Join(names, ",")
 }
 
 // isPhysicalNetIface 判据：<sysNetRoot>/<name>/device 存在 => 真实 PCI/USB 网卡。

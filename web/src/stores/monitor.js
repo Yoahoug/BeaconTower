@@ -76,6 +76,8 @@ function adaptServer(raw, prev) {
       arch: str(p.arch, '—'),
       cores: num(p.cpu_cores, 0),
       virt: str(p.virt, '—'),
+      // 流量口径：采集侧实际统计的网卡名（物理口列表或退化时的单接口；空＝未知）
+      netIfaces: str(p.net_ifaces, ''),
     },
     metrics: {
       cpu,
@@ -141,6 +143,9 @@ export const useMonitorStore = defineStore('monitor', {
     // 顶栏据此显示「离线 · 数据时间」提示（恢复在线后自动消失）
     stale: false,
     staleAt: 0, // 快照抓取时刻（秒级时间戳）
+
+    // 会话失效标记：private_mode/会话过期时公开页错误态据此显示「前往登录」
+    needLogin: false,
 
     // 内网穿透摘要（公开接口 /v1/public/frp，字段白名单见 doc/13 §12）
     frp: null, // { platforms: [], summary: {} }，未拉到时为 null
@@ -209,6 +214,7 @@ export const useMonitorStore = defineStore('monitor', {
   actions: {
     start() {
       if (this._timer) return
+      this._lastEventAt = Date.now() // 首轮不因 0 值误判 stale（首屏本就 fetchAll）
       this.loadOfflineSnapshot() // 断网也能先渲染旧数据，再被实时数据覆盖
       this.fetchAll(true)
       this._timer = window.setInterval(() => {
@@ -267,6 +273,7 @@ export const useMonitorStore = defineStore('monitor', {
     retry() {
       this.status = 'loading'
       this.error = ''
+      this.needLogin = false
       this.fetchAll(true)
       this.connectSSE()
     },
@@ -280,9 +287,13 @@ export const useMonitorStore = defineStore('monitor', {
         this.applyList(Array.isArray(list) ? list : [], first)
         if (this.status !== 'ready') this.status = 'ready'
         this.error = ''
+        this.needLogin = false
         this.stale = false
         this.saveOfflineSnapshot(list)
       } catch (e) {
+        // 会话失效（private_mode/过期）：标记需登录，公开页错误态据此给
+        // 「前往登录」入口（此前只显示裸错误块，整站不可用）
+        this.needLogin = e?.code === 'UNAUTHORIZED' && e?.status !== 1005 ? true : this.needLogin
         if (!this._seeded) {
           // 有离线快照垫底就不打错误页：旧数据好过白屏（doc/15）
           if (this.stale) {
@@ -378,6 +389,7 @@ export const useMonitorStore = defineStore('monitor', {
     retryFrp() {
       this.frpStatus = 'loading'
       this.frpError = ''
+      this.needLogin = false
       this.fetchFrp()
     },
 
@@ -394,6 +406,8 @@ export const useMonitorStore = defineStore('monitor', {
         this.frpStatus = 'ready'
         this.frpError = ''
       } catch (e) {
+        // 会话失效标记（private_mode 下公开页给登录入口）
+        this.needLogin = e?.code === 'UNAUTHORIZED' && e?.status !== 1005 ? true : this.needLogin
         // 已有数据时静默失败：穿透摘要抖一下不该把整页打成错误态
         if (!this.frp) {
           this.frpStatus = 'error'
@@ -423,6 +437,7 @@ export const useMonitorStore = defineStore('monitor', {
     retryWg() {
       this.wgStatus = 'loading'
       this.wgError = ''
+      this.needLogin = false
       this.fetchWg()
     },
 
@@ -441,6 +456,8 @@ export const useMonitorStore = defineStore('monitor', {
         this.wgStatus = 'ready'
         this.wgError = ''
       } catch (e) {
+        // 会话失效标记（private_mode 下公开页给登录入口）
+        this.needLogin = e?.code === 'UNAUTHORIZED' && e?.status !== 1005 ? true : this.needLogin
         // 已有数据时静默失败：巡检口径的数据抖一下不该把整页打成错误态
         if (!this.wg) {
           this.wgStatus = 'error'
@@ -484,6 +501,12 @@ export const useMonitorStore = defineStore('monitor', {
         this._lastEventAt = Date.now()
         this._sseRetryMs = SSE_RETRY_BASE_MS
       }
+      // 后端 15s 一条 ping 帧，也证明链路活着：采集间隔调大到 5 分钟时，
+      // 仅靠 update 判活会让每个 10s tick 都误判 stale 退化为全量轮询
+      //（后端已把 ": ping" 注释帧改为 "event: ping" 命名帧，见 public.go）
+      es.addEventListener('ping', () => {
+        this._lastEventAt = Date.now()
+      })
       es.onerror = () => {
         this.closeSSE()
         window.clearTimeout(this._sseTimer)

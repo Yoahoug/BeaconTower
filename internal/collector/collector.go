@@ -303,6 +303,11 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 	prof.MemTotal, prof.SwapTotal, prof.DiskTotal = raw.MemTotal, raw.SwapTotal, raw.DiskTotal
 	prof.DisksJSON = disksJSON(raw.DisksRaw)
 	prof.Virt = normalizeVirt(raw.Virt)
+	// 流量口径（实际统计的网卡名）只在采集到非空值时覆盖，避免个别轮次
+	// 读不到 net/dev 把已有标注清空
+	if raw.NetIfaces != "" {
+		prof.NetIfaces = raw.NetIfaces
+	}
 	if raw.PubIP != "" && raw.PubIP != prof.PublicIP {
 		prof.PublicIP = raw.PubIP
 		if r := geoip.Lookup(raw.PubIP); r != nil && srv.RegionSource == "auto" && c.db != nil {
@@ -416,9 +421,14 @@ func (c *Collector) powerFor(serverID int64, prof *store.Profile, raw *RawSample
 	if raw.BatStatus == "Discharging" && raw.BatPowerU > 0 {
 		// 放电时 power_now 即整机真实功耗
 		inst = float64(raw.BatPowerU) / 1e6
-		p.batCalib = append(p.batCalib, [2]float64{inst, pkgW + dramW})
-		if len(p.batCalib) >= 30 && !p.calibrated && prof.BaseLoadSource != "manual" {
-			c.settleCalibration(serverID, prof, p)
+		// 只在「待校准」窗口内积累样本：manual 基线不参与自动校准、已校准后
+		// 不再 append（旧实现两种情况下都持续 append，10s 一轮一天 ~8640 项，
+		// 内存无界增长）
+		if !p.calibrated && prof.BaseLoadSource != "manual" {
+			p.batCalib = append(p.batCalib, [2]float64{inst, pkgW + dramW})
+			if len(p.batCalib) >= 30 {
+				c.settleCalibration(serverID, prof, p)
+			}
 		}
 	} else {
 		inst = pkgW + base
@@ -442,6 +452,7 @@ func (c *Collector) settleCalibration(serverID int64, prof *store.Profile, p *pr
 	n := float64(len(p.batCalib))
 	base := sTotal/n - sParts/n
 	p.calibrated = true
+	p.batCalib = nil // 校准样本只服务这一轮结算，不清空则切片随放电持续膨胀
 	if base >= 2 && base <= 40 && !math.IsNaN(base) {
 		prof.BaseLoadW = math.Round(base*10) / 10
 		prof.BaseLoadSource = "calibration"
