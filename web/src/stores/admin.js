@@ -362,6 +362,10 @@ export const useAdminStore = defineStore('admin', {
       return this.frpRun(() => adminClient.frpBindNatfrp(payload))
     },
 
+    frpBindCloudflared(payload) {
+      return this.frpRun(() => adminClient.frpBindCloudflared(payload))
+    },
+
     frpDeletePlatform(id) {
       return this.frpRun(() => adminClient.frpPlatformDelete(id), { detailId: 0 })
     },

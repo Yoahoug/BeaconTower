@@ -81,7 +81,7 @@ func Open(path string) (*DB, error) {
 func (db *DB) Close() error { return db.SQL.Close() }
 
 // 当前 schema 版本
-const schemaVersion = 12
+const schemaVersion = 13
 
 func (db *DB) migrate() error {
 	if _, err := db.SQL.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER NOT NULL)`); err != nil {
@@ -400,6 +400,53 @@ func applyMigration(sqlDB *sql.DB, v int) error {
 		return exec(
 			`ALTER TABLE frp_tunnel ADD COLUMN local_conns INTEGER DEFAULT 0`,
 			`ALTER TABLE frp_platform ADD COLUMN conns_src TEXT DEFAULT ''`,
+		)
+	case 13: // 第三穿透平台 Cloudflare Tunnel（doc/16）：frp_platform.kind 的
+		// CHECK 约束在建表时写死了 ('natfrp','chmlfrp')，SQLite 不能 ALTER CHECK，
+		// 唯一路径是官方 12 步重建表流程（建新表→拷数据→删旧表→改名→重建索引）。
+		// 全程包在事务里：任一步失败整体回滚，旧表原样保留。v10 建表后 v12 补的
+		// conns_src 列在重建表时直接内联进新表定义。
+		return exec("BEGIN",
+			`CREATE TABLE frp_platform_new (
+				id INTEGER PRIMARY KEY,
+				kind TEXT NOT NULL CHECK (kind IN ('natfrp','chmlfrp','cloudflared')),
+				name TEXT NOT NULL,
+				token_enc BLOB,
+				refresh_enc BLOB,
+				token_expire_at INTEGER DEFAULT 0,
+				uid TEXT DEFAULT '',
+				username TEXT DEFAULT '',
+				group_name TEXT DEFAULT '',
+				speed_limit TEXT DEFAULT '',
+				realname TEXT DEFAULT '',
+				tunnel_used INTEGER DEFAULT 0,
+				tunnel_quota INTEGER DEFAULT 0,
+				conns INTEGER DEFAULT 0,
+				conns_src TEXT DEFAULT '',
+				traffic_day_used INTEGER DEFAULT 0,
+				traffic_remain INTEGER DEFAULT 0,
+				traffic_up INTEGER DEFAULT 0,
+				traffic_down INTEGER DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'unbound',
+				last_error TEXT,
+				last_sync_at INTEGER DEFAULT 0,
+				profile_json TEXT DEFAULT '{}',
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER DEFAULT 0
+			)`,
+			`INSERT INTO frp_platform_new
+				SELECT id, kind, name, token_enc, refresh_enc, COALESCE(token_expire_at,0),
+					COALESCE(uid,''), COALESCE(username,''), COALESCE(group_name,''), COALESCE(speed_limit,''),
+					COALESCE(realname,''), COALESCE(tunnel_used,0), COALESCE(tunnel_quota,0), COALESCE(conns,0),
+					COALESCE(conns_src,''), COALESCE(traffic_day_used,0), COALESCE(traffic_remain,0),
+					COALESCE(traffic_up,0), COALESCE(traffic_down,0),
+					status, COALESCE(last_error,''), COALESCE(last_sync_at,0),
+					COALESCE(profile_json,'{}'), created_at, COALESCE(updated_at,0)
+				FROM frp_platform`,
+			`DROP TABLE frp_platform`,
+			`ALTER TABLE frp_platform_new RENAME TO frp_platform`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_frp_platform_kind_name ON frp_platform(kind, name)`,
+			"COMMIT",
 		)
 	case 10: // 内网穿透平台管理（doc/13）：Sakura / ChmlFrp 账号、隧道镜像、节点镜像、用量快照
 		return exec(

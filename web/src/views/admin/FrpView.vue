@@ -26,7 +26,7 @@ const DEVICE_POLL_MS = 3000
 
 // 节点折叠区默认收起；展开状态按平台 id 记忆（解绑后重置无害）
 
-const kindLabel = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp' }
+const kindLabel = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp', cloudflared: 'Cloudflare' }
 const protoLabel = { tcp: 'TCP', udp: 'UDP', http: 'HTTP', https: 'HTTPS' }
 
 const platforms = computed(() => admin.frpOverview?.platforms || [])
@@ -52,6 +52,12 @@ function nodePlatform(nodeId) {
 
 function tunnelPlatform(t) {
   return platforms.value.find((p) => p.id === t.platform_id) || null
+}
+
+// Cloudflare 独立专线只读判定：同步时平台侧锁了编辑/删除的（非面板统一容器
+// 下的规则，如运维手工建的 New-api 专线），操作按钮一律禁用。
+function isCfReadonly(t) {
+  return t.platform_kind === 'cloudflared' && (t.lock_edit || t.lock_delete)
 }
 
 // ---------- 详情加载：进入页面拉一次全部平台，写操作后只刷对应平台 ----------
@@ -100,14 +106,17 @@ function toast(text, error = false) {
 }
 
 // ---------- 弹窗 ----------
-const bindModal = ref(null) // Sakura 绑定
+const bindModal = ref(null) // Sakura / Cloudflare 绑定
+const cfHelpModal = ref(false) // Cloudflare Token 获取指引
 const deviceModal = ref(null) // ChmlFrp 设备码
 const tunnelModal = ref(null) // 建/改隧道
 // 建/改隧道弹窗针对 ChmlFrp 的额外提示：平台规则比 Sakura 严（真机实测）
-const tunnelModalIsChml = computed(() => {
+const tunnelModalIsChml = computed(() => tunnelModalKind.value === 'chmlfrp')
+const tunnelModalIsCf = computed(() => tunnelModalKind.value === 'cloudflared')
+const tunnelModalKind = computed(() => {
   const m = tunnelModal.value
-  if (!m) return false
-  return platforms.value.find((p) => p.id === m.platformId)?.kind === 'chmlfrp'
+  if (!m) return ''
+  return platforms.value.find((p) => p.id === m.platformId)?.kind || ''
 })
 const migrateModal = ref(null) // 迁移节点
 const lockModal = ref(null) // 锁定设置
@@ -129,12 +138,48 @@ function closeModal() {
   deployLogs.value = null
 }
 
-// ---------- 绑定 Sakura ----------
-function openBind() {
-  bindModal.value = { name: 'Sakura', token: '', busy: false, error: '' }
+// ---------- 绑定 Sakura / Cloudflare ----------
+function openBind(kind = 'natfrp') {
+  if (kind === 'cloudflared') {
+    bindModal.value = {
+      kind,
+      name: 'Cloudflare',
+      token: '',
+      busy: false,
+      error: '',
+    }
+    return
+  }
+  bindModal.value = { kind: 'natfrp', name: 'Sakura', token: '', busy: false, error: '' }
+}
+// 帮助弹窗：指导用户在 CF 后台创建 API Token（Account/Zone ID 由面板自动发现）
+function openCfHelp() {
+  cfHelpModal.value = true
 }
 async function submitBind() {
   const m = bindModal.value
+  if (m.kind === 'cloudflared') {
+    if (!m.token.trim()) {
+      m.error = '请填写 API Token（点击弹窗标题旁的「?」查看获取步骤）'
+      return
+    }
+    m.busy = true
+    m.error = ''
+    try {
+      await admin.frpBindCloudflared({
+        name: m.name.trim() || 'Cloudflare',
+        token: m.token.trim(),
+      })
+      closeModal()
+      await refresh()
+      toast('Cloudflare 绑定成功')
+    } catch (e) {
+      m.error = e?.message || '绑定失败'
+    } finally {
+      if (bindModal.value) bindModal.value.busy = false
+    }
+    return
+  }
   if (!m.token.trim()) {
     m.error = '请填写访问密钥'
     return
@@ -227,7 +272,7 @@ function openTunnelCreate() {
   }
 }
 
-// 建隧道时切换平台 → 节点候选跟随该平台的节点镜像
+// 建隧道时切换平台 → 节点候选跟随该平台的节点镜像（Cloudflare 无节点概念）
 function onCreatePlatformChange() {
   const m = tunnelModal.value
   if (!m || m.mode !== 'create') return
@@ -257,6 +302,10 @@ function openTunnelEdit(t) {
   }
 }
 
+// 隧道名输入框随平台切换占位语义：Cloudflare 的「隧道名」是完整域名
+// （ingress hostname），其余平台是任意名称。
+const tunnelNamePlaceholder = computed(() => (tunnelModalIsCf.value ? 'app.yoahoug.dev' : ''))
+
 async function submitTunnel() {
   const m = tunnelModal.value
   const payload = {
@@ -282,11 +331,15 @@ async function submitTunnel() {
     m.error = 'HTTP(S) 隧道必须填写绑定域名'
     return
   }
+  if (tunnelModalIsCf.value && !payload.name.includes('.')) {
+    m.error = 'Cloudflare 的隧道名是 ingress 域名，须填完整域名（如 app.yoahoug.dev）'
+    return
+  }
   m.busy = true
   m.error = ''
   try {
     if (m.mode === 'create') {
-      if (!payload.node_id) {
+      if (!tunnelModalIsCf.value && !payload.node_id) {
         m.error = '请选择节点'
         return
       }
@@ -850,7 +903,16 @@ function loadTone(load) {
 }
 
 function kindIcon(kind) {
-  return kind === 'chmlfrp' ? 'globe' : 'tunnel'
+  if (kind === 'chmlfrp') return 'globe'
+  if (kind === 'cloudflared') return 'shield'
+  return 'tunnel'
+}
+
+// 平台标签配色：Sakura 蓝、ChmlFrp 紫、Cloudflare 橙（复用 frp-tag-* 样式族）
+function kindTagClass(kind) {
+  if (kind === 'chmlfrp') return 'frp-tag-chml'
+  if (kind === 'cloudflared') return 'frp-tag-cf'
+  return 'frp-tag-nat'
 }
 
 function capsText(caps) {
@@ -886,13 +948,16 @@ onBeforeUnmount(() => {
       </div>
       <div class="page-head__actions">
         <button class="bt-btn bt-btn--default bt-btn--sm" type="button" :disabled="admin.frpSaving" @click="refresh"
-          title="立即向两个平台各拉一次最新状态（轻量同步，不含节点列表）">
+          title="立即向各平台拉一次最新状态（轻量同步，不含节点列表）">
           <AppIcon name="refresh" aria-hidden="true" />{{ admin.frpSaving ? '同步中…' : '刷新' }}
         </button>
         <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">
           <AppIcon name="plus" aria-hidden="true" />授权 ChmlFrp
         </button>
-        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openBind('cloudflared')">
+          <AppIcon name="plus" aria-hidden="true" />绑定 Cloudflare
+        </button>
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind('natfrp')">
           <AppIcon name="plus" aria-hidden="true" />绑定 Sakura
         </button>
       </div>
@@ -908,10 +973,11 @@ onBeforeUnmount(() => {
 
     <StateEmpty v-if="!admin.frpLoading && !platforms.length && !admin.frpError"
       title="尚未接入穿透平台"
-      desc="绑定 Sakura 访问密钥，或通过 OAuth 设备码授权 ChmlFrp 账号后即可在此管理隧道">
-      <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px">
-        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind">绑定 Sakura</button>
+      desc="绑定 Sakura 访问密钥、授权 ChmlFrp 账号或绑定 Cloudflare API Token 后即可在此管理隧道">
+      <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap">
+        <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openBind('natfrp')">绑定 Sakura</button>
         <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openDevice(0)">授权 ChmlFrp</button>
+        <button class="bt-btn bt-btn--default bt-btn--sm" type="button" @click="openBind('cloudflared')">绑定 Cloudflare</button>
       </div>
     </StateEmpty>
 
@@ -935,24 +1001,32 @@ onBeforeUnmount(() => {
               </span>
               <span class="frp-stat">
                 <span class="frp-stat__num tnum">
-                  {{ p.tunnel_quota ? `${p.tunnel_used}/${p.tunnel_quota}` : p.tunnel_used }}
+                  {{ p.tunnel_quota && p.tunnel_quota > 0 ? `${p.tunnel_used}/${p.tunnel_quota}` : p.tunnel_used }}
                 </span>
                 <span class="frp-stat__label">配额</span>
               </span>
               <span class="frp-stat">
-                <span class="frp-stat__num tnum">{{ p.kind === 'natfrp' ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—') : fmtBytes(p.traffic_up) }}</span>
-                <span class="frp-stat__label">{{ p.kind === 'natfrp' ? '剩余流量' : '累计上传' }}</span>
+                <span class="frp-stat__num tnum">{{
+                  p.kind === 'natfrp'
+                    ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—')
+                    : p.kind === 'cloudflared' ? '—' : fmtBytes(p.traffic_up)
+                }}</span>
+                <span class="frp-stat__label">{{ p.kind === 'natfrp' ? '剩余流量' : p.kind === 'cloudflared' ? '流量统计' : '累计上传' }}</span>
               </span>
               <span v-if="p.kind === 'natfrp'" class="frp-stat">
                 <span class="frp-stat__num">{{ p.profile?.sign_signed ? `签 ${p.profile?.sign_days || 0} 天` : '未签' }}</span>
                 <span class="frp-stat__label">签到</span>
               </span>
-              <span v-else class="frp-stat">
+              <span v-else-if="p.kind === 'chmlfrp'" class="frp-stat">
                 <span class="frp-stat__num tnum">{{ fmtBytes(p.traffic_down) }}</span>
                 <span class="frp-stat__label">累计下载</span>
               </span>
+              <span v-else class="frp-stat">
+                <span class="frp-stat__num tnum">{{ p.conns || '—' }}</span>
+                <span class="frp-stat__label">连接器</span>
+              </span>
             </span>
-            <span v-if="p.tunnel_quota" class="frp-quota">
+            <span v-if="p.tunnel_quota && p.tunnel_quota > 0" class="frp-quota">
               <i class="frp-quota__bar" :class="loadTone((p.tunnel_used / p.tunnel_quota) * 100)"
                 :style="{ width: Math.min(100, (p.tunnel_used / p.tunnel_quota) * 100) + '%' }" />
             </span>
@@ -968,7 +1042,9 @@ onBeforeUnmount(() => {
             <button v-if="p.kind === 'chmlfrp'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
               @click="openDevice(p.id)">重新授权</button>
             <button v-if="p.kind === 'natfrp'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
-              @click="openBind">换密钥</button>
+              @click="openBind('natfrp')">换密钥</button>
+            <button v-if="p.kind === 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+              @click="openBind('cloudflared')">换 Token</button>
             <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button" @click="askDeletePlatform(p)">
               解绑
             </button>
@@ -985,25 +1061,25 @@ onBeforeUnmount(() => {
         <div class="bt-card__body">
           <div class="frp-tiles">
             <div v-for="p in platforms" :key="`u-${p.id}`" class="frp-tile frp-tile--plat">
-              <span class="frp-tile__icon" :class="p.kind === 'chmlfrp' ? 'frp-tile__icon--violet' : 'frp-tile__icon--brand'">
+              <span class="frp-tile__icon" :class="p.kind === 'chmlfrp' ? 'frp-tile__icon--violet' : p.kind === 'cloudflared' ? 'frp-tile__icon--cf' : 'frp-tile__icon--brand'">
                 <AppIcon :name="kindIcon(p.kind)" aria-hidden="true" />
               </span>
               <div class="frp-tile__grid">
                 <div class="frp-tile__row">
                   <span class="frp-tile__label">今日流量</span>
-                  <span class="frp-tile__value tnum">{{ p.traffic_day_used ? fmtBytes(p.traffic_day_used) : '—' }}</span>
+                  <span class="frp-tile__value tnum">{{ p.kind === 'cloudflared' ? '—' : (p.traffic_day_used ? fmtBytes(p.traffic_day_used) : '—') }}</span>
                 </div>
                 <div class="frp-tile__row">
-                  <span class="frp-tile__label">{{ p.kind === 'natfrp' ? '剩余流量' : '累计上传/下载' }}</span>
+                  <span class="frp-tile__label">{{ p.kind === 'natfrp' ? '剩余流量' : p.kind === 'cloudflared' ? '流量统计' : '累计上传/下载' }}</span>
                   <span class="frp-tile__value tnum">
                     {{ p.kind === 'natfrp'
                       ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—')
-                      : `${fmtBytes(p.traffic_up)} / ${fmtBytes(p.traffic_down)}` }}
+                      : p.kind === 'cloudflared' ? '平台不提供' : `${fmtBytes(p.traffic_up)} / ${fmtBytes(p.traffic_down)}` }}
                   </span>
                 </div>
                 <div class="frp-tile__row">
                   <span class="frp-tile__label">限速</span>
-                  <span class="frp-tile__value">{{ p.speed_limit || '—' }}</span>
+                  <span class="frp-tile__value">{{ p.speed_limit || (p.kind === 'cloudflared' ? '不限' : '—') }}</span>
                 </div>
                 <div class="frp-tile__row">
                   <span class="frp-tile__label">上次同步</span>
@@ -1079,7 +1155,7 @@ onBeforeUnmount(() => {
                     </div>
                   </td>
                   <td>
-                    <span class="bt-tag" :class="t.platform_kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                    <span class="bt-tag" :class="kindTagClass(t.platform_kind)">
                       {{ kindLabel[t.platform_kind] || t.platform_kind }}
                     </span>
                   </td>
@@ -1098,15 +1174,23 @@ onBeforeUnmount(() => {
                   <td class="num tnum">{{ fmtBytes((t.today_up || 0) + (t.today_down || 0)) }}</td>
                   <td>
                     <div class="frp-row-actions">
-                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openTunnelEdit(t)">编辑</button>
+                      <!-- Cloudflare 独立专线（非面板统一容器）只读：编辑/删除禁用 -->
                       <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : ''"
+                        @click="openTunnelEdit(t)">编辑</button>
+                      <button v-if="t.platform_kind !== 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
                         :disabled="downloadingId === t.id" @click="downloadConfig(t)"
                         :title="t.platform_kind === 'natfrp'
                           ? '下载 frpc 配置（樱花分支 INI，配套 deploy/frpc-natfrp 镜像）'
                           : '下载 frpc 配置（INI，配套 deploy/frpc-chmlfrp 镜像）'">
                         {{ downloadingId === t.id ? '…' : '配置' }}
                       </button>
-                      <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeploy(t)"
+                      <button v-if="t.platform_kind === 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button"
+                        :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : '把该平台的 cloudflared 客户端部署到节点上，由面板经 SSH 起容器'"
+                        @click="openDeploy(t)">
+                        托管
+                      </button>
+                      <button v-if="t.platform_kind !== 'cloudflared'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openDeploy(t)"
                         title="把该平台的 frpc 客户端部署到节点上，由面板经 SSH 起容器并同步配置">
                         托管
                       </button>
@@ -1125,6 +1209,7 @@ onBeforeUnmount(() => {
                       <button v-if="t.platform_kind === 'chmlfrp'" class="bt-btn bt-btn--ghost bt-btn--sm"
                         type="button" @click="offlineTunnel(t)">下线</button>
                       <button class="bt-btn bt-btn--danger-ghost bt-btn--sm" type="button"
+                        :disabled="isCfReadonly(t)" :title="isCfReadonly(t) ? '该节点属于独立专线（非面板创建），仅同步展示' : ''"
                         @click="askDeleteTunnel(t)">删除</button>
                     </div>
                   </td>
@@ -1181,7 +1266,7 @@ onBeforeUnmount(() => {
                     <div v-if="d.docker_ver" class="bt-text-muted frp-cell-note">Docker {{ d.docker_ver }}</div>
                   </td>
                   <td>
-                    <span class="bt-tag" :class="d.platform_kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                    <span class="bt-tag" :class="kindTagClass(d.platform_kind)">
                       {{ kindLabel[d.platform_kind] || d.platform_kind }}
                     </span>
                   </td>
@@ -1265,7 +1350,7 @@ onBeforeUnmount(() => {
                       <div v-if="n.host" class="bt-text-muted frp-cell-note mono">{{ n.host }}</div>
                     </td>
                     <td>
-                      <span class="bt-tag" :class="nodePlatform(n.id)?.kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                      <span class="bt-tag" :class="kindTagClass(nodePlatform(n.id)?.kind)">
                         {{ kindLabel[nodePlatform(n.id)?.kind] || '—' }}
                       </span>
                     </td>
@@ -1319,7 +1404,7 @@ onBeforeUnmount(() => {
                         <div v-if="n.host" class="bt-text-muted frp-cell-note mono">{{ n.host }}</div>
                       </td>
                       <td>
-                        <span class="bt-tag" :class="nodePlatform(n.id)?.kind === 'chmlfrp' ? 'frp-tag-chml' : 'frp-tag-nat'">
+                        <span class="bt-tag" :class="kindTagClass(nodePlatform(n.id)?.kind)">
                           {{ kindLabel[nodePlatform(n.id)?.kind] || '—' }}
                         </span>
                       </td>
@@ -1398,28 +1483,52 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <!-- ===== 弹窗：绑定 Sakura ===== -->
+    <!-- ===== 弹窗：绑定 Sakura / Cloudflare ===== -->
     <div v-if="bindModal" class="bt-modal-mask" @click.self="bindModal.busy ? null : closeModal()">
-      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="绑定 Sakura 账号">
+      <div class="bt-modal" role="dialog" aria-modal="true"
+        :aria-label="bindModal.kind === 'cloudflared' ? '绑定 Cloudflare 账号' : '绑定 Sakura 账号'">
         <div class="bt-modal__head">
-          <div class="bt-modal__title">绑定 Sakura 账号</div>
+          <div class="bt-modal__title frp-cf-title">
+            <span>{{ bindModal.kind === 'cloudflared' ? '绑定 Cloudflare 账号' : '绑定 Sakura 账号' }}</span>
+            <button v-if="bindModal.kind === 'cloudflared'" class="frp-help-dot" type="button"
+              aria-label="如何获取 Cloudflare API Token" title="如何获取 API Token"
+              @click="openCfHelp">?</button>
+          </div>
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="closeModal">关闭</button>
         </div>
         <div class="bt-modal__body">
           <div class="bt-form-stack">
-            <p class="bt-modal__desc">
-              访问密钥在 <b>Sakura 面板 → 用户信息</b> 页查看（它不是登录密码）。密钥将加密存储，
-              面板只用于读取隧道与节点、并代为调用管理接口。
-            </p>
-            <label class="bt-field">
-              <span class="bt-field__label">备注名称</span>
-              <input v-model="bindModal.name" class="bt-input" type="text" placeholder="Sakura" autocomplete="off">
-            </label>
-            <label class="bt-field">
-              <span class="bt-field__label">访问密钥 <span class="bt-text-danger">*</span></span>
-              <input v-model="bindModal.token" class="bt-input" type="password" placeholder="粘贴访问密钥"
-                autocomplete="off">
-            </label>
+            <template v-if="bindModal.kind === 'cloudflared'">
+              <p class="bt-modal__desc">
+                只需粘贴一个 <b>API Token</b>：Account ID 与 Zone ID 由面板自动发现。
+                Token 将加密存储，面板只用于读取隧道状态、流量统计并代为管理 ingress。
+                还没有 Token？点标题旁的 <b>?</b> 查看两分钟创建指引。
+              </p>
+              <label class="bt-field">
+                <span class="bt-field__label">备注名称</span>
+                <input v-model="bindModal.name" class="bt-input" type="text" placeholder="Cloudflare" autocomplete="off">
+              </label>
+              <label class="bt-field">
+                <span class="bt-field__label">API Token <span class="bt-text-danger">*</span></span>
+                <input v-model="bindModal.token" class="bt-input" type="password"
+                  placeholder="粘贴 API Token（点「?」查看创建步骤）" autocomplete="off">
+              </label>
+            </template>
+            <template v-else>
+              <p class="bt-modal__desc">
+                访问密钥在 <b>Sakura 面板 → 用户信息</b> 页查看（它不是登录密码）。密钥将加密存储，
+                面板只用于读取隧道与节点、并代为调用管理接口。
+              </p>
+              <label class="bt-field">
+                <span class="bt-field__label">备注名称</span>
+                <input v-model="bindModal.name" class="bt-input" type="text" placeholder="Sakura" autocomplete="off">
+              </label>
+              <label class="bt-field">
+                <span class="bt-field__label">访问密钥 <span class="bt-text-danger">*</span></span>
+                <input v-model="bindModal.token" class="bt-input" type="password" placeholder="粘贴访问密钥"
+                  autocomplete="off">
+              </label>
+            </template>
             <div v-if="bindModal.error" class="bt-alert bt-alert--error" role="alert">{{ bindModal.error }}</div>
           </div>
         </div>
@@ -1428,6 +1537,66 @@ onBeforeUnmount(() => {
           <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" :disabled="bindModal.busy" @click="submitBind">
             {{ bindModal.busy ? '验证中…' : '绑定并同步' }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 弹窗：Cloudflare API Token 获取指引 ===== -->
+    <div v-if="cfHelpModal" class="bt-modal-mask" @click.self="cfHelpModal = false">
+      <div class="bt-modal" role="dialog" aria-modal="true" aria-label="Cloudflare API Token 获取指引">
+        <div class="bt-modal__head">
+          <div class="bt-modal__title">获取 Cloudflare API Token</div>
+          <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="cfHelpModal = false">关闭</button>
+        </div>
+        <div class="bt-modal__body">
+          <div class="bt-form-stack frp-help-steps">
+            <p class="bt-modal__desc">
+              全程约两分钟，只需要做一次。Token 相当于面板访问你 Cloudflare 账号的钥匙，
+              随时可以在同一页面撤销。Cloudflare 后台有中文/英文两种界面，下面按
+              <b>中文界面（英文原名）</b>对照标注。
+            </p>
+            <ol class="frp-help-ol">
+              <li>
+                <b>打开 Token 创建页</b>：
+                <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer">dash.cloudflare.com/profile/api-tokens</a>
+                （登录 Cloudflare 后右上角头像 →
+                <b>我的个人资料 / My Profile</b> → <b>API 令牌 / API Tokens</b>）
+              </li>
+              <li>
+                在 <b>创建自定义令牌 / Create Custom Token</b> 卡片点 <b>开始使用 / Get started</b>，
+                令牌名称随便起（如 <code>beacontower</code>）。
+                提示：也可以直接用 <b>编辑区域 DNS / Edit zone DNS</b> 模板，再补一条 Tunnel 权限，效果相同
+              </li>
+              <li>
+                <b>权限（Permissions）加两条</b>：<br>
+                · <code>帐户 / Account</code> → <code>Cloudflare Tunnel</code> → <code>编辑 / Edit</code><br>
+                · <code>区域 / Zone</code> → <code>DNS</code> → <code>编辑 / Edit</code>
+                （只看不建隧道的话，第二条可省）
+              </li>
+              <li>
+                <b>帐户资源 / Account Resources</b> 选你的账号，
+                <b>区域资源 / Zone Resources</b> 选 <b>所有区域 / All zones</b>
+                （或指定你的域名所在 zone）→ <b>继续以显示摘要 / Continue to summary</b> →
+                <b>创建令牌 / Create Token</b>
+              </li>
+              <li>
+                页面会显示一长串 Token（<b>只显示这一次</b>），复制粘贴到绑定弹窗即可。
+                Account ID / Zone ID 不用管——面板会自动发现。
+              </li>
+            </ol>
+            <p class="bt-hint">
+              找不到「Cloudflare Tunnel」权限项？在权限下拉的搜索框里直接输入
+              <code>Cloudflare Tunnel</code> 或 <code>Cloudflare One</code>
+              （该权限项在中文界面下可能仍显示英文名，属正常现象）。
+            </p>
+          </div>
+        </div>
+        <div class="bt-modal__foot">
+          <a class="bt-btn bt-btn--default bt-btn--sm"
+            href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer">
+            打开 Cloudflare Token 页
+          </a>
+          <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="cfHelpModal = false">我知道了</button>
         </div>
       </div>
     </div>
@@ -1491,10 +1660,13 @@ onBeforeUnmount(() => {
               </select>
             </label>
             <label class="bt-field">
-              <span class="bt-field__label">隧道名 <span class="bt-text-danger">*</span></span>
-              <input v-model="tunnelModal.name" class="bt-input" type="text" autocomplete="off">
+              <span class="bt-field__label">
+                {{ tunnelModalIsCf ? 'Ingress 域名' : '隧道名' }} <span class="bt-text-danger">*</span>
+              </span>
+              <input v-model="tunnelModal.name" class="bt-input" type="text" :placeholder="tunnelNamePlaceholder"
+                autocomplete="off">
             </label>
-            <label class="bt-field">
+            <label v-if="!tunnelModalIsCf" class="bt-field">
               <span class="bt-field__label">类型</span>
               <select v-model="tunnelModal.proto" class="bt-select" :disabled="tunnelModal.mode === 'edit'">
                 <option value="tcp">TCP</option>
@@ -1503,7 +1675,7 @@ onBeforeUnmount(() => {
                 <option value="https">HTTPS</option>
               </select>
             </label>
-            <label class="bt-field">
+            <label v-if="!tunnelModalIsCf" class="bt-field">
               <span class="bt-field__label">节点 {{ tunnelModal.mode === 'create' ? '*' : '' }}</span>
               <select v-model="tunnelModal.nodeId" class="bt-select">
                 <option value="">{{ tunnelModal.mode === 'edit' ? '（不修改）' : '请选择节点' }}</option>
@@ -1525,17 +1697,17 @@ onBeforeUnmount(() => {
               <input v-model="tunnelModal.remotePort" class="bt-input" type="number" min="0" max="65535"
                 :placeholder="tunnelModalIsChml ? '需在节点允许范围内' : '0 = 由平台分配'" autocomplete="off">
             </label>
-            <label v-else class="bt-field">
+            <label v-else-if="!tunnelModalIsCf" class="bt-field">
               <span class="bt-field__label">绑定域名 <span class="bt-text-danger">*</span></span>
               <input v-model="tunnelModal.domain" class="bt-input" type="text" placeholder="example.com" autocomplete="off">
             </label>
-            <label class="bt-field">
-              <span class="bt-field__label">备注</span>
-              <input v-model="tunnelModal.note" class="bt-input" type="text" autocomplete="off">
-            </label>
-            <label v-if="tunnelModal.mode === 'create'" class="bt-field">
+            <label v-if="tunnelModal.mode === 'create' && !tunnelModalIsCf" class="bt-field">
               <span class="bt-field__label">额外参数（frpc 原样透传）</span>
               <input v-model="tunnelModal.extra" class="bt-input" type="text" placeholder="如 auto_https = auto" autocomplete="off">
+            </label>
+            <label v-if="!tunnelModalIsCf" class="bt-field">
+              <span class="bt-field__label">备注</span>
+              <input v-model="tunnelModal.note" class="bt-input" type="text" autocomplete="off">
             </label>
           </div>
           <p class="bt-hint frp-modal-hint">
@@ -1546,6 +1718,13 @@ onBeforeUnmount(() => {
             ChmlFrp 规则：隧道名只能用字母、数字与下划线（不能带连字符或中文）；
             TCP/UDP 的公网端口必须填节点允许范围内的端口，填 0 平台不会代选
             （允许范围以 ChmlFrp 官网节点页为准）。
+          </p>
+          <p v-if="tunnelModalIsCf" class="bt-hint frp-modal-hint">
+            Cloudflare 规则：一个 Tunnel = 一个统一容器（连接器），这里新建的是容器里的一条节点
+            （ingress 路由），名称即对外域名（须已在 CF 托管）。所有面板创建的节点共用同一条
+            统一容器隧道，托管时也只需要一个 cloudflared 容器；独立专线（如 New-api）不受影响。
+            创建时自动写入 ingress + 追加 DNS CNAME（需 Zone ID）。
+            本地 IP 留空/127.0.0.1 时按 172.17.0.1（Docker 网桥网关）处理，云上主机也可填内网 IP。
           </p>
           <div v-if="tunnelModal.error" class="bt-alert bt-alert--error" role="alert">{{ tunnelModal.error }}</div>
         </div>
@@ -2011,6 +2190,65 @@ onBeforeUnmount(() => {
   color: var(--bt-accent-600);
 }
 
+.frp-tag-cf {
+  background: rgba(248, 115, 22, 0.16);
+  color: #ea6a1a;
+}
+
+/* 绑定弹窗标题旁的「?」帮助按钮与指引弹窗 */
+.frp-cf-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.frp-help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bt-border-strong);
+  background: var(--bt-bg-subtle);
+  color: var(--bt-text-3);
+  font-size: 11px;
+  font-weight: var(--bt-weight-semibold);
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.frp-help-dot:hover {
+  color: var(--bt-brand-600);
+  border-color: var(--bt-brand-500);
+}
+
+.frp-help-ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--bt-text-2);
+}
+
+.frp-help-ol a {
+  color: var(--bt-brand-600);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.frp-help-ol code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bt-bg-subtle);
+  border: 1px solid var(--bt-border);
+  font-size: 12px;
+}
+
 /* ================= 归一化用量瓦片 ================= */
 
 .frp-tiles {
@@ -2059,6 +2297,12 @@ onBeforeUnmount(() => {
   color: #7c3aed;
   background: rgba(167, 139, 250, 0.14);
   border-color: rgba(139, 92, 246, 0.2);
+}
+
+.frp-tile__icon--cf {
+  color: #ea6a1a;
+  background: rgba(248, 115, 22, 0.12);
+  border-color: rgba(248, 115, 22, 0.2);
 }
 
 .frp-tile__icon--brand {

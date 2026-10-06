@@ -394,6 +394,29 @@ func (db *DB) SetFRPPlatformConns(id int64, conns int, src string) error {
 	return err
 }
 
+// SetFRPPlatformDayTraffic 平台级今日流量覆盖（Cloudflare GraphQL 管线回写用，
+// 与 SaveFRPPlatformProfile 的 traffic_day_used 分离：CF 的 UserInfo 不带流量值，
+// 画像保存会写 0，流量必须在其之后由本方法覆盖，两条管线互不覆盖）。
+func (db *DB) SetFRPPlatformDayTraffic(id int64, dayUsed int64) error {
+	_, err := db.SQL.Exec(`UPDATE frp_platform SET traffic_day_used = ?, updated_at = ? WHERE id = ?`,
+		dayUsed, time.Now().Unix(), id)
+	return err
+}
+
+// SetFRPTunnelTraffic 批量回写隧道今日流量（key=平台侧 remote_id，value=24h
+// 边缘字节数）。与 SetFRPTunnelLocalConns 同思路：独立管线，只动 today_up，
+// 不碰平台同步 upsert 清单里的其它列。CF 的 edgeResponseBytes 是边缘→源站
+// 方向的回源量，无法再拆上下行，统一记 today_up（前端按上+下行合计展示）。
+func (db *DB) SetFRPTunnelTraffic(platformID int64, m map[string]int64) error {
+	for rid, n := range m {
+		if _, err := db.SQL.Exec(`UPDATE frp_tunnel SET today_up = ? WHERE platform_id = ? AND remote_id = ?`,
+			n, platformID, rid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteFRPTunnelsOfPlatform 解绑平台时显式清理（外键级联只在 foreign_keys 开启时生效，
 // 这里双保险，也便于删平台前后统计）。
 func (db *DB) DeleteFRPTunnelsOfPlatform(platformID int64) error {

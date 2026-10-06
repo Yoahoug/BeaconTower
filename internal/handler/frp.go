@@ -500,6 +500,52 @@ func (a *App) FRPBindNatfrp(c *gin.Context) {
 	middleware.OK(c, gin.H{"id": p.ID})
 }
 
+type frpCloudflaredBindInput struct {
+	Name      string `json:"name"`
+	AccountID string `json:"account_id"` // 可空：由 token 自动发现
+	Token     string `json:"token"`
+	ZoneID    string `json:"zone_id"` // 可空：首次同步时按隧道 hostname 自动发现
+}
+
+// FRPBindCloudflared 用 API Token 绑定 Cloudflare（先验活再落库）。
+// account_id/zone_id 均可空：Account ID 由 token 自动发现，Zone ID 延迟到
+// 首次同步按隧道 hostname 发现——用户只需创建并粘贴一个 API Token。
+func (a *App) FRPBindCloudflared(c *gin.Context) {
+	var in frpCloudflaredBindInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.Token = strings.TrimSpace(in.Token)
+	if in.Token == "" {
+		middleware.Fail(c, 1001, "请填写 Cloudflare API Token（创建方式见弹窗内的「?」帮助）")
+		return
+	}
+	if in.Name == "" {
+		in.Name = "Cloudflare"
+	}
+	ctx, cancel := frpCtx(c, frpTimeout)
+	defer cancel()
+	p, err := a.FRP.BindCloudflared(ctx, in.Name, frp.CloudflaredCreds{
+		AccountID: strings.TrimSpace(in.AccountID),
+		Token:     in.Token,
+		ZoneID:    strings.TrimSpace(in.ZoneID),
+	})
+	if err != nil {
+		failFRP(c, err)
+		return
+	}
+	a.audit(a.actorOf(c), "frp_platform_bind", fmt.Sprintf("frp_platform:%d", p.ID),
+		"绑定 Cloudflare 账号", ipOf(c))
+	// 绑定后立刻做一次全量同步，让面板马上有数据
+	if err := a.FRP.Sync(ctx, p.ID, true); err != nil {
+		middleware.OK(c, gin.H{"id": p.ID, "sync_error": err.Error()})
+		return
+	}
+	middleware.OK(c, gin.H{"id": p.ID})
+}
+
 type frpPlatformUpdateInput struct {
 	Name string `json:"name"`
 }
@@ -756,9 +802,13 @@ func (a *App) FRPTunnelCreate(c *gin.Context) {
 		middleware.Fail(c, 1001, err.Error())
 		return
 	}
-	if strings.TrimSpace(dom.NodeID) == "" {
-		middleware.Fail(c, 1001, "请选择节点")
-		return
+	// Cloudflare 的节点挂在统一容器下（doc/16 §2），没有「接入节点」可选：
+	// NodeID 留空即可，校验只针对 frp 系平台。
+	if p, _ := a.DB.GetFRPPlatform(id); p == nil || p.Kind != frp.KindCloudflared {
+		if strings.TrimSpace(dom.NodeID) == "" {
+			middleware.Fail(c, 1001, "请选择节点")
+			return
+		}
 	}
 	ctx, cancel := frpCtx(c, frpWriteTimeout)
 	defer cancel()

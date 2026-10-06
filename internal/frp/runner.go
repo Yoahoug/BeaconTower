@@ -105,9 +105,10 @@ func (r *Runner) encrypt(s string) []byte {
 }
 
 // tokenFresh 判断当前 access_token 是否还够用（留 90s 余量覆盖一次请求往返）。
+// Sakura 访问密钥与 Cloudflare API Token 都是长期有效的静态凭据，视为恒新鲜。
 func tokenFresh(p *store.FRPPlatform) bool {
 	if p.Kind != KindChmlfrp {
-		return true // Sakura 访问密钥长期有效
+		return true
 	}
 	if p.TokenExpireAt == 0 {
 		return false
@@ -126,6 +127,19 @@ func (r *Runner) client(ctx context.Context, p *store.FRPPlatform) (platform, er
 	switch p.Kind {
 	case KindNatfrp:
 		return NewNatfrp("", token), nil
+
+	case KindCloudflared:
+		creds, err := ParseCloudflaredCreds(token)
+		if err != nil {
+			return nil, err
+		}
+		if creds.AccountID == "" {
+			return nil, fmt.Errorf("%w（Cloudflare 凭据缺少 account_id，请重新绑定）", ErrAuth)
+		}
+		c := NewCloudflared("", creds.Token, creds.AccountID)
+		c.ZoneID = creds.ZoneID
+		c.ManagedTunnelID = creds.UnifiedTunnelID
+		return c, nil
 
 	case KindChmlfrp:
 		if tokenFresh(p) {
@@ -179,8 +193,50 @@ func (r *Runner) BindNatfrp(ctx context.Context, name, token string) (*store.FRP
 	return r.DB.GetFRPPlatform(id)
 }
 
+// BindCloudflared 绑定 Cloudflare 账号：只需 API Token——Account ID 用 token
+// 自动发现（GET /accounts），Zone ID 延迟到首次同步时按隧道 hostname 发现
+// （cfEnhance）。token/zone 缺一不可时才要求用户手填。creds.AccountID 可空。
+func (r *Runner) BindCloudflared(ctx context.Context, name string, creds CloudflaredCreds) (*store.FRPPlatform, error) {
+	if creds.Token == "" {
+		return nil, errors.New("请填写 Cloudflare API Token")
+	}
+	c := NewCloudflared("", creds.Token, creds.AccountID)
+	if creds.AccountID == "" {
+		accID, accounts, err := DiscoverAccount(ctx, creds.Token)
+		if err != nil {
+			return nil, err
+		}
+		creds.AccountID = accID
+		c.AccountID = accID
+		if len(accounts) > 1 {
+			log.Printf("[frp] 该 API Token 关联 %d 个 Cloudflare 账户，已选用第一个（%s）", len(accounts), accounts[0])
+		}
+	}
+	email, err := c.Verify(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p := &store.FRPPlatform{
+		Kind:     KindCloudflared,
+		Name:     name,
+		Status:   "ok",
+		UID:      creds.AccountID,
+		Username: email,
+	}
+	encoded, err := EncodeCloudflaredCreds(creds)
+	if err != nil {
+		return nil, err
+	}
+	p.TokenEnc = r.encrypt(encoded)
+	id, err := r.DB.InsertFRPPlatform(p)
+	if err != nil {
+		return nil, err
+	}
+	p.ID = id
+	return r.DB.GetFRPPlatform(id)
+}
+
 // BindChmlfrp 用设备码会话换取正式绑定。reuseID 非空表示「重新授权」已有平台，
-// 此时只更新凭据，保留平台记录与历史用量。
 func (r *Runner) BindChmlfrp(ctx context.Context, sessionID string, reuseID int64) (*store.FRPPlatform, error) {
 	tok := r.Flow.Token(sessionID)
 	if tok == nil {
@@ -277,7 +333,8 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 	// Sakura 的 /user/info 只返回隧道数上限（tunnels），不返回已用数，
 	// 直接用刚拉到的隧道条数补上，否则面板会显示成「0/2」这种自相矛盾的配额。
 	// ChmlFrp 自己报了准确值（tunnelCount），不要覆盖。
-	if p.Kind == KindNatfrp {
+	// Cloudflare 无配额概念（TunnelQuota=-1 表示不限），已用数同样按条数补。
+	if p.Kind == KindNatfrp || p.Kind == KindCloudflared {
 		acc.TunnelUsed = len(tuns)
 	}
 	ids, err := r.DB.ReplaceFRPTunnels(platformID, toStoreTunnels(platformID, tuns, now))
@@ -285,7 +342,8 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 		r.markError(p, err)
 		return err
 	}
-	// 回填节点名：Sakura 的隧道只带节点 ID，展示时要名称
+	// 回填节点名：Sakura 的隧道只带节点 ID，展示时要名称。
+	// Cloudflare 的 NodeID/NodeName 都是 tunnel 名（connector 视图），无需回填。
 	r.fillNodeNames(platformID, tuns, ids)
 
 	if full {
@@ -311,7 +369,16 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 	// 字段（acc.Conns 恒 0），先随同步写 0/空，本地计数管线随后覆盖为
 	// socket 计数并标 local——两条管线都走 SaveFRPPlatformProfile，避免
 	// 这里写空后 local 值被下次平台同步意外清掉时无标记可辨。
+	// Cloudflare 的「连接数」口径是 connector↔边缘的活跃连接（conns_active，
+	// 各隧道之和），与 frp 的访客并发不同但同样是平台真实值，标 platform。
 	if p.Kind == KindChmlfrp {
+		p.ConnsSrc = connSrcPlatform
+	} else if p.Kind == KindCloudflared {
+		sum := 0
+		for _, t := range tuns {
+			sum += t.Conns
+		}
+		p.Conns = sum
 		p.ConnsSrc = connSrcPlatform
 	} else {
 		p.ConnsSrc = ""
@@ -337,11 +404,85 @@ func (r *Runner) Sync(ctx context.Context, platformID int64, full bool) error {
 		TrafficRemain:  acc.TrafficRemain,
 		TrafficUp:      acc.TrafficUp,
 		TrafficDown:    acc.TrafficDown,
-		Conns:          acc.Conns,
+		Conns:          p.Conns,
 		TunnelOnline:   online,
 		TunnelTotal:    len(tuns),
 	})
+	// Cloudflare 特有增强，必须在 SaveFRPPlatformProfile 之后：
+	//   1) zone 缺失时自动发现（绑定只给了 token 的旧记录 / 只读绑定升级）；
+	//   2) 按 ingress hostname 从 GraphQL Analytics 回填今日流量——CF 的
+	//      UserInfo 不带流量值（acc.TrafficDayUsed 恒 0），上面那次画像保存
+	//      会把它写成 0，流量只能在画像落库后再覆盖，否则会被清掉。
+	//   失败静默（面板显示「—」），不影响主镜像。
+	if p.Kind == KindCloudflared {
+		r.cfEnhance(ctx, p, cli.(*CloudflaredClient), tuns)
+	}
 	return nil
+}
+
+// cfEnhance Cloudflare 平台的同步增强：补 zone（自动发现）+ 补统一容器 ID
+// （按名查找已建隧道）+ 回填隧道流量。任何失败只记日志——增强数据缺失时
+// 面板显示「—」/写操作时报可读错误，不影响主镜像。
+func (r *Runner) cfEnhance(ctx context.Context, p *store.FRPPlatform, cli *CloudflaredClient, tuns []*Tunnel) {
+	creds, err := ParseCloudflaredCreds(r.decrypt(p.TokenEnc))
+	if err != nil {
+		return
+	}
+	dirty := false
+	if creds.ZoneID == "" && len(tuns) > 0 {
+		if zid, err := cli.DiscoverZone(ctx, tuns[0].Remote); err == nil && zid != "" {
+			creds.ZoneID = zid
+			dirty = true
+			log.Printf("[frp] 平台 %d 自动发现 Cloudflare zone（%s…）", p.ID, zid[:8])
+		}
+	}
+	if creds.UnifiedTunnelID == "" {
+		// 统一容器按名查找：面板以前建过（或回写丢失）直接复用，不重复创建
+		if id, err := cli.FindUnifiedTunnel(ctx); err == nil && id != "" {
+			creds.UnifiedTunnelID = id
+			dirty = true
+			log.Printf("[frp] 平台 %d 找到既有统一容器隧道 %s", p.ID, id)
+		}
+	}
+	if dirty {
+		if enc, err := EncodeCloudflaredCreds(*creds); err == nil {
+			if err := r.DB.UpdateFRPPlatformCreds(p.ID, r.encrypt(enc), nil, 0); err != nil {
+				log.Printf("[frp] 平台 %d 的 Cloudflare 凭据增强结果落库失败: %v", p.ID, err)
+			}
+		}
+	}
+	cli.ZoneID = creds.ZoneID
+	if cli.ZoneID == "" {
+		return
+	}
+	updates := map[string]int64{} // remote_id → 24h 边缘字节数
+	total := int64(0)
+	for _, t := range tuns {
+		if t.Remote == "" {
+			continue
+		}
+		sum, err := cli.TunnelDayTraffic(ctx, t.Remote, 24)
+		if err != nil {
+			log.Printf("[frp] 平台 %d 隧道「%s」流量查询失败（本轮显示 —）: %v", p.ID, t.Remote, err)
+			continue
+		}
+		if sum == nil {
+			continue
+		}
+		updates[t.RemoteID] = sum.Bytes
+		total += sum.Bytes
+	}
+	if len(updates) > 0 {
+		if err := r.DB.SetFRPTunnelTraffic(p.ID, updates); err != nil {
+			log.Printf("[frp] 平台 %d 隧道流量回写失败: %v", p.ID, err)
+		}
+	}
+	// 平台级今日流量：各 ingress 域名之和（与其他平台的 TrafficDayUsed 对齐）
+	if total > 0 {
+		if err := r.DB.SetFRPPlatformDayTraffic(p.ID, total); err != nil {
+			log.Printf("[frp] 平台 %d 今日流量回写失败: %v", p.ID, err)
+		}
+	}
 }
 
 // markError 记录失败状态；凭据类错误额外降级为 unbound，前端据此弹重新授权。
@@ -426,7 +567,38 @@ func (r *Runner) CreateTunnel(ctx context.Context, platformID int64, in TunnelIn
 	if p.Kind == KindChmlfrp {
 		in.NodeID = r.chmlNodeName(platformID, in.NodeID)
 	}
+	if p.Kind == KindCloudflared {
+		// 统一容器模型：节点（ingress 规则）挂到面板专属隧道下；
+		// 首次创建时懒建物理隧道并把 ID 回写进凭据。
+		c := cli.(*CloudflaredClient)
+		tunnelID, err := c.EnsureUnifiedTunnel(ctx, func(id string) error {
+			return r.persistUnifiedTunnelID(p, id)
+		})
+		if err != nil {
+			return "", err
+		}
+		c.ManagedTunnelID = tunnelID
+		return c.CreateTunnel(ctx, in)
+	}
 	return cli.CreateTunnel(ctx, in)
+}
+
+// persistUnifiedTunnelID 把统一容器隧道 ID 合并进凭据 JSON 落库（懒创建回写）。
+func (r *Runner) persistUnifiedTunnelID(p *store.FRPPlatform, tunnelID string) error {
+	creds, err := ParseCloudflaredCreds(r.decrypt(p.TokenEnc))
+	if err != nil {
+		return err
+	}
+	creds.UnifiedTunnelID = tunnelID
+	enc, err := EncodeCloudflaredCreds(*creds)
+	if err != nil {
+		return err
+	}
+	if err := r.DB.UpdateFRPPlatformCreds(p.ID, r.encrypt(enc), nil, 0); err != nil {
+		return err
+	}
+	log.Printf("[frp] 平台 %d 统一容器隧道已创建并回写（%s）", p.ID, tunnelID)
+	return nil
 }
 
 // chmlNodeName 把面板内部的节点标识（remote_id）翻成 ChmlFrp 要求的节点名。
@@ -567,6 +739,8 @@ func (r *Runner) TunnelTraffic(ctx context.Context, platformID int64, t store.FR
 		return pts, nil
 	case KindChmlfrp:
 		return cli.(*ChmlfrpClient).TunnelLast7Days(ctx, t.RemoteID)
+	case KindCloudflared:
+		return nil, fmt.Errorf("%w：Cloudflare API 不提供隧道级流量数据", ErrUnsupported)
 	}
 	return nil, ErrUnsupported
 }
@@ -595,6 +769,8 @@ func (r *Runner) FlowHistory(ctx context.Context, platformID int64, kind string)
 		return cli.(*NatfrpClient).TrafficHistory(ctx, kind)
 	case KindChmlfrp:
 		return cli.(*ChmlfrpClient).FlowLast7Days(ctx)
+	case KindCloudflared:
+		return nil, fmt.Errorf("%w：Cloudflare API 不提供流量历史", ErrUnsupported)
 	}
 	return nil, ErrUnsupported
 }

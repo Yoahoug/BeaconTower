@@ -696,6 +696,16 @@ func (a *App) SaveSettings(c *gin.Context) {
 		}
 		next["electric_price"] = ftoa(f)
 	}
+	// 穿透客户端镜像覆盖（doc/13 §14 / doc/16 §6）：cloudflared 官方镜像在
+	// Docker Hub，国内节点拉不动时由此换镜像源（如 docker.1ms.run/... 前缀）
+	if v, ok := get("frp_image_cloudflared"); ok {
+		s := strings.TrimSpace(toStr(v))
+		if s != "" && len(s) > 200 {
+			middleware.Fail(c, 1001, "参数错误：frp_image_cloudflared 过长")
+			return
+		}
+		next["frp_image_cloudflared"] = s
+	}
 	if err := a.DB.SaveSettings(next); err != nil {
 		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
 		return

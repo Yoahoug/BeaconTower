@@ -105,10 +105,11 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.POST("/wg/assets/:id/fetch", app.WGAssetFetch)
 				auth.POST("/wg/assets/:id/push", app.WGAssetPush)
 
-				// 内网穿透平台（Sakura / ChmlFrp，doc/13）
+				// 内网穿透平台（Sakura / ChmlFrp / Cloudflare，doc/13、doc/16）
 				auth.GET("/frp/overview", app.FRPOverview)
 				auth.GET("/frp/nodes", app.FRPNodes)
 				auth.POST("/frp/platforms", app.FRPBindNatfrp)
+				auth.POST("/frp/cloudflared", app.FRPBindCloudflared)
 				auth.PUT("/frp/platforms/:id", app.FRPPlatformRename)
 				auth.DELETE("/frp/platforms/:id", app.FRPPlatformDelete)
 				auth.GET("/frp/platforms/:id", app.FRPPlatformDetail)

@@ -222,10 +222,19 @@ func (r *Runner) CollectLocalConns(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	// 隧道 → 端点；端点集合去重（跨平台共享端点只数一次，各隧道分别命中）
+	// 隧道 → 端点；端点集合去重（跨平台共享端点只数一次，各隧道分别命中）。
+	// Cloudflare 的 socket 口径不适用（连接终结在 CF 边缘，cloudflared 与
+	// 源站之间另有连接池），其隧道不进端点集合，避免误计数。
 	eps := map[string]tunnelEndpoint{}
 	byEndpoint := map[string][]*store.FRPTunnel{} // 端点 key → 命中该端点的隧道
+	kindByPlatform := map[int64]string{}
+	for _, p := range platforms {
+		kindByPlatform[p.ID] = p.Kind
+	}
 	for _, t := range tunnels {
+		if kindByPlatform[t.PlatformID] == KindCloudflared {
+			continue
+		}
 		e, ok := newTunnelEndpoint(t)
 		if !ok {
 			continue

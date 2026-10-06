@@ -37,13 +37,16 @@ var (
 	imageRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,199}$`)
 )
 
-// DefaultImage 各平台默认客户端镜像（与 deploy/frpc-* 发布的一致）。
+// DefaultImage 各平台默认客户端镜像（与 deploy/frpc-* 发布的一致；
+// cloudflared 用官方镜像，无需自建）。
 func DefaultImage(kind string) string {
 	switch kind {
 	case "natfrp":
 		return "ghcr.io/yoahoug/beacontower-frpc-natfrp:latest"
 	case "chmlfrp":
 		return "ghcr.io/yoahoug/beacontower-frpc-chmlfrp:latest"
+	case KindCloudflared:
+		return "docker.io/cloudflare/cloudflared:latest"
 	}
 	return ""
 }
@@ -53,8 +56,12 @@ func ContainerName(kind string, serverID int64) string {
 	return fmt.Sprintf("%s%s-%d", containerPrefix, kind, serverID)
 }
 
-// ConfigPath 节点侧配置文件路径。
+// ConfigPath 节点侧配置文件路径。cloudflared 无配置文件（token 作启动参数），
+// 返回占位路径仅用于目录归置，实际不落盘任何文件。
 func ConfigPath(kind string) string {
+	if kind == KindCloudflared {
+		return deployRootDir + "/" + kind + "/README.txt"
+	}
 	return deployRootDir + "/" + kind + "/frpc.ini"
 }
 
@@ -341,7 +348,11 @@ type ApplyResult struct {
 }
 
 // Sync 全量同步：拉配置 → 写盘（0600）→ 拉镜像 → 重建容器 → 校验运行。
+// cloudflared 平台无 INI 配置：改为取 tunnel token 作为容器启动参数（见 syncCloudflared）。
 func (d *Deployer) Sync(ctx context.Context, dep *store.FRPDeploy, platform *store.FRPPlatform, tunnels []*store.FRPTunnel) (*ApplyResult, error) {
+	if platform.Kind == KindCloudflared {
+		return d.syncCloudflared(ctx, dep, platform, tunnels)
+	}
 	conf, err := d.RenderConfig(ctx, platform, tunnels)
 	if err != nil {
 		return nil, err
@@ -397,6 +408,86 @@ func (d *Deployer) Sync(ctx context.Context, dep *store.FRPDeploy, platform *sto
 	state, _ := conn.Run(ctx, `docker inspect -f '{{.State.Status}}' `+dep.Container+` 2>/dev/null || echo missing`)
 	res.Status = normStatus(state)
 	tail, _ := conn.Run(ctx, "docker logs --tail 30 "+dep.Container+" 2>&1 || true")
+	res.LogTail = strings.TrimSpace(tail)
+	if res.Status != "running" {
+		return res, fmt.Errorf("容器未处于运行状态（%s）：%s", res.Status, lastLines(res.LogTail, 3))
+	}
+	return res, nil
+}
+
+// syncCloudflared cloudflared 托管：取统一容器隧道 token → 拉官方镜像 →
+// 以 token 作启动参数起容器。与 frpc 托管的差异：
+//   - 无配置文件：token 经 docker run 参数传入（--env-file 方式会在节点上落盘），
+//     面板与 SSH 通道之外不留任何含凭据的文件；token 出现在节点 `docker inspect`
+//     的 Cmd 里，这与官方 Dashboard 的部署方式一致，可接受；
+//   - 一条托管对应统一容器（面板专属物理隧道）：ingress 规则云端即改即生效，
+//     新增/删除节点无需重启容器，也没有「配置过期」概念（脏标逻辑对 CF 无意义，
+//     见 handler 侧 no-op）；独立专线（如 ops 上的 New-api）有自己的连接器，
+//     不归面板托管。
+func (d *Deployer) syncCloudflared(ctx context.Context, dep *store.FRPDeploy, platform *store.FRPPlatform, tunnels []*store.FRPTunnel) (*ApplyResult, error) {
+	creds, err := ParseCloudflaredCreds(d.Runner.decrypt(platform.TokenEnc))
+	if err != nil {
+		return nil, err
+	}
+	tunnelID := creds.UnifiedTunnelID
+	if tunnelID == "" {
+		// 凭据里没有统一容器 ID（首次托管前还没建过节点）：从托管隧道反解
+		for _, t := range tunnels {
+			if id, _ := SplitCFRemoteID(t.RemoteID); id != "" {
+				tunnelID = id
+				break
+			}
+		}
+	}
+	if tunnelID == "" {
+		return nil, errors.New("统一容器隧道尚未创建：请先在面板新建一条 Cloudflare 隧道（节点）")
+	}
+	cli := NewCloudflared("", creds.Token, creds.AccountID)
+	tok, err := cli.TunnelToken(ctx, tunnelID)
+	if err != nil {
+		return nil, fmt.Errorf("取隧道运行令牌失败: %w", err)
+	}
+	if !tokenRe.MatchString(tok) {
+		return nil, errors.New("隧道运行令牌格式异常（疑似平台返回内容变化），已中止部署")
+	}
+
+	conn, closer, err := d.dial(ctx, dep.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer closer()
+	st := dockerCheck(ctx, conn)
+	if !st.Present {
+		return nil, errors.New("节点未安装 Docker（可让面板自动安装后重试）")
+	}
+	if !st.DaemonOK {
+		return nil, errors.New("节点 Docker 守护进程不可用：" + st.Err)
+	}
+	if !containerRe.MatchString(dep.Container) {
+		return nil, fmt.Errorf("容器名非法: %q", dep.Container)
+	}
+	if !imageRe.MatchString(dep.Image) {
+		return nil, fmt.Errorf("镜像名非法: %q", dep.Image)
+	}
+	// 拉镜像（cloudflared 官方镜像在 Docker Hub；国内节点不通时用 ImageFor 换镜像源）
+	if _, err := conn.Run(ctx, "docker image inspect "+dep.Image+" >/dev/null 2>&1 || docker pull "+dep.Image); err != nil {
+		return nil, fmt.Errorf("拉取镜像 %s 失败: %w", dep.Image, err)
+	}
+	// 重建容器（host 网络：ingress service 指向宿主 localhost 时需要；
+	// 指向 LAN IP 时亦无冲突）。token 只经 SSH 通道进命令行，不落盘。
+	run := "docker rm -f " + dep.Container + " >/dev/null 2>&1 || true\n" +
+		"docker run -d --name " + dep.Container + " --restart unless-stopped --network host" +
+		" --label " + managedLabel + " --label beacontower.kind=" + platform.Kind +
+		" --label beacontower.deploy=" + strconv.FormatInt(dep.ID, 10) +
+		" " + dep.Image + " tunnel --no-autoupdate run --token " + tok
+	if _, err := conn.Run(ctx, run); err != nil {
+		return nil, fmt.Errorf("启动容器失败: %w", err)
+	}
+	time.Sleep(2 * time.Second)
+	res := &ApplyResult{DockerVer: st.Version}
+	state, _ := conn.Run(ctx, `docker inspect -f '{{.State.Status}}' `+dep.Container+` 2>/dev/null || echo missing`)
+	res.Status = normStatus(state)
+	tail, _ := conn.Run(ctx, "docker logs --tail 30 "+dep.Container+" 2>&1 | grep -v -E 'eyJ|token' || true")
 	res.LogTail = strings.TrimSpace(tail)
 	if res.Status != "running" {
 		return res, fmt.Errorf("容器未处于运行状态（%s）：%s", res.Status, lastLines(res.LogTail, 3))

@@ -21,6 +21,7 @@
 | [13-内网穿透平台管理设计](./13-内网穿透平台管理设计.md) | Sakura / ChmlFrp 平台托管：凭据绑定、隧道与节点镜像、客户端 SSH 托管（v2.3）、OAuth 令牌自动续期、实测协议坑位与真机 E2E 记录 |
 | [14-公网暴露安全评估](./14-公网暴露安全评估.md) | HTTPS 上线前威胁模型、逐项审查结论与处置、ops 检查清单与部署后验证命令 |
 | [15-PWA移动端](./15-PWA移动端.md) | PWA 基础设施（manifest/SW/离线快照）、移动端打磨与 iPhone 真机验收清单 |
+| [16-CloudflareTunnel集成](./16-CloudflareTunnel集成.md) | 第三穿透平台 Cloudflare Tunnel：API Token 三要素、ingress→隧道归一、远程托管无脏标、cloudflared 官方镜像托管与协议坑位 |
 
 ## 一句话架构
 

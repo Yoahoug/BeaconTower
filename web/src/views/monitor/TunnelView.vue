@@ -24,11 +24,12 @@ const hasPlatform = computed(() => platforms.value.length > 0)
 const LOAD_WARN = 60
 const LOAD_DANGER = 85
 
-const KIND_LABEL = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp' }
+const KIND_LABEL = { natfrp: 'Sakura', chmlfrp: 'ChmlFrp', cloudflared: 'Cloudflare' }
+const KIND_ICON = { natfrp: 'tunnel', chmlfrp: 'globe', cloudflared: 'shield' }
 
 // 连接数口径（conns_src）：platform=平台 API 值；local=面板在 frpc 所在节点
 // 数 socket（Sakura 平台 API 无连接数字段，doc/13 §1）；空=无数据（未同步或
-// 非面板可见节点上自跑 frpc），显示「—」避免误导性的 0。
+// 平台口径不适用——Cloudflare 是边缘转发模型，socket 计数无意义），显示「—」。
 const connsSupported = computed(() => platforms.value.some((p) => p.conns_src === 'local' || p.conns_src === 'platform'))
 
 function connsSub() {
@@ -78,7 +79,7 @@ onUnmounted(() => monitor.stopFrp())
       <div>
         <h1>内网穿透状态</h1>
         <p class="page-head__desc">
-          Sakura / ChmlFrp 隧道运行与在用节点健康度 · 每 60 秒刷新 ·
+          Sakura / ChmlFrp / Cloudflare 隧道运行与在用节点健康度 · 每 60 秒刷新 ·
           更新于 {{ agoText(monitor.secondsSinceUpdate) }}
         </p>
       </div>
@@ -94,7 +95,7 @@ onUnmounted(() => monitor.stopFrp())
     <div v-else-if="!hasPlatform" class="bt-card">
       <StateEmpty
         title="尚未接入穿透平台"
-        desc="管理员在「管理面板 → 内网穿透」绑定 Sakura 或 ChmlFrp 账号后，这里会显示隧道与节点状态。"
+        desc="管理员在「管理面板 → 内网穿透」绑定 Sakura、ChmlFrp 或 Cloudflare 账号后，这里会显示隧道与节点状态。"
         icon="tunnel"
       />
     </div>
@@ -162,7 +163,7 @@ onUnmounted(() => monitor.stopFrp())
         >
           <div class="bt-card__head">
             <div class="bt-card__title frp-card__title">
-              <AppIcon name="tunnel" aria-hidden="true" />
+              <AppIcon :name="KIND_ICON[p.kind] || 'tunnel'" aria-hidden="true" />
               <span>{{ p.name }}</span>
             </div>
             <div class="frp-card__tags">
@@ -182,7 +183,8 @@ onUnmounted(() => monitor.stopFrp())
             <div class="frp-stats tnum">
               <div class="frp-stat">
                 <span class="frp-stat__label">今日流量</span>
-                <strong class="frp-stat__value">{{ fmtBytes(p.traffic_today || 0) }}</strong>
+                <strong v-if="p.kind === 'cloudflared'" class="frp-stat__value bt-text-muted">—</strong>
+                <strong v-else class="frp-stat__value">{{ fmtBytes(p.traffic_today || 0) }}</strong>
               </div>
               <div class="frp-stat">
                 <span class="frp-stat__label">在线隧道</span>
