@@ -131,6 +131,9 @@ function buildTopoOption() {
 
 function renderTopo() {
   if (!topoEl.value) return
+  // 首次进入本页时拓扑卡还在 <template v-if="network"> 门内：loadWg 返回前
+  // topoEl 不存在，回调进来直接 return——之后 v-if 翻转、容器出现却没人再画
+  // （线上实测空白）。这里挂 ResizeObserver：容器尺寸从 0→有 或变化时兜底重画。
   if (!topoChart) {
     topoChart = echarts.init(topoEl.value)
   }
@@ -802,15 +805,25 @@ function probeTag(r) {
 }
 
 // ---------- 生命周期 ----------
+let topoRO = null
 onMounted(async () => {
   window.addEventListener('keydown', onMeshKey)
   await admin.loadWg()
   await nextTick()
   renderTopo()
+  // 兜底：拓扑容器出现在 v-if 翻转后 / 尺寸随布局变化时自动重画
+  topoRO = new ResizeObserver(() => renderTopo())
+  if (topoEl.value) topoRO.observe(topoEl.value)
   window.addEventListener('resize', resizeTopo)
 })
 
 watch(() => admin.wgOverview, () => nextTick(renderTopo), { deep: false })
+
+onBeforeUnmount(() => {
+  topoRO?.disconnect()
+  topoChart?.dispose()
+  topoChart = null
+})
 </script>
 
 <template>

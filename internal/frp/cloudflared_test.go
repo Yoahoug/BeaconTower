@@ -333,8 +333,8 @@ func TestTunnelDayTrafficGraphQL(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
-				{"sum": {"edgeResponseBytes": 1024000, "requests": 42}},
-				{"sum": {"edgeResponseBytes": 2048000, "requests": 8}}
+				{"count": 42, "sum": {"edgeResponseBytes": 1024000}},
+				{"count": 8, "sum": {"edgeResponseBytes": 2048000}}
 			]}]}}
 		}`))
 	})

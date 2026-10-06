@@ -54,6 +54,9 @@ type Runner struct {
 
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
+
+	// syncAllRuns SyncAll 轮次计数（周期性 full 同步用，见 syncAllFullEvery）
+	syncAllRuns int
 }
 
 func NewRunner(db *store.DB, master []byte, clientID string) *Runner {
@@ -500,14 +503,22 @@ func (r *Runner) markError(p *store.FRPPlatform, err error) {
 // SyncAll 周期任务入口：逐个平台轻同步，单平台失败不影响其余。
 // 同步完成后追加一轮本地连接计数（Sakura 无平台值的连接数由此补齐），
 // 失败只记日志，绝不影响同步结果。
+// syncAllRuns 计数周期全量同步：节点镜像（ Sakura 71 节点 / ChmlFrp 39 节点）
+// 体积大且变动慢，不值得每 2 分钟拉；但只靠手动「同步」按钮的话隧道行的节点名
+// 与在用节点表会一直空着（线上实测踩坑）。折中：每 10 轮（约 20 分钟）做一次
+// full 同步刷新节点镜像。
+const syncAllFullEvery = 10
+
 func (r *Runner) SyncAll(ctx context.Context) {
 	list, err := r.DB.ListFRPPlatforms()
 	if err != nil {
 		log.Printf("[frp] 读取平台列表失败: %v", err)
 		return
 	}
+	r.syncAllRuns++
+	full := r.syncAllRuns%syncAllFullEvery == 1 // 首轮立即 full，之后每 10 轮一次
 	for _, p := range list {
-		if err := r.Sync(ctx, p.ID, false); err != nil {
+		if err := r.Sync(ctx, p.ID, full); err != nil {
 			// Sync 内部已记状态，这里静默继续
 			continue
 		}

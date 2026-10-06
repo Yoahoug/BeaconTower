@@ -290,7 +290,8 @@ func (c *CloudflaredClient) TunnelDayTraffic(ctx context.Context, hostname strin
 	const q = `query TunnelTraffic($zoneTag: string, $filter: filter) {
 		viewer { zones(filter: {zoneTag: $zoneTag}) {
 			httpRequestsAdaptiveGroups(limit: 10000, filter: $filter) {
-				sum { edgeResponseBytes requests }
+				count
+				sum { edgeResponseBytes }
 			}
 		} }
 	}`
@@ -298,9 +299,11 @@ func (c *CloudflaredClient) TunnelDayTraffic(ctx context.Context, hostname strin
 		Viewer struct {
 			Zones []struct {
 				Groups []struct {
-					Sum struct {
+					// 请求数在顶层 count 维度：sum 里只有字节类字段，
+					// sum.requests 是不存在的字段（线上实测报 unknown field）
+					Count int64 `json:"count"`
+					Sum   struct {
 						EdgeResponseBytes int64 `json:"edgeResponseBytes"`
-						Requests          int64 `json:"requests"`
 					} `json:"sum"`
 				} `json:"httpRequestsAdaptiveGroups"`
 			} `json:"zones"`
@@ -314,7 +317,7 @@ func (c *CloudflaredClient) TunnelDayTraffic(ctx context.Context, hostname strin
 	for _, z := range out.Viewer.Zones {
 		for _, g := range z.Groups {
 			s.Bytes += g.Sum.EdgeResponseBytes
-			s.Requests += g.Sum.Requests
+			s.Requests += g.Count
 		}
 	}
 	return s, nil

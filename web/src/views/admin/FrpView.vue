@@ -37,11 +37,32 @@ const detailsById = computed(() => admin.frpDetails || {})
 const allNodes = computed(() =>
   platforms.value.flatMap((p) => detailsById.value[p.id]?.nodes || []),
 )
-const inUseNodes = computed(() => allNodes.value.filter((n) => n.in_use))
-const idleNodes = computed(() => allNodes.value.filter((n) => !n.in_use))
+const inUseNodes = computed(() => tabNodes.value.filter((n) => n.in_use))
+const idleNodes = computed(() => tabNodes.value.filter((n) => !n.in_use))
+
+// 节点表跟随页签过滤；CF 的「节点」是连接器（无 in_use 语义）原样保留
+const tabNodes = computed(() => {
+  if (activeTab.value === 'all') return allNodes.value
+  const pid = platforms.value.find((p) => p.kind === activeTab.value)?.id
+  return allNodes.value.filter((n) => nodePlatform(n.id)?.id === pid)
+})
 
 // 跨平台合并隧道表：概览接口已带 platform_name/kind，直接平铺
 const allTunnels = computed(() => admin.frpOverview?.tunnels || [])
+
+// 平台分区页签：三平台混排后单页过长且互相干扰（v2.6 重构），
+// 按平台过滤下方内容；「全部」保留跨平台汇总视图。
+const activeTab = ref('all')
+const TABS = [
+  { key: 'all', label: '全部' },
+  { key: 'natfrp', label: 'Sakura' },
+  { key: 'chmlfrp', label: 'ChmlFrp' },
+  { key: 'cloudflared', label: 'Cloudflare' },
+]
+const tabPlatforms = computed(() =>
+  activeTab.value === 'all' ? platforms.value : platforms.value.filter((p) => p.kind === activeTab.value))
+const tabTunnels = computed(() =>
+  activeTab.value === 'all' ? allTunnels.value : allTunnels.value.filter((t) => t.platform_kind === activeTab.value))
 
 // 节点折叠展开集合（跨平台共用一个开关，表本身就是合并的）
 const idleExpanded = ref(false)
@@ -812,6 +833,7 @@ async function submitSub() {
 
 // ---------- 归一化 ----------
 const chmlPlatform = computed(() => platforms.value.find((p) => p.kind === 'chmlfrp') || null)
+const cfPlatform = computed(() => platforms.value.find((p) => p.kind === 'cloudflared') || null)
 
 // 双平台同图流量历史：每个平台一条序列（ChmlFrp 只有近 7 日，
 // Sakura 的 day 口径同为 7 点，天然对齐）
@@ -981,11 +1003,20 @@ onBeforeUnmount(() => {
       </div>
     </StateEmpty>
 
-    <!-- ===== 平台卡（纯展示，不切换下方内容；各自特色指标在卡内） ===== -->
+    <!-- ===== 平台页签：三平台分区展示（v2.6 重构——混排单页过长且互相干扰） ===== -->
     <template v-if="platforms.length">
+      <div class="frp-tabs" role="tablist" aria-label="穿透平台分区">
+        <button v-for="t in TABS" :key="t.key" class="frp-tab" :class="{ 'is-active': activeTab === t.key }"
+          type="button" role="tab" :aria-selected="activeTab === t.key" @click="activeTab = t.key">
+          {{ t.label }}
+          <span v-if="t.key !== 'all'" class="frp-tab__count">{{ allTunnels.filter((x) => x.platform_kind === t.key).length }}</span>
+          <span v-else class="frp-tab__count">{{ allTunnels.length }}</span>
+        </button>
+      </div>
+
       <p class="frp-sec-title">穿透平台</p>
       <div class="frp-platforms">
-        <div v-for="p in platforms" :key="p.id" class="frp-platform" :class="{ 'is-degraded': p.status !== 'ok' }">
+        <div v-for="p in tabPlatforms" :key="p.id" class="frp-platform" :class="{ 'is-degraded': p.status !== 'ok' }">
           <span class="frp-platform__avatar" :class="`frp-platform__avatar--${p.kind}`">
             <AppIcon :name="kindIcon(p.kind)" aria-hidden="true" />
           </span>
@@ -1001,7 +1032,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="frp-stat">
                 <span class="frp-stat__num tnum">
-                  {{ p.tunnel_quota && p.tunnel_quota > 0 ? `${p.tunnel_used}/${p.tunnel_quota}` : p.tunnel_used }}
+                  {{ p.tunnel_quota > 0 ? `${p.tunnel_used}/${p.tunnel_quota}` : p.tunnel_quota < 0 ? '不限' : p.tunnel_used }}
                 </span>
                 <span class="frp-stat__label">配额</span>
               </span>
@@ -1052,15 +1083,30 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <!-- ===== Cloudflare 专属：统一容器说明（仅 CF 页签） ===== -->
+      <div v-if="cfPlatform && activeTab === 'cloudflared'" class="bt-card frp-block">
+        <div class="bt-card__body frp-cf-note">
+          <p>
+            <b>Cloudflare 的模型</b>：一个 Tunnel = 一个 cloudflared 连接器容器，容器内可挂多条域名路由。
+            面板用<b>统一容器</b>管理你新建的节点——「新建隧道」就是把一条域名路由挂进面板专属的
+            <code>beacontower-managed</code> 隧道，托管时也只需要一个 cloudflared 容器，增删节点云端即生效、无需重启。
+          </p>
+          <p>
+            你在 Cloudflare 后台手工建的独立专线（如 New-api，一服务一线）会以<b>只读</b>方式同步展示，
+            面板不会改动它们；流量经 Cloudflare GraphQL Analytics 按域名聚合，Token 无 Analytics 权限时显示「—」。
+          </p>
+        </div>
+      </div>
+
       <!-- ===== 归一化：合并用量条（跨平台一行铺开，每块标平台名） ===== -->
-      <div class="bt-card frp-block">
+      <div v-if="activeTab === 'all'" class="bt-card frp-block">
         <div class="bt-card__head">
           <h2 class="bt-card__title">账号用量</h2>
           <span class="bt-text-muted frp-head-hint">同列指标按平台口径换算：剩余流量 / 累计上传</span>
         </div>
         <div class="bt-card__body">
           <div class="frp-tiles">
-            <div v-for="p in platforms" :key="`u-${p.id}`" class="frp-tile frp-tile--plat">
+            <div v-for="p in tabPlatforms" :key="`u-${p.id}`" class="frp-tile frp-tile--plat">
               <span class="frp-tile__icon" :class="p.kind === 'chmlfrp' ? 'frp-tile__icon--violet' : p.kind === 'cloudflared' ? 'frp-tile__icon--cf' : 'frp-tile__icon--brand'">
                 <AppIcon :name="kindIcon(p.kind)" aria-hidden="true" />
               </span>
@@ -1092,7 +1138,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ===== 合并流量历史：每个平台一条序列，同图对比 ===== -->
-      <div class="bt-card frp-block">
+      <div v-if="activeTab === 'all'" class="bt-card frp-block">
         <div class="bt-card__head">
           <h2 class="bt-card__title">流量历史</h2>
           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="loadTrend">
@@ -1111,13 +1157,13 @@ onBeforeUnmount(() => {
       <!-- ===== 合并隧道表：平台列标注归属，操作列按平台能力渲染 ===== -->
       <div class="bt-card frp-block">
         <div class="bt-card__head">
-          <h2 class="bt-card__title">隧道 <span class="frp-count">{{ allTunnels.length }}</span></h2>
+          <h2 class="bt-card__title">隧道 <span class="frp-count">{{ tabTunnels.length }}</span></h2>
           <button class="bt-btn bt-btn--primary bt-btn--sm" type="button" @click="openTunnelCreate">
             <AppIcon name="plus" aria-hidden="true" />新建隧道
           </button>
         </div>
         <div class="bt-card__body">
-          <StateEmpty v-if="!allTunnels.length" title="暂无隧道" desc="点上方「新建隧道」或到平台控制台创建后同步" />
+          <StateEmpty v-if="!tabTunnels.length" title="暂无隧道" desc="点上方「新建隧道」或到平台控制台创建后同步" />
           <div v-else class="bt-table-wrap">
             <table class="bt-table">
               <caption class="bt-text-muted">隧道列表：状态、端点、用量与可执行操作</caption>
@@ -1125,7 +1171,7 @@ onBeforeUnmount(() => {
                 <tr>
                   <th scope="col">状态</th>
                   <th scope="col">名称</th>
-                  <th scope="col">平台</th>
+                  <th v-if="activeTab === 'all'" scope="col">平台</th>
                   <th scope="col">节点</th>
                   <th scope="col">本地</th>
                   <th scope="col">公网</th>
@@ -1135,7 +1181,7 @@ onBeforeUnmount(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="t in allTunnels" :key="t.id">
+                <tr v-for="t in tabTunnels" :key="t.id">
                   <td>
                     <span class="bt-tag" :class="tunnelStatus(t).cls">{{ tunnelStatus(t).text }}</span>
                     <div v-if="t.status_reason" class="bt-text-muted frp-cell-note">{{ t.status_reason }}</div>
@@ -1154,7 +1200,7 @@ onBeforeUnmount(() => {
                       {{ deployByTunnel[t.id].server_name }} · {{ deployByTunnel[t.id].status === 'running' ? '客户端运行中' : '客户端已停止' }}
                     </div>
                   </td>
-                  <td>
+                  <td v-if="activeTab === 'all'">
                     <span class="bt-tag" :class="kindTagClass(t.platform_kind)">
                       {{ kindLabel[t.platform_kind] || t.platform_kind }}
                     </span>
@@ -1432,7 +1478,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ===== 平台特有：ChmlFrp 免费二级域名 ===== -->
-      <div v-if="chmlPlatform" class="bt-card frp-block">
+      <div v-if="chmlPlatform && (activeTab === 'all' || activeTab === 'chmlfrp')" class="bt-card frp-block">
         <div class="bt-card__head">
           <h2 class="bt-card__title">
             免费二级域名 <span class="frp-count">{{ subs.list.length }}</span>
@@ -1993,7 +2039,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   padding: 0 4px; /* 让卡片投影不被网格裁切 */
 }
 
@@ -2144,7 +2190,54 @@ onBeforeUnmount(() => {
 /* ================= 内容卡片节奏 ================= */
 
 .frp-block {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.frp-cf-note p {
+  margin: 0 0 8px;
+  color: var(--bt-text-2);
+  font-size: var(--bt-font-sm);
+  line-height: 1.7;
+}
+.frp-cf-note p:last-child { margin-bottom: 0; }
+.frp-cf-note code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--bt-fill-2, #eef2f8);
+  font-size: var(--bt-font-xs);
+}
+
+/* ===== 平台页签（v2.6 重构）===== */
+.frp-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.frp-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--bt-line, #e3e8f0);
+  background: transparent;
+  font-size: var(--bt-font-sm);
+  font-weight: var(--bt-weight-medium);
+  color: var(--bt-text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.frp-tab:hover { background: var(--bt-fill-1, #f2f5fa); }
+.frp-tab.is-active {
+  background: var(--bt-brand, #0ea5e9);
+  border-color: var(--bt-brand, #0ea5e9);
+  color: #fff;
+}
+.frp-tab__count {
+  font-size: var(--bt-font-xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
 }
 
 .frp-count {
