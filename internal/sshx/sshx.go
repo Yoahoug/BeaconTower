@@ -190,32 +190,31 @@ func Dial(ctx context.Context, cred *Cred, storedFP string, strict bool) (*Conn,
 	}
 	addr := net.JoinHostPort(cred.Host, strconv.Itoa(cred.Port))
 	start := time.Now()
-	// ssh.Dial 不接受 ctx：用 goroutine + ctx 取消兜底
-	type dialOut struct {
-		client *ssh.Client
-		err    error
+	// ssh.ClientConfig.Timeout 只覆盖 TCP 建连，不覆盖版本协商/KEX/认证：
+	// 目标机 accept 后 stall（半开连接、tarpit、sshd 卡死）时 ssh.Dial 永久阻塞，
+	// dial goroutine + 异步回收 goroutine + 连接三者全部泄漏。自管 TCP 连接并设
+	// 整体 deadline 兜底，另以 ctx 联动关闭满足更紧的上层预算。
+	dconn, err := net.DialTimeout("tcp", addr, DialTimeout)
+	if err != nil {
+		return nil, ClassifyErr(err)
 	}
-	dch := make(chan dialOut, 1)
+	_ = dconn.SetDeadline(start.Add(DialTimeout * 3)) // 握手整体上限（正常毫秒级，仅防 stall）
+	handshakeDone := make(chan struct{})
 	go func() {
-		cl, err := ssh.Dial("tcp", addr, cfg)
-		dch <- dialOut{cl, err}
-	}()
-	var client *ssh.Client
-	select {
-	case <-ctx.Done():
-		// ctx 取消时 dial goroutine 可能已建连成功：异步回收，避免连接泄漏
-		go func() {
-			if o := <-dch; o.client != nil {
-				_ = o.client.Close()
-			}
-		}()
-		return nil, fmt.Errorf("连接超时：主机不可达（%s 超时）", DialTimeout)
-	case o := <-dch:
-		if o.err != nil {
-			return nil, ClassifyErr(o.err)
+		select {
+		case <-ctx.Done():
+			_ = dconn.Close() // 解除阻塞中的 NewClientConn
+		case <-handshakeDone:
 		}
-		client = o.client
+	}()
+	c, chans, reqs, err := ssh.NewClientConn(dconn, addr, cfg)
+	close(handshakeDone)
+	if err != nil {
+		_ = dconn.Close()
+		return nil, ClassifyErr(err)
 	}
+	_ = dconn.SetDeadline(time.Time{}) // 会话阶段解除限时（由调用方 ctx 管控）
+	client := ssh.NewClient(c, chans, reqs)
 	fp := ""
 	if presented != nil {
 		fp = FingerprintSHA256(presented)
@@ -243,6 +242,14 @@ func (c *Conn) RunOut(ctx context.Context, script string) (stdout, stderr string
 // 不含单引号/换行（由面板生成，非用户自由输入）。
 func (c *Conn) PushFile(ctx context.Context, path string, data []byte) error {
 	return c.push(ctx, path, data, false)
+}
+
+// PushStdin 执行远端脚本并以 stdin 喂入 data（脚本自身负责消费 stdin，
+// 如 `cat > "$TMP"`）。敏感数据（PSK 等）不要内联进脚本——内联会出现在
+// 远端 ps/审计里，stdin 通道不会。
+func (c *Conn) PushStdin(ctx context.Context, script string, data []byte) error {
+	_, err := c.run(ctx, script, bytes.NewReader(data))
+	return err
 }
 
 // AppendFile 将 data 追加到远端 path 末尾（文件不存在则创建，权限 600）。
@@ -342,8 +349,15 @@ func (c *Conn) runBoth(ctx context.Context, cmd string, stdin io.Reader) (stdout
 		}
 		return nil, nil, fmt.Errorf("执行超时或已取消：%w", ctx.Err())
 	case werr := <-waitCh:
-		<-copyDone
-		<-copyDone
+		// 先关会话再等拷贝 goroutine：非规范服务器发完 exit-status 却不关
+		// stdout 时，拷贝侧读不到 EOF 会永久阻塞（成功路径同样要兜底）。
+		_ = sess.Close()
+		for i := 0; i < 2; i++ {
+			select {
+			case <-copyDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
 		if werr != nil {
 			var ee *ssh.ExitError
 			if errors.As(werr, &ee) {

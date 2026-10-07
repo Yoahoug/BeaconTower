@@ -120,7 +120,7 @@ func fetchURL(ctx context.Context, url string) (string, bool) {
 
 // probePubIP 依次尝试两个源，成功回写 6h 缓存并清退避标记；失败记退避起点。
 func probePubIP(ctx context.Context) {
-	for _, u := range []string{"https://ip.sb", "http://ip-api.com/json/?fields=query"} {
+	for _, u := range []string{"https://ip.sb", "https://ipwho.is/"} {
 		if ctx.Err() != nil {
 			return
 		}

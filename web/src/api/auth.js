@@ -56,6 +56,12 @@ export function resetAuthCache() {
   statusAt = 0
 }
 
+// 会话失效事件（http.js 在 401/1002 时派发）：清 30s status 缓存，确保
+// 下一次路由守卫重新打 status。在模块加载时挂上，避免循环依赖。
+if (typeof window !== 'undefined') {
+  window.addEventListener('bt:unauthorized', () => resetAuthCache())
+}
+
 export const authClient = {
   status: () => withTimeout(impl.status()),
   setup: (payload) => withTimeout(impl.setup(payload)),

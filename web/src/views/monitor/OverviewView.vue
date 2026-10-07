@@ -5,6 +5,7 @@
      ============================================================ -->
 <script setup>
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useMonitorStore } from '../../stores/monitor'
 import NodeCard from '../../components/monitor/NodeCard.vue'
 import TrendChart from '../../components/charts/TrendChart.vue'
@@ -41,6 +42,14 @@ const powerSeries = computed(() => [
 
     <!-- 加载 / 错误态 -->
     <StateSkeleton v-if="monitor.status === 'loading'" :rows="5" />
+    <div v-else-if="monitor.status === 'error' && monitor.needLogin" class="bt-card">
+      <StateEmpty
+        title="需登录查看"
+        :desc="monitor.error || '私有模式下总览仅管理员可见，登录后继续浏览。'"
+      >
+        <RouterLink class="bt-btn bt-btn--primary bt-btn--sm" to="/admin/login">前往登录</RouterLink>
+      </StateEmpty>
+    </div>
     <StateError
       v-else-if="monitor.status === 'error'"
       :message="monitor.error || '数据加载失败'"

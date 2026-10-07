@@ -23,35 +23,35 @@ type Runner struct {
 	DB       *store.DB
 	Master   []byte
 	patrolMu sync.Mutex // Patrol 防重入（ticker 与手动触发并发时跳过本轮）
-	stopBeat chan struct{}
-	beatOnce sync.Once
 }
 
 func NewRunner(db *store.DB, master []byte) *Runner { return &Runner{DB: db, Master: master} }
 
 // startHeartbeat 周期给 running 任务续跳，watchdog（FailStaleRunningTasks）凭
 // heartbeat_at 判活。成员很多时任务可远超 30 分钟，不能按创建时间判。
-func (r *Runner) startHeartbeat(taskID int64) {
-	if r.stopBeat == nil {
-		r.stopBeat = make(chan struct{})
-	}
+// 每个任务一条独立的 stop channel：旧实现是 Runner 级共享 channel + sync.Once
+// 关闭后不复位，第一个任务结束时 channel 永久关闭，此后所有任务的心跳
+// goroutine 立即退出——长任务会被 watchdog 误判中断（heartbeat 超 1h 即 fail）。
+func (r *Runner) startHeartbeat(taskID int64) (stop func()) {
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
 				_ = r.DB.HeartbeatWGTask(taskID, time.Now().Unix())
-			case <-r.stopBeat:
+			case <-stopCh:
 				return
 			}
 		}
 	}()
-}
-
-func (r *Runner) stopHeartbeat() {
-	if r.stopBeat != nil {
-		r.beatOnce.Do(func() { close(r.stopBeat) })
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(stopCh) })
+		<-done // 确保 goroutine 退出后才继续，避免与下一任务的心跳写库交错
 	}
 }
 
@@ -169,8 +169,8 @@ func (r *Runner) RunApply(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
-	r.startHeartbeat(taskID)
-	defer r.stopHeartbeat()
+	stopHeartbeat := r.startHeartbeat(taskID)
+	defer stopHeartbeat()
 	network, err := r.DB.GetWGNetwork()
 	if err != nil || network == nil {
 		_ = r.DB.FinishWGTask(taskID, "failed", "组网配置缺失", time.Now().Unix())

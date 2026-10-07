@@ -6,6 +6,7 @@
      ============================================================ -->
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useMonitorStore } from '../../stores/monitor'
 import TweenNumber from '../../components/ui/TweenNumber.vue'
 import StateEmpty from '../../components/ui/StateEmpty.vue'
@@ -86,6 +87,15 @@ onUnmounted(() => monitor.stopFrp())
     </div>
 
     <StateSkeleton v-if="monitor.frpStatus === 'loading'" :rows="5" />
+    <div v-else-if="monitor.frpStatus === 'error' && monitor.needLogin" class="bt-card">
+      <StateEmpty
+        title="需登录查看"
+        :desc="monitor.frpError || '私有模式下穿透状态仅管理员可见，登录后继续浏览。'"
+        icon="tunnel"
+      >
+        <RouterLink class="bt-btn bt-btn--primary bt-btn--sm" to="/admin/login">前往登录</RouterLink>
+      </StateEmpty>
+    </div>
     <StateError
       v-else-if="monitor.frpStatus === 'error'"
       :message="monitor.frpError || '穿透数据加载失败'"

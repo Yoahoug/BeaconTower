@@ -261,7 +261,10 @@ func (a *App) PublicStream(c *gin.Context) {
 			writeSSE(c, "update", a.Coll.SSEFrame())
 			c.Writer.Flush()
 		case <-ping.C:
-			_, _ = c.Writer.WriteString(": ping\n\n")
+			// 命名 ping 帧（而非 ": ping" 注释）：前端 EventSource 靠它刷新
+			// 判活时钟（_lastEventAt）——采集间隔大时仅靠 update 会误判 stale
+			// 退化为全量轮询；EventSource 不派发注释帧事件。
+			writeSSE(c, "ping", []byte("1"))
 			c.Writer.Flush()
 		}
 	}

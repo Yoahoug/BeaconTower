@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -123,12 +124,13 @@ func (a *App) Login(c *gin.Context) {
 	admin, _ := a.DB.GetAdmin()
 	fail := func() {
 		a.Blocker.Fail(ip)
-		// 用户名截断：巨型 payload 的用户名会原样进审计，把审计行撑爆
-		name := req.Username
+		// 用户名截断：巨型 payload 的用户名会原样进审计，把审计行撑爆；
+		// 按 rune 截断避免把多字节字符切成非法 UTF-8 尾巴
+		name := []rune(req.Username)
 		if len(name) > 64 {
 			name = name[:64]
 		}
-		a.audit(name, "login_fail", "admin", "登录失败（"+orEmpty(name)+")", ip)
+		a.audit(string(name), "login_fail", "admin", "登录失败（"+orEmpty(string(name))+")", ip)
 		middleware.Fail(c, 1005, "用户名或密码错误")
 	}
 	if admin == nil || admin.Username != req.Username {
@@ -211,15 +213,42 @@ func (a *App) issueSession(c *gin.Context, username string) {
 		return
 	}
 	_ = a.DB.CreateSession(crypto.HashToken(token), nowUnix()+24*3600, nowUnix())
-	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	// Secure 属性仅认 TLS 与可信反代：X-Forwarded-Proto 任何客户端都能伪造，
+	// 未校验来源时采信只会影响请求者自己的 cookie 属性，但与 ClientIP 中间件
+	// 的严格口径保持一致。
+	secure := c.Request.TLS != nil || forwardedHTTPS(c)
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie("bt_session", token, 24*3600, "/", "", secure, true)
 	// CSRF 双提交 token（可读 cookie，前端 http.js 自动附 X-CSRF-Token）
-	csrf, _ := crypto.NewSessionToken()
+	csrf, err := crypto.NewSessionToken()
+	if err != nil {
+		return // 旧实现忽略错误、对空串切片会 panic
+	}
 	c.SetCookie("bt_csrf", csrf[:32], 24*3600, "/", "", secure, false)
 	c.Set(middleware.CtxUsername, username)
 	c.Set(middleware.CtxSessionHash, crypto.HashToken(token))
 }
+
+// forwardedHTTPS 直连对端落在可信代理网段内时才采信 X-Forwarded-Proto
+// （判定口径与 middleware.ClientIP 一致）。
+func forwardedHTTPS(c *gin.Context) bool {
+	if strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		if peer, _, err := net.SplitHostPort(c.Request.RemoteAddr); err == nil {
+			if p := net.ParseIP(peer); p != nil {
+				for _, n := range trustedProxies {
+					if n.Contains(p) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// trustedProxies 包级缓存：config 在进程内不变，handler 包不直接依赖 config
+// 类型，初始化时由 app.go 注入。
+var trustedProxies []*net.IPNet
 
 func clearSessionCookie(c *gin.Context) {
 	c.SetCookie("bt_session", "", -1, "/", "", false, true)

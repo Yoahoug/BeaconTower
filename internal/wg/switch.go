@@ -37,8 +37,8 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 	if err != nil || task == nil {
 		return
 	}
-	r.startHeartbeat(taskID)
-	defer r.stopHeartbeat()
+	stopHeartbeat := r.startHeartbeat(taskID)
+	defer stopHeartbeat()
 	var in SwitchInput
 	_ = json.Unmarshal([]byte(task.Payload), &in)
 	network, err := r.DB.GetWGNetwork()

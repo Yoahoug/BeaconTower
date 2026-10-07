@@ -16,14 +16,18 @@ export function fmtBps(bps) {
 }
 
 export function fmtGB(gb, digits = 1) {
-  if (gb >= 1024) return `${(gb / 1024).toFixed(2)} TB`
-  return `${gb.toFixed(digits)} GB`
+  const n = Number(gb)
+  if (!Number.isFinite(n)) return '—'
+  if (n >= 1024) return `${(n / 1024).toFixed(2)} TB`
+  return `${n.toFixed(digits)} GB`
 }
 
 // 紧凑容量写法（仪表盘标签用）：2G / 340G / 1.2T
 export function fmtSizeShort(gb) {
-  if (gb >= 1024) return `${(gb / 1024).toFixed(1)}T`
-  return `${Math.round(gb)}G`
+  const n = Number(gb)
+  if (!Number.isFinite(n)) return '—'
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}T`
+  return `${Math.round(n)}G`
 }
 
 // 字节流量：820 MB / 3.4 GB / 1.2 TB（按日流量记录用，输入 bytes）

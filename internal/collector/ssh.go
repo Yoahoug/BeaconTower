@@ -76,7 +76,7 @@ case "$pubip$ts$now_s" in
   *[!0-9\ ]*) pubip="" ;;
 esac
 if [ -z "$pubip" ] || [ -z "$ts" ] || [ -z "$now_s" ] || [ $((now_s - ts)) -gt 21600 ] 2>/dev/null; then
-  pubip=$(curl -sS -m 5 -4 https://ip.sb 2>/dev/null || curl -sS -m 5 -4 'http://ip-api.com/json/?fields=query' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  pubip=$(curl -sS -m 4 -4 https://ip.sb 2>/dev/null || curl -sS -m 4 -4 'https://ipwho.is/' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
   case "$pubip" in
     [0-9]*.[0-9]*.[0-9]*.[0-9]*) echo "$pubip $now_s" > /tmp/.bt_pub_ip 2>/dev/null ;;
     *) pubip="" ;;
@@ -442,8 +442,16 @@ func parseOutputLoose(out []byte) (*RawSample, error) {
 
 // ---------- darwin 本机原生采集（仅本地执行，非 SSH 路径） ----------
 
+// darwinExec 带本地超时执行（旧实现裸 exec.Command：任一命令挂起——如网络盘上的
+// df——会让采集 goroutine 永久阻塞，wg.Wait 卡死整轮采集）。
+func darwinExec(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
 func darwinSysctlInt(name string) int64 {
-	out, err := exec.Command("sysctl", "-n", name).Output()
+	out, err := darwinExec(3*time.Second, "sysctl", "-n", name)
 	if err != nil {
 		return 0
 	}
@@ -455,7 +463,7 @@ func darwinMem() (total, used int64, ok bool) {
 	if pageSize <= 0 {
 		return 0, 0, false
 	}
-	out, err := exec.Command("vm_stat").Output()
+	out, err := darwinExec(3*time.Second, "vm_stat")
 	if err != nil {
 		return 0, 0, false
 	}
@@ -496,7 +504,7 @@ func darwinCpuTicks() (total, idle uint64) {
 	// iostat -c 2 首行是开机以来均值，第二行才是上次调用以来的窗口均值；
 	// 归一为千分比伪 tick（CpuTotal=1000 恒定，CpuIdle 随窗口浮动），差分即得占用率。
 	// 比 top -l 1 便宜一个量级（iostat ~1ms，top 每次 ~300ms 全核遍历，10s 一轮纯属浪费）。
-	out, err := exec.Command("iostat", "-c", "2").Output()
+	out, err := darwinExec(5*time.Second, "iostat", "-c", "2")
 	if err != nil {
 		return 0, 0
 	}
@@ -524,7 +532,7 @@ func darwinCpuTicks() (total, idle uint64) {
 }
 
 func darwinDisk(mount string) (total, used int64) {
-	out, err := exec.Command("df", "-k", mount).Output()
+	out, err := darwinExec(3*time.Second, "df", "-k", mount)
 	if err != nil {
 		return 0, 0
 	}
@@ -546,7 +554,7 @@ func darwinDisk(mount string) (total, used int64) {
 }
 
 func darwinNetTotals() (rx, tx uint64, ifaces string) {
-	out, err := exec.Command("netstat", "-ibn").Output()
+	out, err := darwinExec(3*time.Second, "netstat", "-ibn")
 	if err != nil {
 		return 0, 0, ""
 	}

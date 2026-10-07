@@ -84,8 +84,18 @@ func (c *ChmlfrpClient) call(ctx context.Context, method, path string, query url
 	if status == http.StatusNotFound {
 		return &apiError{Platform: "ChmlFrp", Status: status, Msg: "接口不存在（平台可能已改版）"}
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+	if status == http.StatusUnauthorized {
 		return fmt.Errorf("%w（ChmlFrp 令牌无效）", ErrAuth)
+	}
+	if status == http.StatusForbidden {
+		// 403 可能来自 WAF/限流（前置 Cloudflare WAF 拦脚本 UA 有前科），不能
+		// 一律当凭据失效——误判会把平台降级 unbound、前端弹重新授权。仅当
+		// 响应体明确指向鉴权时才归 ErrAuth，否则按普通接口错误处理。
+		body := strings.ToLower(string(raw))
+		if strings.Contains(body, "token") || strings.Contains(body, "auth") || strings.Contains(body, "登录") || strings.Contains(body, "令牌") {
+			return fmt.Errorf("%w（ChmlFrp 令牌无效）", ErrAuth)
+		}
+		return &apiError{Platform: "ChmlFrp", Status: status, Msg: trimErr(string(raw))}
 	}
 	if status < 200 || status >= 300 {
 		return &apiError{Platform: "ChmlFrp", Status: status, Msg: trimErr(string(raw))}

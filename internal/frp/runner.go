@@ -55,16 +55,25 @@ type Runner struct {
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
 
+	// chmlTokens ChmlFrp 续期结果进程内缓存：双检锁快路径 + 落库失败兜底
+	chmlTokens tokenMemCache
+
+	// errSeen 同错误日志节流（markError 用）：平台 ID → 上次记录
+	errMu   sync.Mutex
+	errSeen map[int64]errThrottle
+
 	// syncAllRuns SyncAll 轮次计数（周期性 full 同步用，见 syncAllFullEvery）
 	syncAllRuns int
 }
 
 func NewRunner(db *store.DB, master []byte, clientID string) *Runner {
 	return &Runner{
-		DB:     db,
-		Master: master,
-		Flow:   NewDeviceFlow(clientID),
-		locks:  map[int64]*sync.Mutex{},
+		DB:         db,
+		Master:     master,
+		Flow:       NewDeviceFlow(clientID),
+		locks:      map[int64]*sync.Mutex{},
+		chmlTokens: tokenMemCache{entries: map[int64]tokenMemEntry{}},
+		errSeen:    map[int64]errThrottle{},
 	}
 }
 
@@ -148,27 +157,92 @@ func (r *Runner) client(ctx context.Context, p *store.FRPPlatform) (platform, er
 		if tokenFresh(p) {
 			return NewChmlfrp("", token), nil
 		}
+		// 双检锁：读路径（流量图表/配置下载等）不持平台锁也会走到这里，
+		// 与后台同步并发时两个 goroutine 同时刷新会烧掉一次性 refresh_token。
+		// 拿平台锁前先看内存缓存/库里的令牌是否已被别的 goroutine 续过。
+		if fresh, ok := r.freshChmlToken(p.ID, p.TokenExpireAt); ok {
+			return NewChmlfrp("", fresh), nil
+		}
+		lock := r.lockFor(p.ID)
+		lock.Lock()
+		// 锁内重读：前一个持锁者可能已完成续期并落库
+		if cur, err := r.DB.GetFRPPlatform(p.ID); err == nil && cur != nil && tokenFresh(cur) {
+			lock.Unlock()
+			return NewChmlfrp("", r.decrypt(cur.TokenEnc)), nil
+		}
 		refresh := r.decrypt(p.RefreshEnc)
 		if refresh == "" {
+			lock.Unlock()
 			return nil, fmt.Errorf("%w（缺少刷新令牌，请重新授权）", ErrAuth)
 		}
 		tok, err := RefreshChmlfrpToken(ctx, r.Flow.clientID, refresh)
 		if err != nil {
+			lock.Unlock()
 			return nil, err
 		}
 		if err := r.DB.UpdateFRPPlatformCreds(p.ID, r.encrypt(tok.AccessToken), r.encrypt(tok.RefreshToken), tok.ExpiresAt()); err != nil {
-			// 落库失败不阻断本次调用，但下次还会用旧令牌再来一遍，必须留痕
-			log.Printf("[frp] 刷新后的令牌落库失败（平台 %d）: %v", p.ID, err)
+			// 落库失败：一次性 refresh_token 已被消耗、库里留的是作废旧值，
+			// 之后每轮都会拿旧值去撞 invalid_grant 直到人工重绑。进程内缓存
+			// 新令牌让后续调用继续可用（重启才丢），并留痕。
+			r.cacheChmlToken(p.ID, tok)
+			log.Printf("[frp] 刷新后的令牌落库失败（平台 %d，已启用进程内缓存兜底）: %v", p.ID, err)
+		} else {
+			r.cacheChmlToken(p.ID, tok)
 		}
-		p.TokenEnc = r.encrypt(tok.AccessToken)
-		p.RefreshEnc = r.encrypt(tok.RefreshToken)
-		p.TokenExpireAt = tok.ExpiresAt()
 		log.Printf("[frp] 平台 %d 的 ChmlFrp 令牌已自动续期（%ds）", p.ID, tok.ExpiresIn)
+		lock.Unlock()
 		return NewChmlfrp("", tok.AccessToken), nil
 
 	default:
 		return nil, fmt.Errorf("未知平台类型: %s", p.Kind)
 	}
+}
+
+// freshChmlToken 平台 ID → 续期结果缓存（落库失败时兜底 + 双检锁快路径）。
+type tokenMemCache struct {
+	mu      sync.Mutex
+	entries map[int64]tokenMemEntry
+}
+
+type tokenMemEntry struct {
+	access    string
+	expiresAt int64
+}
+
+func (c *tokenMemCache) get(id int64) (string, int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[id]
+	if !ok {
+		return "", 0, false
+	}
+	return e.access, e.expiresAt, true
+}
+
+func (c *tokenMemCache) put(id int64, tok *Token) {
+	if tok == nil || tok.AccessToken == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[id] = tokenMemEntry{access: tok.AccessToken, expiresAt: tok.ExpiresAt()}
+}
+
+// freshChmlToken 查缓存：库里记录的过期时间与缓存不一致（缓存更新）且缓存
+// 未临期时，说明别的 goroutine 已续期，直接复用缓存令牌。
+func (r *Runner) freshChmlToken(platformID int64, dbExpireAt int64) (string, bool) {
+	access, exp, ok := r.chmlTokens.get(platformID)
+	if !ok || access == "" {
+		return "", false
+	}
+	if exp != dbExpireAt && time.Now().Unix() < exp-90 {
+		return access, true
+	}
+	return "", false
+}
+
+func (r *Runner) cacheChmlToken(platformID int64, tok *Token) {
+	r.chmlTokens.put(platformID, tok)
 }
 
 // ---------- 绑定 ----------
@@ -466,6 +540,18 @@ func (r *Runner) cfEnhance(ctx context.Context, p *store.FRPPlatform, cli *Cloud
 		}
 		sum, err := cli.TunnelDayTraffic(ctx, t.Remote, 24)
 		if err != nil {
+			// 永久性权限错误（如 token 缺 zone analytics 权限）每轮同步都会
+			// 复发，与 markError 共用平台级节流槽：同错误 10 分钟内只记一次。
+			msg := trimErr(err.Error())
+			r.errMu.Lock()
+			th, seen := r.errSeen[p.ID]
+			now := time.Now().Unix()
+			if seen && th.lastMsg == msg && now-th.lastAt < 600 {
+				r.errMu.Unlock()
+				continue
+			}
+			r.errSeen[p.ID] = errThrottle{lastAt: now, lastMsg: msg}
+			r.errMu.Unlock()
 			log.Printf("[frp] 平台 %d 隧道「%s」流量查询失败（本轮显示 —）: %v", p.ID, t.Remote, err)
 			continue
 		}
@@ -489,6 +575,13 @@ func (r *Runner) cfEnhance(ctx context.Context, p *store.FRPPlatform, cli *Cloud
 }
 
 // markError 记录失败状态；凭据类错误额外降级为 unbound，前端据此弹重新授权。
+// 同一平台+同一错误 10 分钟内只记一次日志：永久性配置错误（如 Cloudflare
+// token 缺 analytics 权限）每 2 分钟同步一轮，不节流会刷满日志。
+type errThrottle struct {
+	lastAt  int64
+	lastMsg string
+}
+
 func (r *Runner) markError(p *store.FRPPlatform, err error) {
 	status := "error"
 	if errors.Is(err, ErrAuth) {
@@ -497,7 +590,22 @@ func (r *Runner) markError(p *store.FRPPlatform, err error) {
 	if e := r.DB.SetFRPPlatformStatus(p.ID, status, trimErr(err.Error())); e != nil {
 		log.Printf("[frp] 平台状态回写失败: %v", e)
 	}
+	msg := trimErr(err.Error())
+	r.errMu.Lock()
+	th, ok := r.errSeen[p.ID]
+	now := time.Now().Unix()
+	if ok && th.lastMsg == msg && now-th.lastAt < 600 {
+		r.errMu.Unlock()
+		return
+	}
+	r.errSeen[p.ID] = errThrottle{lastAt: now, lastMsg: msg}
+	r.errMu.Unlock()
 	log.Printf("[frp] 平台 %d(%s) 同步失败: %v", p.ID, p.Name, err)
+}
+
+// PlatformList 供 tasks 层读取平台数以放大同步预算（错误时返回 nil，调用方按 1 个平台兜底）。
+func (r *Runner) PlatformList() ([]*store.FRPPlatform, error) {
+	return r.DB.ListFRPPlatforms()
 }
 
 // SyncAll 周期任务入口：逐个平台轻同步，单平台失败不影响其余。
@@ -523,7 +631,12 @@ func (r *Runner) SyncAll(ctx context.Context) {
 			continue
 		}
 	}
-	r.CollectLocalConns(ctx)
+	// 独立预算：tasks 层给 SyncAll 的 2min ctx 常在多平台/多隧道时被同步
+	// 吃满，CollectLocalConns（SSH 探测）拿到已取消的 ctx 会让本地连接
+	// 计数整轮静默丢失——给它单独的兜底预算。
+	lcCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	r.CollectLocalConns(lcCtx)
 }
 
 // syncAllGate / syncAllRunning 周期同步的防重入闸门：上一轮还没结束就跳过

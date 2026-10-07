@@ -100,6 +100,7 @@ async function refresh() {
 let idleTimer = 0
 async function idleReload() {
   if (admin.frpSaving) return
+  if (document.hidden) return // 后台标签页暂停，省请求（与其他轮询口径一致）
   await admin.loadFrp()
   await loadDeployments()
 }
@@ -1093,8 +1094,8 @@ onBeforeUnmount(() => {
               </span>
             </span>
             <span v-if="p.tunnel_quota && p.tunnel_quota > 0" class="frp-quota">
-              <i class="frp-quota__bar" :class="loadTone((p.tunnel_used / p.tunnel_quota) * 100)"
-                :style="{ width: Math.min(100, (p.tunnel_used / p.tunnel_quota) * 100) + '%' }" />
+              <i class="frp-quota__bar" :class="loadTone((Number(p.tunnel_used) || 0) / (p.tunnel_quota || 1) * 100)"
+                :style="{ width: Math.min(100, (Number(p.tunnel_used) || 0) / (p.tunnel_quota || 1) * 100) + '%' }" />
             </span>
             <span v-if="p.last_error" class="frp-platform__err">{{ p.last_error }}</span>
             <span class="frp-platform__foot">同步于 {{ p.last_sync_at ? agoFromTs(p.last_sync_at) : '尚未同步' }}</span>
@@ -1444,9 +1445,9 @@ onBeforeUnmount(() => {
                     </td>
                     <td class="num">
                       <div v-if="n.load" class="frp-load">
-                        <span class="frp-load__num tnum">{{ n.load.toFixed(1) }}%</span>
+                        <span class="frp-load__num tnum">{{ (Number(n.load) || 0).toFixed(1) }}%</span>
                         <span class="frp-load__bar">
-                          <i :class="loadTone(n.load)" :style="{ width: Math.min(100, n.load) + '%' }" />
+                          <i :class="loadTone(n.load)" :style="{ width: Math.min(100, Number(n.load) || 0) + '%' }" />
                         </span>
                       </div>
                       <span v-else class="bt-text-muted">—</span>
@@ -1498,9 +1499,9 @@ onBeforeUnmount(() => {
                       </td>
                       <td class="num">
                         <div v-if="n.load" class="frp-load">
-                          <span class="frp-load__num tnum">{{ n.load.toFixed(1) }}%</span>
+                          <span class="frp-load__num tnum">{{ (Number(n.load) || 0).toFixed(1) }}%</span>
                           <span class="frp-load__bar">
-                            <i :class="loadTone(n.load)" :style="{ width: Math.min(100, n.load) + '%' }" />
+                            <i :class="loadTone(n.load)" :style="{ width: Math.min(100, Number(n.load) || 0) + '%' }" />
                           </span>
                         </div>
                         <span v-else class="bt-text-muted">—</span>

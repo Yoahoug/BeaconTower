@@ -44,11 +44,12 @@ func Start(db *store.DB, wgRunner *wg.Runner, frpRunner *frp.Runner, stop <-chan
 				_ = db.CleanExpiredSessions(time.Now().Unix())
 			case <-frpTick.C:
 				if frpRunner != nil {
-					// 独立 goroutine 执行（SyncAllAsync 内部带防重入闸门）：
-					// 同步链路涉及上游 HTTP、OAuth 刷新、SSH 探测，任何一环
-					// 卡死都不能拖垮本循环里的采样清理/小时聚合/WG 巡检——
-					// v2.6.5 线上事故：令牌续期路径自死锁导致整个任务循环
-					// 停摆 27h，今日流量与本地连接数同时断更。
+					// 独立 goroutine 执行（SyncAllAsync 内部带防重入闸门 +
+					// 10min 硬超时）：同步链路涉及上游 HTTP、OAuth 刷新、
+					// SSH 探测，任何一环卡死都不能拖垮本循环里的采样清理/
+					// 小时聚合/WG 巡检——v2.6.5 线上事故：令牌续期路径自
+					// 死锁导致整个任务循环停摆 27h，今日流量与本地连接数
+					// 同时断更。
 					frpRunner.SyncAllAsync()
 				}
 			case <-wgTick.C:
@@ -133,6 +134,13 @@ func cleanup(db *store.DB) {
 		log.Printf("[tasks] clean frp usage: %v", err)
 	} else if n > 0 {
 		log.Printf("[tasks] cleaned %d frp usage rows", n)
+	}
+	// 审计日志保留 90 天：login_fail 可由攻击者无限制造（换 IP 继续），无清理
+	// 则表无界膨胀，ListAudit 的 COUNT(*) 全表扫描随之变慢
+	if n, err := db.DeleteAuditBefore(now - 90*86400); err != nil {
+		log.Printf("[tasks] clean audit: %v", err)
+	} else if n > 0 {
+		log.Printf("[tasks] cleaned %d audit rows", n)
 	}
 }
 

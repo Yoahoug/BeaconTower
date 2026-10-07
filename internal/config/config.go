@@ -17,6 +17,10 @@ type Config struct {
 	SiteTitle         string
 	TrustedProxies    []*net.IPNet
 	TrustedProxiesRaw string
+	// ProxyURL 出站代理（BEACON_PROXY_URL，如 http://172.17.0.1:7890）：
+	// frp 平台外呼统一走此代理。TUN/fake-ip 全局接管网络下直连新建连接
+	// 偶发建连后 EOF，显式代理更稳；仅记录原值，实际注入在 frp 包读取。
+	ProxyURL string
 
 	// ChmlfrpClientID OAuth2 设备码授权用的公共客户端 ID。
 	// 默认值是 ChmlFrp 官方启动器的客户端（无 secret、已开启设备码），
@@ -46,6 +50,7 @@ func Load() *Config {
 		CollectInterval: interval,
 		SiteTitle:       getenv("BEACON_SITE_TITLE", "BeaconTower"),
 		ChmlfrpClientID: strings.TrimSpace(os.Getenv("BEACON_CHMLFRP_CLIENT_ID")),
+		ProxyURL:        strings.TrimSpace(os.Getenv("BEACON_PROXY_URL")),
 	}
 	raw := strings.TrimSpace(os.Getenv("BEACON_TRUSTED_PROXIES"))
 	c.TrustedProxiesRaw = raw

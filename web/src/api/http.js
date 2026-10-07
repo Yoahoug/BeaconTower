@@ -27,6 +27,20 @@ function toApiError(e, url) {
   return new ApiError({ code: 'NETWORK', message: e?.message || `网络异常（${url}）`, retryable: true })
 }
 
+// 会话失效广播：401/1002 到达时清除 30s status 缓存并通知页面层。
+// 此前 401 只抛 ApiError，各视图只把 message 塞 toast，用户停留在原页——
+// 会话过期/private_mode 下公开页整站只剩裸错误块，没有「前往登录」入口。
+// 监听方：router（挂载 onError 转跳登录）与各视图错误态组件。
+function notifyUnauthorized(err) {
+  try {
+    // 动态 import 会产生异步循环依赖（auth.js ← http.js），改为派发 DOM 事件：
+    // auth.js 在模块顶层监听并调 resetAuthCache()。
+    window.dispatchEvent(new CustomEvent('bt:unauthorized', { detail: { code: err?.code, status: err?.status, message: err?.message } }))
+  } catch {
+    /* SSR/测试环境无 window */
+  }
+}
+
 // 来源 doc/04 §2.4：登录成功后下发可读 Cookie `bt_csrf`，所有非 GET
 // 管理 API 必须带 `X-CSRF-Token` 头（双提交校验）。
 function getCsrfToken() {
@@ -44,8 +58,12 @@ function getCsrfToken() {
 function envelopeError(code, msg, status) {
   const text = typeof msg === 'string' && msg ? msg : ''
   switch (code) {
-    case 1002:
-      return new ApiError({ code: 'UNAUTHORIZED', message: text || '登录已过期', status, retryable: false })
+    case 1002: {
+      // 会话失效：清缓存 + 广播（登录失败 1005 不算，不能把登录页也踢去登录页）
+      const err = new ApiError({ code: 'UNAUTHORIZED', message: text || '登录已过期', status, retryable: false })
+      notifyUnauthorized(err)
+      return err
+    }
     case 1003:
       return new ApiError({ code: 'FORBIDDEN', message: text || 'CSRF 校验失败', status, retryable: false })
     case 1004:
@@ -120,7 +138,9 @@ export async function request(path, options = {}) {
         }
       }
       if (res.status === 401) {
-        throw new ApiError({ code: 'UNAUTHORIZED', message: '登录已过期，请重新登录', status: 401 })
+        const err = new ApiError({ code: 'UNAUTHORIZED', message: '登录已过期，请重新登录', status: 401 })
+        notifyUnauthorized(err)
+        throw err
       }
       if (res.status === 403) {
         throw new ApiError({ code: 'FORBIDDEN', message: '无权限执行该操作', status: 403 })

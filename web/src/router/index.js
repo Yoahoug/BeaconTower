@@ -11,6 +11,7 @@ import AppShell from '../layouts/AppShell.vue'
 import OverviewView from '../views/monitor/OverviewView.vue'
 import NotFoundView from '../views/error/NotFoundView.vue'
 import { getCachedStatus } from '../api/auth'
+import { useUiStore } from '../stores/ui'
 
 // 节点详情（公开只读，首屏直载：总览卡片点击即进，无需懒加载等待）
 import ServerDetailView from '../views/monitor/ServerDetailView.vue'
@@ -185,6 +186,13 @@ router.beforeEach(async (to) => {
     }
   }
   return true
+})
+
+// 守卫里 getStatus 抛错（后端瞬时不可达）会让导航取消且无任何反馈——
+// 用户点菜单没反应。这里给出提示，恢复后重试即可。
+router.onError((error) => {
+  console.warn('[router] 导航失败:', error?.message || error)
+  useUiStore().notify('页面跳转失败，请稍后重试')
 })
 
 export default router

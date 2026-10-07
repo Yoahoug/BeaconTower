@@ -441,7 +441,7 @@ func (d *Deployer) Sync(ctx context.Context, dep *store.FRPDeploy, platform *sto
 	res := &ApplyResult{DockerVer: st.Version}
 	state, _ := conn.Run(ctx, `docker inspect -f '{{.State.Status}}' `+dep.Container+` 2>/dev/null || echo missing`)
 	res.Status = normStatus(state)
-	tail, _ := conn.Run(ctx, "docker logs --tail 30 "+dep.Container+" 2>&1 || true")
+	tail, _ := conn.Run(ctx, "docker logs --tail 30 "+dep.Container+" 2>&1 | grep -v -E 'eyJ|token' || true")
 	res.LogTail = strings.TrimSpace(tail)
 	if res.Status != "running" {
 		return res, fmt.Errorf("容器未处于运行状态（%s）：%s", res.Status, lastLines(res.LogTail, 3))

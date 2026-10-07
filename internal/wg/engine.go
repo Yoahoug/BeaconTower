@@ -335,23 +335,35 @@ func HubAddPeer(ctx context.Context, conn *sshx.Conn, iface string, peer Peer, i
 		return fmt.Errorf("peer AllowedIPs 无效: %q", ip)
 	}
 	confPath := "/etc/wireguard/" + iface + ".conf"
-	// 1) 运行态：wg set（PSK 经临时文件传递，避免出现在 ps/命令历史里）
-	const tmpPSK = "/tmp/.bt_wg_psk"
-	var cmd strings.Builder
+	// 1) 运行态：wg set（PSK 经远端 mktemp 临时文件传递，不出现在 ps/命令历史里；
+	// 固定路径（旧实现 /tmp/.bt_wg_psk）可被多用户节点上的本地攻击者预放 symlink，
+	// 让 root 把 PSK 写进任意目标文件；mktemp + 0600 + trap 清理三重兜底）
+	var setCmd strings.Builder
 	if peer.PresharedKey != "" {
-		if err := conn.PushFile(ctx, tmpPSK, []byte(peer.PresharedKey+"\n")); err != nil {
+		// 脚本内联 PSK 会进 ps；改走 stdin：第一段 cat 把 PSK 写进 mktemp 文件
+		//（sshx.Run 每次独立会话，PSK 数据经 stdin 送入第一段 cat）。
+		script := "BT_PSK=$(mktemp /tmp/bt-psk.XXXXXX) || exit 1\n" +
+			"trap 'rm -f \"$BT_PSK\"' EXIT INT TERM\n" +
+			"cat > \"$BT_PSK\"\n" +
+			"umask 077\n" +
+			"wg set " + iface + " peer " + peer.PublicKey + " preshared-key \"$BT_PSK\"" +
+			" allowed-ips " + ip
+		if peer.PersistentKeepalive > 0 {
+			script += " persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive)
+		}
+		script += "\nrc=$?\nrm -f \"$BT_PSK\"\nexit $rc\n"
+		if err := conn.PushStdin(ctx, script, []byte(peer.PresharedKey+"\n")); err != nil {
 			return err
 		}
-		cmd.WriteString("wg set " + iface + " peer " + peer.PublicKey + " preshared-key " + tmpPSK)
 	} else {
-		cmd.WriteString("wg set " + iface + " peer " + peer.PublicKey)
-	}
-	cmd.WriteString(" allowed-ips " + ip)
-	if peer.PersistentKeepalive > 0 {
-		cmd.WriteString(" persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive))
-	}
-	if _, err := conn.Run(ctx, "trap 'rm -f "+tmpPSK+"' EXIT\n"+cmd.String()+"\nexit $?"); err != nil {
-		return err
+		setCmd.WriteString("wg set " + iface + " peer " + peer.PublicKey)
+		setCmd.WriteString(" allowed-ips " + ip)
+		if peer.PersistentKeepalive > 0 {
+			setCmd.WriteString(" persistent-keepalive " + strconv.Itoa(peer.PersistentKeepalive))
+		}
+		if _, err := conn.Run(ctx, setCmd.String()+"\nexit $?"); err != nil {
+			return err
+		}
 	}
 	// 2) conf 持久化：先查重，再以独立 exec 通道追加（cat >> 数据走 stdin）
 	dup, err := conn.Run(ctx, `grep -qF '`+peer.PublicKey+`' `+confPath+` 2>/dev/null && echo dup=1 || echo dup=0`)
@@ -386,17 +398,22 @@ func HubRemovePeer(ctx context.Context, conn *sshx.Conn, iface, publicKey string
 	return err
 }
 
-// SyncConf 重载接口配置（不重启不断连）：strip → 临时文件 → wg syncconf。
+// SyncConf 重载接口配置（不重启不断连）：strip → mktemp 临时文件 → wg syncconf。
 // 收尾的 rm 不能吞掉退出码（旧实现末尾 rm 恒成功，strip/syncconf 失败被当成成功）。
+// 旧固定路径 /tmp/.bt_sync.conf 继承 root 默认 umask（约 0644）且内容含全部 PSK，
+// 改用 mktemp（0600）+ trap 清理。
 func SyncConf(ctx context.Context, conn *sshx.Conn, iface string) error {
 	iface = sanitizeIface(iface)
-	_, err := conn.Run(ctx, `wg-quick strip `+iface+` > /tmp/.bt_sync.conf 2>/dev/null
+	_, err := conn.Run(ctx, `umask 077
+BT_SYNC=$(mktemp /tmp/bt-sync.XXXXXX) || exit 1
+trap 'rm -f "$BT_SYNC"' EXIT INT TERM
+wg-quick strip `+iface+` > "$BT_SYNC" 2>/dev/null
 rc=1
-if [ -s /tmp/.bt_sync.conf ]; then
-  wg syncconf `+iface+` /tmp/.bt_sync.conf
+if [ -s "$BT_SYNC" ]; then
+  wg syncconf `+iface+` "$BT_SYNC"
   rc=$?
 fi
-rm -f /tmp/.bt_sync.conf
+rm -f "$BT_SYNC"
 exit $rc`)
 	return err
 }

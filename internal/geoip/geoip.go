@@ -169,25 +169,40 @@ func proxyTransport() http.RoundTripper {
 
 // onlineLookup 经 ip-api.com 回显解析（只读 countryCode/city，与采集脚本同源）。
 // 失败返回 nil，由上层降级静态映射。
+// 负缓存：上游故障期每次都重试 6s 会拖住持锁的采集链路（applySample 在
+// prevMu 内调用 Lookup），失败结果缓存 5 分钟。
 func onlineLookup(ip string) *Result {
+	const negTTL = 5 * time.Minute
 	cacheMu.Lock()
-	if e, ok := cache[ip]; ok && time.Since(e.at) < cacheTTL {
-		cacheMu.Unlock()
-		return e.res
+	if e, ok := cache[ip]; ok {
+		if e.res != nil && time.Since(e.at) < cacheTTL {
+			cacheMu.Unlock()
+			return e.res
+		}
+		if e.res == nil && time.Since(e.at) < negTTL {
+			cacheMu.Unlock()
+			return nil
+		}
 	}
 	cacheMu.Unlock()
 
-	req, err := http.NewRequest("GET", "http://ip-api.com/json/"+ip+"?fields=status,countryCode,city", nil)
+	req, err := http.NewRequest("GET", "https://ip-api.com/json/"+ip+"?fields=status,countryCode,city", nil)
 	if err != nil {
 		return nil
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		cacheMu.Lock()
+		cache[ip] = cacheEntry{res: nil, at: time.Now()}
+		cacheMu.Unlock()
 		return nil
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if err != nil {
+		cacheMu.Lock()
+		cache[ip] = cacheEntry{res: nil, at: time.Now()}
+		cacheMu.Unlock()
 		return nil
 	}
 	var v struct {
@@ -196,6 +211,9 @@ func onlineLookup(ip string) *Result {
 		City        string `json:"city"`
 	}
 	if err := json.Unmarshal(body, &v); err != nil || v.Status != "success" || v.CountryCode == "" {
+		cacheMu.Lock()
+		cache[ip] = cacheEntry{res: nil, at: time.Now()}
+		cacheMu.Unlock()
 		return nil
 	}
 	res := &Result{Country: v.CountryCode, City: v.City, Region: regionText(v.CountryCode, v.City)}

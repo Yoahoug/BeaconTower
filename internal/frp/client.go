@@ -12,12 +12,17 @@ package frp
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -130,12 +135,64 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Platform, e.Msg)
 }
 
+// sharedTransport 全局共享的 HTTP Transport：每 client 各建一个 Transport 会
+// 持续制造新连接池（2 分钟一轮的同步 + OAuth 续期高频触发），旧池空闲连接
+// 要等 IdleConnTimeout 才释放，fd 与内存持续抖动、TLS 会话无法复用。
+//
+// 出站代理：BEACON_PROXY_URL（如 http://172.17.0.1:7890，宿主 mihomo 混合端口）
+// 设置后所有平台外呼走该代理。经 TUN/fake-ip 全局接管的网络里，直连路径对
+// 新建 TCP 连接偶发建连后 EOF（实测 ~10% 失败率），显式代理绕开该路径且
+// 让流量按代理侧分流规则出网。
+var sharedTransport = func() *http.Transport {
+	t := &http.Transport{
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	if pu := strings.TrimSpace(os.Getenv("BEACON_PROXY_URL")); pu != "" {
+		if u, err := url.Parse(pu); err == nil && u.Scheme != "" && u.Host != "" {
+			t.Proxy = http.ProxyURL(u)
+			log.Printf("[frp] 出站代理已启用: %s", pu)
+		} else {
+			log.Printf("[frp] BEACON_PROXY_URL 无效（%q），忽略并直连", pu)
+		}
+	}
+	return t
+}()
+
+// retryableNetErr 网络层瞬时错误判定：连接复用被对端提前关闭（EOF/重置）、
+// 握手超时等都值得重试一次；参数/凭据类错误不在此列。
+func retryableNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "TLS handshake timeout") ||
+		strings.Contains(msg, "Client.Timeout exceeded while awaiting headers")
+}
+
 func newHTTPClient(timeout time.Duration) *http.Client {
-	return newProxiedHTTPClient(timeout)
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: sharedTransport,
+	}
 }
 
 // request 是所有外部调用的唯一出口：统一 UA / 超时 / 响应体上限。
 // body 已被消费，返回的 raw 供调用方自行按平台约定解析。
+//
+// 网络层瞬时错误（EOF/重置/等待响应头超时）自动重试一次：上游 TUN/代理路径
+// 实测对新建连接有 ~10% 的瞬时失败率，单次失败即把整轮同步打成错误太脆；
+// GET 天然幂等，带 body 的请求重放前需重建 reader（body 通常 ≤ 数十 KB）。
 func request(ctx context.Context, hc *http.Client, method, url string, header http.Header, body io.Reader) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -148,6 +205,30 @@ func request(ctx context.Context, hc *http.Client, method, url string, header ht
 		}
 	}
 	resp, err := hc.Do(req)
+	if err != nil && retryableNetErr(err) && ctx.Err() == nil {
+		// 重建 body reader 后重放（GET/无 body 时 GetBody 为 nil，直接重发）
+		if req.GetBody != nil {
+			rb, rerr := req.GetBody()
+			if rerr == nil {
+				req2 := req.Clone(req.Context())
+				req2.Body = rb
+				if r2, e2 := hc.Do(req2); e2 == nil {
+					resp = r2
+					err = nil
+				} else {
+					err = e2
+				}
+			}
+		} else {
+			req2 := req.Clone(req.Context())
+			if r2, e2 := hc.Do(req2); e2 == nil {
+				resp = r2
+				err = nil
+			} else {
+				err = e2
+			}
+		}
+	}
 	if err != nil {
 		return nil, 0, err
 	}

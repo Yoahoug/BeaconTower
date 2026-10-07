@@ -19,10 +19,17 @@ const tabs = [
 
 const activeOf = (to) => (to === '/' ? route.path === '/' : route.path.startsWith(to))
 const ariaOf = computed(() => (to) => (activeOf(to) ? 'page' : undefined))
+// 注释里的约束（仅公开路由渲染）此前只靠 CSS 媒体查询，≤720px 时 /admin/*
+// 页面也会显示公开 tab（与管理端布局重叠）。这里补路由级排除：登录/初始化/
+// 管理面板一律隐藏，公开页回到纯 CSS 判定。
+const hidden = computed(() => {
+  const p = route.path
+  return p.startsWith('/admin')
+})
 </script>
 
 <template>
-  <nav class="bt-tabbar" aria-label="快捷导航">
+  <nav v-if="!hidden" class="bt-tabbar" aria-label="快捷导航">
     <RouterLink
       v-for="t in tabs"
       :key="t.to"

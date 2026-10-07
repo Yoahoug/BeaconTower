@@ -51,6 +51,16 @@ func (r *RateLimiter) Middleware() gin.HandlerFunc {
 		now := time.Now().Unix()
 		r.mu.Lock()
 		window := r.Window.Nanoseconds() / 1e9
+		// 过期 key 清扫：以 IP 为 key 的 map 在 IPv6 隐私扩展/代理池轮换下
+		// 无限增长（慢速 DoS 可撑到 OOM）。O(n) 扫描挂在限流命中频次上，
+		// 量级远小于请求本身；再以「map 过半则全表清一次」的摊还策略兜底。
+		if len(r.hits) > 4096 {
+			for k, ts := range r.hits {
+				if len(ts) == 0 || now-ts[len(ts)-1] >= window {
+					delete(r.hits, k)
+				}
+			}
+		}
 		kept := r.hits[key][:0]
 		for _, t := range r.hits[key] {
 			if now-t < window {
@@ -81,6 +91,7 @@ type LoginBlocker struct {
 type failState struct {
 	count       int
 	blockedTill int64
+	lastFailAt  int64 // 末次失败（含未达封禁阈值的 1~4 次），Sweep 据此清过期条目
 }
 
 func NewLoginBlocker() *LoginBlocker {
@@ -135,19 +146,23 @@ func (b *LoginBlocker) Fail(ip string) {
 		return
 	}
 	st.count++
+	st.lastFailAt = now
 	if st.count >= 5 {
 		st.blockedTill = now + int64(blockDuration(st.count)/time.Second)
 	}
 }
 
 // Sweep 周期清理：失败计数过期（距上次封禁结束超过 24h）即删除条目，
-// 防 map 无界增长；登录成功走 Success 即时清理。
+// 防 map 无界增长；登录成功走 Success 即时清理。blockedTill==0（失败 1~4 次
+// 未触发封禁）的条目旧实现永久滞留，按末次失败超过 24h 一并清理。
 func (b *LoginBlocker) Sweep() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	cut := time.Now().Unix() - int64(24*time.Hour/time.Second)
 	for ip, st := range b.failures {
 		if st.blockedTill > 0 && st.blockedTill < cut {
+			delete(b.failures, ip)
+		} else if st.blockedTill == 0 && st.lastFailAt < cut {
 			delete(b.failures, ip)
 		}
 	}

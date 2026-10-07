@@ -99,6 +99,7 @@ function render() {
         data: s.data,
         showSymbol: false,
         smooth: 0.35,
+        sampling: 'lttb', // 长窗口大数据量降采样（视觉不变，渲染成本大降）
         lineStyle: {
           width: 2.5,
           color: s.color,
@@ -150,7 +151,7 @@ onUnmounted(() => {
   chart = null
 })
 
-watch(() => props.series, render, { deep: true })
+watch(() => props.series, render) // series 每轮都是新引用，浅比较即触发；deep 遍历大数组纯属浪费
 watch(() => props.yFormatter, render)
 watch(() => props.yMin, render)
 </script>
