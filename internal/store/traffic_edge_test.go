@@ -30,9 +30,9 @@ func TestTrafficWindowEdges(t *testing.T) {
 			t.Fatalf("insert sample: %v", err)
 		}
 	}
-	mustSample(from, 0, 0)              // NULL/0 头部，应被跳过
-	mustSample(from+1200, 1000, 2000)   // 首条有效
-	mustSample(to, 1300, 2600)          // 窗口末条
+	mustSample(from, 0, 0)            // NULL/0 头部，应被跳过
+	mustSample(from+1200, 1000, 2000) // 首条有效
+	mustSample(to, 1300, 2600)        // 窗口末条
 
 	first, ok := db.FirstTrafficSample(srv, from, to)
 	if !ok || first.NetInTotal != 1000 || first.NetOutTotal != 2000 {

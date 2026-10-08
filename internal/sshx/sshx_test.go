@@ -20,7 +20,7 @@ import (
 )
 
 // fakeSSHServer 进程内假 SSH 服务端：密码认证，exec 请求交给本机 sh 执行
-//（sh -s 与 sh -c <cmd> 均真实跑，stdin/stdout/stderr 直通），
+// （sh -s 与 sh -c <cmd> 均真实跑，stdin/stdout/stderr 直通），
 // 用于无外网依赖地回归 Run/PushFile/TOFU/错误分类全链路。
 type fakeSSHServer struct {
 	ln      net.Listener

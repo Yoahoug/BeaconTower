@@ -272,7 +272,7 @@ func TestFRPPublicTodayFallsBackToTunnels(t *testing.T) {
 }
 
 // TestFRPPublicSnapshotCFConnectorName 游客页隐私：Cloudflare 的「节点」是
-//隧道的 connector，名字取自 cfd_tunnel 名（用户的独立专线名，如 New-api）。
+// 隧道的 connector，名字取自 cfd_tunnel 名（用户的独立专线名，如 New-api）。
 // 隧道名对访客属于拓扑信息，公开快照必须统一替换成通用标签（doc/13 §12 白名单）。
 func TestFRPPublicSnapshotCFConnectorName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -304,7 +304,7 @@ func TestFRPPublicSnapshotCFConnectorName(t *testing.T) {
 	body := rec.Body.String()
 	for what, needle := range map[string]string{
 		"独立专线隧道名": "New-api",
-		"连接器原始名":  "连接器\"?:" ,
+		"连接器原始名":  "连接器\"?:",
 	} {
 		_ = what // 只防原始名出现；「Cloudflare 连接器」通用标签允许出现
 		if strings.Contains(body, needle) && needle != "连接器\"?:" {

@@ -36,9 +36,9 @@ const (
 
 // localSock 从 /proc/net/tcp{,6} 解出的一条 ESTABLISHED 连接。
 type localSock struct {
-	rip    net.IP // 远端 IP（v4-mapped 已归一为 v4）
-	rport  int
-	lport  int
+	rip   net.IP // 远端 IP（v4-mapped 已归一为 v4）
+	rport int
+	lport int
 }
 
 // ProbeDialer 按节点 ID 建立 SSH 连接（实现挂在 Deployer.dial 上，

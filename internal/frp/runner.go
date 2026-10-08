@@ -996,7 +996,12 @@ func (r *Runner) DeleteSubdomain(ctx context.Context, platformID int64, domain, 
 	return c.DeleteSubdomain(ctx, domain, record)
 }
 
-// Reauthorize 重新授权入口：解出既有凭据供设备码流程复用（不返回值，仅内部用）。
+// ClientForProbe 排障入口：走与 Sync 相同的 client() 构造链（含 ChmlFrp
+// 续期与平台锁），用于定位同步卡顿/失败发生在构造段还是请求段。
+func (r *Runner) ClientForProbe(ctx context.Context, p *store.FRPPlatform) (platform, error) {
+	return r.client(ctx, p)
+}
+
 func (r *Runner) PlatformByID(id int64) (*store.FRPPlatform, error) {
 	return r.DB.GetFRPPlatform(id)
 }
