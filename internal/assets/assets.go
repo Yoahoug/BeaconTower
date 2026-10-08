@@ -50,10 +50,10 @@ func BuildVariants(u string) []string {
 
 // ProbeResult 单源测速结果。
 type ProbeResult struct {
-	URL      string `json:"url"`
-	Status   int    `json:"status"`            // HTTP 状态码；0 = 失败
-	LatencyMs int64 `json:"latency_ms"`
-	Err      string `json:"err,omitempty"`
+	URL       string `json:"url"`
+	Status    int    `json:"status"` // HTTP 状态码；0 = 失败
+	LatencyMs int64  `json:"latency_ms"`
+	Err       string `json:"err,omitempty"`
 }
 
 // Probe 并发测速：对每个源发起 Range GET（取前 1KB），记录首字节延迟。
@@ -108,7 +108,9 @@ func Probe(ctx context.Context, urls []string, timeout time.Duration) []ProbeRes
 	return results
 }
 
-func (p ProbeResult) usable() bool { return p.Status == http.StatusOK || p.Status == http.StatusPartialContent }
+func (p ProbeResult) usable() bool {
+	return p.Status == http.StatusOK || p.Status == http.StatusPartialContent
+}
 
 func trimErr(s string) string {
 	if len(s) > 120 {
@@ -118,7 +120,7 @@ func trimErr(s string) string {
 }
 
 // Fetch 按测速排序逐源下载（首个成功即止），写入 dest 并校验 sha256
-//（expected 为空则跳过校验）。返回实际使用的 URL。
+// （expected 为空则跳过校验）。返回实际使用的 URL。
 func Fetch(ctx context.Context, results []ProbeResult, dest, expected string, maxSize int64) (string, error) {
 	if maxSize <= 0 {
 		maxSize = 512 << 20

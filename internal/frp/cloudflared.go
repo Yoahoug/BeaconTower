@@ -283,8 +283,8 @@ func (c *CloudflaredClient) TunnelDayTraffic(ctx context.Context, hostname strin
 	}
 	now := time.Now().UTC().Truncate(time.Hour)
 	filter := map[string]any{
-		"datetime_geq":         now.Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339),
-		"datetime_lt":          now.Add(time.Hour).Format(time.RFC3339),
+		"datetime_geq":          now.Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339),
+		"datetime_lt":           now.Add(time.Hour).Format(time.RFC3339),
 		"clientRequestHTTPHost": hostname,
 	}
 	const q = `query TunnelTraffic($zoneTag: string, $filter: filter) {
@@ -479,18 +479,18 @@ func (c *CloudflaredClient) ingressRules(ctx context.Context, tunnelID string) (
 // 面板同步展示但不写这类资源，delete 语义只删「自己往统一容器里加的规则」。
 func (c *CloudflaredClient) tunnelView(t *cfTunnel, hostname, service string, managed bool) *Tunnel {
 	tv := &Tunnel{
-		RemoteID:  t.ID,
-		Name:      t.Name,
-		Proto:     "https",
-		NodeID:    t.ID,
-		NodeName:  t.Name,
-		LocalIP:   "",
-		LocalPort: 0,
-		Remote:    hostname,
-		Status:    "normal",
-		Conns:     t.ConnsActive,
-		Extra:     "cloudflare-tunnel",
-		LockEdit:  !managed,
+		RemoteID:   t.ID,
+		Name:       t.Name,
+		Proto:      "https",
+		NodeID:     t.ID,
+		NodeName:   t.Name,
+		LocalIP:    "",
+		LocalPort:  0,
+		Remote:     hostname,
+		Status:     "normal",
+		Conns:      t.ConnsActive,
+		Extra:      "cloudflare-tunnel",
+		LockEdit:   !managed,
 		LockDelete: !managed,
 	}
 	if hostname != "" {
@@ -700,6 +700,24 @@ func (c *CloudflaredClient) rawIngress(ctx context.Context, tunnelID string) ([]
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// DebugUpsertCNAME 导出的排障入口：手动补写/修正节点域名的隧道 CNAME
+// （自动写入曾失败时的兜底操作）。
+func (c *CloudflaredClient) DebugUpsertCNAME(ctx context.Context, hostname, tunnelID string) error {
+	return c.upsertCNAME(ctx, hostname, tunnelID)
+}
+
+// DebugGet 导出的只读 GET：排障用（隧道连接器状态、DNS 记录等）。
+func (c *CloudflaredClient) DebugGet(ctx context.Context, path string, out any) error {
+	return c.call(ctx, http.MethodGet, path, nil, nil, out)
+}
+
+// DebugRawFullIngress 导出的只读检查入口：返回统一容器云端 ingress 全量规则
+// （含 catch-all）。面板侧排障「域名已存在但列表看不到」这类镜像与云端不一致
+// 问题时直接看云端权威数据。
+func (c *CloudflaredClient) DebugRawFullIngress(ctx context.Context, tunnelID string) ([]map[string]any, error) {
+	return c.rawFullIngress(ctx, tunnelID)
 }
 
 // rawFullIngress 取完整 ingress 数组（含末位 catch-all），用于覆写前重建列表。

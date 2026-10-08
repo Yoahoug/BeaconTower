@@ -384,7 +384,7 @@ func parseInt(v string) int64 {
 }
 
 // parseOutputLoose 与 parseOutput 同一白名单，但不做 mem/cpu 完整性校验
-//（darwin 本机采集的 mem/cpu 由 Go 侧原生补齐）。
+// （darwin 本机采集的 mem/cpu 由 Go 侧原生补齐）。
 func parseOutputLoose(out []byte) (*RawSample, error) {
 	if len(out) > maxOutputLen {
 		return nil, fmt.Errorf("采集输出过大（%d bytes），疑似异常", len(out))
@@ -741,7 +741,7 @@ func RunCollectScript(ctx context.Context) (*RawSample, error) {
 }
 
 // parseOutputDarwin 解析 darwin 本机采集输出：mem/cpu/net 等由 Go 侧原生读取
-//（脚本只负责 uptime/load/画像），因此不走 Linux 的 mem/cpu 完整性校验。
+// （脚本只负责 uptime/load/画像），因此不走 Linux 的 mem/cpu 完整性校验。
 func parseOutputDarwin(out []byte) (*RawSample, error) {
 	s, err := parseOutputLoose(out)
 	if err != nil {

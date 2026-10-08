@@ -111,10 +111,10 @@ cgroup /sys/fs/cgroup cgroup2 rw 0 0
 
 func TestDmiVirt(t *testing.T) {
 	cases := map[string]string{
-		"QEMU":            "kvm",
-		"Microsoft Corporation": "hyperv",
-		"VMware, Inc.":    "vmware",
-		"innotek GmbH":    "vbox",
+		"QEMU":                   "kvm",
+		"Microsoft Corporation":  "hyperv",
+		"VMware, Inc.":           "vmware",
+		"innotek GmbH":           "vbox",
 		"To Be Filled By O.E.M.": "unknown",
 	}
 	for in, want := range cases {

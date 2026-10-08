@@ -507,13 +507,16 @@ func (d *Deployer) syncCloudflared(ctx context.Context, dep *store.FRPDeploy, pl
 	if _, err := conn.Run(ctx, "docker image inspect "+dep.Image+" >/dev/null 2>&1 || docker pull "+dep.Image); err != nil {
 		return nil, fmt.Errorf("拉取镜像 %s 失败: %w", dep.Image, err)
 	}
-	// 重建容器（host 网络：ingress service 指向宿主 localhost 时需要；
-	// 指向 LAN IP 时亦无冲突）。token 只经 SSH 通道进命令行，不落盘。
+	// 重建容器（bridge 网络 + 端口映射：面板本机部署时 ingress service 指向
+	// 192.168.0.10/LAN IP 可直达；host 网络在透明代理（mihomo TUN）宿主上会被
+	// 全局接管——连接器注册的边缘连接经代理出口，edge 侧路由校验不过，服务
+	// 恒 530（2026-10 实测）；bridge 网络的独立专线连接器同宿主同环境无此问题）。
+	// token 只经 SSH 通道进命令行，不落盘。
 	// --protocol http2：默认 quic 走 UDP 7844，在 fake-IP 透明代理（mihomo/
 	// OpenClash）网关下 UDP 转发不通会一直 "no recent network activity"，
 	// TCP 7844 的 http2 不受影响（ops 真机实测，doc/16 §9）。
 	run := "docker rm -f " + dep.Container + " >/dev/null 2>&1 || true\n" +
-		"docker run -d --name " + dep.Container + " --restart unless-stopped --network host" +
+		"docker run -d --name " + dep.Container + " --restart unless-stopped" +
 		" --label " + managedLabel + " --label beacontower.kind=" + platform.Kind +
 		" --label beacontower.deploy=" + strconv.FormatInt(dep.ID, 10) +
 		" " + dep.Image + " tunnel --no-autoupdate --protocol http2 run --token " + tok
