@@ -142,6 +142,24 @@ func TestNewTunnelEndpointSkipUDPAndInvalid(t *testing.T) {
 	}
 }
 
+func TestEndpointLocalhostNotWildcard(t *testing.T) {
+	// local_ip=localhost 必须按回环精确匹配，而不是 wildcard——否则面板 SSH
+	// 到任意节点（rport 恰好等于隧道端口的 established socket）都会被误计入。
+	ep, ok := newTunnelEndpoint(&store.FRPTunnel{Proto: "tcp", LocalIP: "localhost", LocalPort: 22})
+	if !ok || ep.wildcard {
+		t.Fatalf("localhost 不应退化为 wildcard: %+v ok=%v", ep, ok)
+	}
+	loop := localSock{rip: net.IPv4(127, 0, 0, 1), rport: 22, lport: 51000}
+	if !ep.match(loop) {
+		t.Fatal("回环远端应命中")
+	}
+	// 线上误计数场景：面板 SSH 采集连接（远端=阿里云节点:22）不得命中
+	ssh := localSock{rip: net.IPv4(47, 98, 10, 20), rport: 22, lport: 51001}
+	if ep.match(ssh) {
+		t.Fatal("非回环远端不应命中（SSH 采集连接误计数回归）")
+	}
+}
+
 func TestSplitProcDump(t *testing.T) {
 	raw := "__BT_TCP4__\n  sl  local rem st\n  0: 0100007F:0BB8 0100007F:1F90 01 ...\n__BT_TCP6__\n  sl  local rem st\n  0: 0000000000000000FFFF00000100007F:0BB8 0100007F:1F90 01 ...\n"
 	tcp4, tcp6 := splitProcDump(raw)

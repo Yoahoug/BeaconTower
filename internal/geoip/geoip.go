@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -149,7 +150,22 @@ var (
 
 const cacheTTL = 24 * time.Hour
 
-var httpClient = &http.Client{Timeout: 6 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 6 * time.Second,
+	Transport: proxyTransport(),
+}
+
+// proxyTransport 出站代理：BEACON_PROXY_URL 已配置时经其回显（服务器直连
+// 外网被墙的部署形态），为空直连。与 frp 包的代理口径一致但独立实现，
+// 避免 geoip 反向依赖 frp。
+func proxyTransport() http.RoundTripper {
+	if raw := os.Getenv("BEACON_PROXY_URL"); raw != "" {
+		if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
+			return &http.Transport{Proxy: http.ProxyURL(u)}
+		}
+	}
+	return nil
+}
 
 // onlineLookup 经 ip-api.com 回显解析（只读 countryCode/city，与采集脚本同源）。
 // 失败返回 nil，由上层降级静态映射。

@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"context"
 	"database/sql"
 	"log"
 	"time"
@@ -45,12 +44,12 @@ func Start(db *store.DB, wgRunner *wg.Runner, frpRunner *frp.Runner, stop <-chan
 				_ = db.CleanExpiredSessions(time.Now().Unix())
 			case <-frpTick.C:
 				if frpRunner != nil {
-					// 超时按平台数放大：多平台时单个平台的慢不该拖垮整轮
-					safeRun("frp-sync", func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-						defer cancel()
-						frpRunner.SyncAll(ctx)
-					})
+					// 独立 goroutine 执行（SyncAllAsync 内部带防重入闸门）：
+					// 同步链路涉及上游 HTTP、OAuth 刷新、SSH 探测，任何一环
+					// 卡死都不能拖垮本循环里的采样清理/小时聚合/WG 巡检——
+					// v2.6.5 线上事故：令牌续期路径自死锁导致整个任务循环
+					// 停摆 27h，今日流量与本地连接数同时断更。
+					frpRunner.SyncAllAsync()
 				}
 			case <-wgTick.C:
 				if wgRunner != nil {

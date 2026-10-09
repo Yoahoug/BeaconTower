@@ -526,6 +526,40 @@ func (r *Runner) SyncAll(ctx context.Context) {
 	r.CollectLocalConns(ctx)
 }
 
+// syncAllGate / syncAllRunning 周期同步的防重入闸门：上一轮还没结束就跳过
+// 本轮 tick（与 WG Patrol 的 TryLock 同思路）。
+var syncAllGate sync.Mutex
+var syncAllRunning bool
+
+// SyncAllAsync 周期任务专用：独立 goroutine 执行 SyncAll，任何同步链路的
+// 卡死（上游 HTTP、OAuth 续期、SSH 探测）都不阻塞任务循环的其他 ticker。
+// 上一轮未结束时的 tick 直接丢弃；整轮带硬超时，杜绝 goroutine 泄漏堆积。
+func (r *Runner) SyncAllAsync() {
+	syncAllGate.Lock()
+	if syncAllRunning {
+		syncAllGate.Unlock()
+		log.Printf("[frp] 上一轮同步仍在进行，跳过本轮周期同步")
+		return
+	}
+	syncAllRunning = true
+	syncAllGate.Unlock()
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("[frp] 周期同步 panic: %v", p)
+			}
+			syncAllGate.Lock()
+			syncAllRunning = false
+			syncAllGate.Unlock()
+		}()
+		// 硬超时：单平台轻同步只需数秒，full 同步节点镜像也就几十秒；
+		// 10 分钟足以覆盖最慢链路，又保证卡死时 goroutine 最终回收。
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		r.SyncAll(ctx)
+	}()
+}
+
 // fillNodeNames 补齐隧道与节点的对应关系：
 //   - Sakura 的隧道只带节点 ID，反查节点表补名称；
 //   - ChmlFrp 的隧道只带节点名（/tunnel 不返回节点 ID），反查节点表补

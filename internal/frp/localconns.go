@@ -115,9 +115,17 @@ func newTunnelEndpoint(t *store.FRPTunnel) (tunnelEndpoint, bool) {
 		return tunnelEndpoint{}, false
 	}
 	e := tunnelEndpoint{port: t.LocalPort}
-	ip := net.ParseIP(strings.TrimSpace(t.LocalIP))
+	raw := strings.TrimSpace(t.LocalIP)
+	ip := net.ParseIP(raw)
 	if ip == nil {
-		e.wildcard = true // 空/域名等，退化为只按端口
+		// 「localhost」是回环的别名，按 127.0.0.1 匹配（frpc 拨的就是它），
+		// 不能落进 wildcard——否则面板 SSH 到远程节点（rport=22 的任何
+		// established socket）都会被误计成该隧道的访客连接。
+		if strings.EqualFold(raw, "localhost") {
+			e.ip = net.IPv4(127, 0, 0, 1)
+			return e, true
+		}
+		e.wildcard = true // 空/其他域名等，退化为只按端口
 		return e, true
 	}
 	if v4 := ip.To4(); v4 != nil {

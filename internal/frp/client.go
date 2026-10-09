@@ -12,7 +12,6 @@ package frp
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,12 +131,7 @@ func (e *apiError) Error() string {
 }
 
 func newHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-		},
-	}
+	return newProxiedHTTPClient(timeout)
 }
 
 // request 是所有外部调用的唯一出口：统一 UA / 超时 / 响应体上限。
