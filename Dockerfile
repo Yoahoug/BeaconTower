@@ -10,6 +10,10 @@ RUN npm run build            # 产出 /src/web/dist
 
 # ---------- 阶段 2：构建后端（纯 Go，无 CGO） ----------
 FROM golang:1.26-alpine AS backend
+# GOPROXY 可构建时覆盖：默认源在部分出口下会 TLS 中断（bad record MAC），
+# 此时用 --build-arg GOPROXY=https://goproxy.cn,direct 换源重试
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 COPY go.mod go.sum ./
 # 模块缓存挂 BuildKit cache：go.sum 不变时秒级完成（原每次全量下载 ~8s）
@@ -20,7 +24,9 @@ COPY . .
 COPY --from=frontend /src/web/dist ./web/dist
 # 编译缓存挂 BuildKit cache：GOCACHE 跨构建保留已编译包，
 # 代码小改时 go build 从 ~25s 降到 ~5s（每次 import 变化才重编受影响包）
-RUN --mount=type=cache,target=/root/.cache/go-build \
+# go build 也挂 /go/pkg/mod：download 与 build 分层后，改代码时 build 层
+# 需要的模块 zip 可能不在缓存里，得重新拉（曾因此撞上出口抖动构建失败）
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/beacontower .
 
 # ---------- 阶段 3：运行镜像 ----------
