@@ -1149,10 +1149,10 @@ onBeforeUnmount(() => {
               <div class="frp-tile__grid">
                 <div class="frp-tile__row">
                   <span class="frp-tile__label">今日流量</span>
-                  <span class="frp-tile__value tnum">{{ p.kind === 'cloudflared' ? '—' : (p.traffic_day_used ? fmtBytes(p.traffic_day_used) : '—') }}</span>
+                  <span class="frp-tile__value tnum">{{ p.traffic_day_used ? fmtBytes(p.traffic_day_used) : '—' }}</span>
                 </div>
                 <div class="frp-tile__row">
-                  <span class="frp-tile__label">{{ p.kind === 'natfrp' ? '剩余流量' : p.kind === 'cloudflared' ? '流量统计' : '累计上传/下载' }}</span>
+                  <span class="frp-tile__label">{{ p.kind === 'natfrp' ? '剩余流量' : p.kind === 'cloudflared' ? '近24h边缘流量' : '累计上传/下载' }}</span>
                   <span class="frp-tile__value tnum">
                     {{ p.kind === 'natfrp'
                       ? (p.traffic_remain ? fmtBytes(p.traffic_remain) : '—')
