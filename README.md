@@ -164,6 +164,7 @@ FRPC_CONFIG_FILE=./natfrp-ssh.conf docker compose up -d   # compose 文件在 de
 - **面板代管密钥**（v2.7 新增）：添加节点默认自动生成节点专属 Ed25519 密钥——一次性密码只作引导（装机 + 独立重拨验证通过才启用），面板落库后即清除密码，后续采集/组网/穿透托管全走密钥；密钥失联（节点重装等）在节点详情「修复密钥」重输一次密码重建，密码同样不落库；面板不改节点 sshd 配置，公钥行注释 `beacontower-panel-server-*` 便于辨识清理
 - 登录限速 + 连续失败递增封禁；审计日志中来源 IP 只存哈希
 - 建议部署在反向代理（HTTPS）之后，管理端仅自己访问
+- 归属解析优先用本地离线库（`data/geolite2-city.mmdb`，可选放 DB-IP Lite / GeoLite2 City）；使用 DB-IP Lite 时按 CC-BY 4.0 署名 —— *IP Geolocation by [DB-IP](https://db-ip.com)*
 
 ## 文档
 
