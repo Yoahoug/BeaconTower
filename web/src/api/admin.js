@@ -22,7 +22,12 @@ const realAdmin = {
   changePassword: (payload) => http.post('/v1/admin/password', payload),
 
   listServers: (signal) => http.get('/v1/admin/servers', { signal }),
-  testConnection: (ssh) => http.post('/v1/admin/servers/test', { ssh }, { timeoutMs: 30000, retries: 0 }),
+  // 试连；ssh 可带 bootstrap_key: true + server_id（试连即装钥：密码一次性引导，
+  // 成功响应含 panel_private_key，保存时原样带回，面板不再存储密码）
+  testConnection: (ssh) => http.post('/v1/admin/servers/test', { ssh }, { timeoutMs: 45000, retries: 0 }),
+  // 密钥失联自愈（v2.7）：重输一次性密码重建面板代管密钥
+  rotateServerKey: (id, password) =>
+    http.post(`/v1/admin/servers/${id}/rotate-key`, { password }, { timeoutMs: 45000, retries: 0 }),
   createServer: (payload) => http.post('/v1/admin/servers', payload),
   updateServer: (id, payload) => http.put(`/v1/admin/servers/${id}`, payload),
   deleteServer: (id) => http.del(`/v1/admin/servers/${id}`),
@@ -124,7 +129,8 @@ export const adminClient = {
   changePassword: realAdmin.changePassword,
 
   listServers: (signal) => withTimeout(realAdmin.listServers(signal), 15000),
-  testConnection: (ssh) => withTimeout(realAdmin.testConnection(ssh), 30000),
+  testConnection: (ssh) => withTimeout(realAdmin.testConnection(ssh), 50000),
+  rotateServerKey: (id, password) => withTimeout(realAdmin.rotateServerKey(id, password), 50000),
   createServer: (payload) => withTimeout(realAdmin.createServer(payload)),
   updateServer: (id, payload) => withTimeout(realAdmin.updateServer(id, payload)),
   deleteServer: (id) => withTimeout(realAdmin.deleteServer(id)),

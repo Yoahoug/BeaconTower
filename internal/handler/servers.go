@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/crypto"
 	"github.com/Yoahoug/BeaconTower/internal/geoip"
 	"github.com/Yoahoug/BeaconTower/internal/middleware"
+	"github.com/Yoahoug/BeaconTower/internal/sshkey"
 	"github.com/Yoahoug/BeaconTower/internal/store"
 	"github.com/gin-gonic/gin"
 )
@@ -120,6 +122,9 @@ type sshInput struct {
 	Password   string `json:"password"`
 	PrivateKey string `json:"private_key"`
 	Passphrase string `json:"passphrase"`
+	// PanelPrivateKey 面板自管密钥（试连 bootstrap 返回的私钥原样带回落库）。
+	// 命名与用户粘贴的 private_key 区分，避免前端误把用户输入当引导密钥。
+	PanelPrivateKey string `json:"panel_private_key,omitempty"`
 }
 
 type probeInput struct {
@@ -175,6 +180,10 @@ func validateSSH(s sshInput, isCreate bool) (port int, msg string) {
 	if port < 1 || port > 65535 {
 		return 0, "参数错误：端口须为 1–65535"
 	}
+	// panel_private_key 存在即按密钥认证落库（auth_type 由 handler 归一为 key）
+	if s.PanelPrivateKey != "" {
+		return port, ""
+	}
 	if s.AuthType != "password" && s.AuthType != "key" {
 		return 0, "参数错误：auth_type 须为 password|key"
 	}
@@ -200,6 +209,13 @@ func (a *App) CreateServer(c *gin.Context) {
 	if msg != "" {
 		middleware.Fail(c, 1001, msg)
 		return
+	}
+	// 面板自管密钥：试连 bootstrap 已装钥并验证，此处按 key 认证落库，密码不存
+	panelKeyMode := strings.TrimSpace(in.SSH.PanelPrivateKey) != ""
+	if panelKeyMode {
+		in.SSH.AuthType = "key"
+		in.SSH.PrivateKey = in.SSH.PanelPrivateKey
+		in.SSH.PanelPrivateKey = ""
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -345,6 +361,18 @@ func (a *App) UpdateServer(c *gin.Context) {
 				if s := toStr(av); s == "password" || s == "key" {
 					cred.AuthType = s
 				}
+			}
+			// 面板自管密钥落库：试连 bootstrap 已装机验证，翻转 key 并清空密码
+			if pkv, ok := m["panel_private_key"]; ok && toStr(pkv) != "" {
+				enc, err := crypto.EncryptString(a.Master, toStr(pkv))
+				if err != nil {
+					middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+					return
+				}
+				cred.PrivateKeyEnc = enc
+				cred.AuthType = "key"
+				cred.PasswordEnc = nil
+				cred.PassphraseEnc = nil
 			}
 			if pv, ok := m["password"]; ok && toStr(pv) != "" {
 				enc, err := crypto.EncryptString(a.Master, toStr(pv))
@@ -542,9 +570,14 @@ func (a *App) Relocate(c *gin.Context) {
 	middleware.OK(c, gin.H{"ok": true, "region": srv.Region, "region_source": srv.RegionSource})
 }
 
-// ---------- 试连 ----------
+// ---------- 试连 / 密钥引导 ----------
 
 // POST /api/v1/admin/servers/test（30s 超时由前端控制；后端 8s SSH 超时 + 解析）
+// bootstrap_key=true 时进入「试连即装钥」模式：密码凭据只作引导——建连采集后
+// 生成节点专属 Ed25519 密钥对、幂等安装公钥、新私钥重拨验证；验证通过才把私钥
+// 随本响应返回（内存态直达落库，不过浏览器二次中转），调用方保存节点时以
+// auth_type='key' + panel_private_key 落库并不再存密码。验证失败时返回 2001，
+// 前端据此提示改用密码保存（显式选择），节点永不因引导失败而丢失。
 func (a *App) TestConnection(c *gin.Context) {
 	var in struct {
 		SSH sshInput `json:"ssh"`
@@ -556,6 +589,9 @@ func (a *App) TestConnection(c *gin.Context) {
 		Password   string `json:"password"`
 		PrivateKey string `json:"private_key"`
 		Passphrase string `json:"passphrase"`
+		// 密钥引导（v2.7）：试连成功即装钥，密码仅一次性使用不落库
+		BootstrapKey bool  `json:"bootstrap_key"`
+		ServerID     int64 `json:"server_id"` // 存量节点自愈/新节点预览注释用（0 = 未定）
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		middleware.Fail(c, 1001, "参数错误：请求体须为 JSON")
@@ -567,7 +603,10 @@ func (a *App) TestConnection(c *gin.Context) {
 			AuthType: in.AuthType, Password: in.Password,
 			PrivateKey: in.PrivateKey, Passphrase: in.Passphrase}
 	}
-	port, msg := validateSSH(sshIn, true)
+	if in.BootstrapKey {
+		sshIn.AuthType = "password" // 引导恒走密码通道
+	}
+	port, msg := validateSSH(sshIn, !in.BootstrapKey)
 	if msg != "" {
 		middleware.Fail(c, 1001, msg)
 		return
@@ -579,13 +618,22 @@ func (a *App) TestConnection(c *gin.Context) {
 	}
 	settings, _ := a.DB.GetSettings()
 	strict := settings["strict_host_key"] == "true"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
+	if in.BootstrapKey {
+		a.testBootstrap(c, ctx, cred, in.ServerID, strict)
+		return
+	}
 	res, err := collector.DialAndCollect(ctx, cred, "", strict)
 	if err != nil {
 		middleware.Fail(c, 2001, err.Error())
 		return
 	}
+	a.respondProbe(c, res)
+}
+
+// respondProbe 试连成功响应（画像 + geo + 指纹），普通试连与引导共用。
+func (a *App) respondProbe(c *gin.Context, res *collector.DialResult) {
 	raw := res.Raw
 	geo := geoip.Lookup(raw.PubIP)
 	middleware.OK(c, gin.H{
@@ -602,6 +650,102 @@ func (a *App) TestConnection(c *gin.Context) {
 			"city": geo.City, "region_text": geoip.RegionText(geo)},
 		"host_key_fp": res.HostKeyFP,
 	})
+}
+
+// testBootstrap 引导分支：装钥 + 验证 + 画像一次完成。
+func (a *App) testBootstrap(c *gin.Context, ctx context.Context, cred *collector.SSHCred, serverID int64, strict bool) {
+	if serverID <= 0 {
+		// 新建场景尚无 ID：取当前最大 ID+1 仅用于注释可读性（不落库，纯标识）
+		servers, _ := a.DB.ListServers()
+		serverID = int64(len(servers)) + 1
+	}
+	boot, err := sshkey.Bootstrap(ctx, cred, "", strict, serverID)
+	if err != nil {
+		middleware.Fail(c, 2001, err.Error())
+		return
+	}
+	raw := boot.Raw
+	geo := geoip.Lookup(raw.PubIP)
+	middleware.OK(c, gin.H{
+		"ok": true, "latency_ms": boot.LatencyMs, "bootstrap": true,
+		// 私钥内存态直传保存请求（不落 sessionStorage、不回显编辑表单）
+		"panel_private_key": boot.Pair.PrivatePEM,
+		"profile": gin.H{
+			"hostname": raw.Hostname, "os_name": raw.OsName, "os_version": raw.OsVer,
+			"kernel": raw.Kernel, "arch": raw.Arch, "cpu_model": raw.CpuModel,
+			"cpu_cores": raw.CpuCores, "mem_total": raw.MemTotal, "disk_total": raw.DiskTotal,
+			"virt": raw.Virt,
+			"power": gin.H{"rapl": raw.HasRapl, "battery": raw.HasBat,
+				"base_load_w": 0, "base_load_source": "default"},
+		},
+		"geo": gin.H{"public_ip": raw.PubIP, "country": geo.Country,
+			"city": geo.City, "region_text": geoip.RegionText(geo)},
+		"host_key_fp": boot.HostKeyFP,
+	})
+}
+
+// POST /api/v1/admin/servers/:id/rotate-key（密钥失联自愈 v2.7）：
+// 节点侧 authorized_keys 行丢失/系统重装导致密钥失联时，管理员重输一次密码，
+// 面板重建密钥并翻转认证方式。旧密码字段被新私钥替换（不再存储）。
+func (a *App) RotateServerKey(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		middleware.Fail(c, 1001, "参数错误：id 非法")
+		return
+	}
+	srv, _ := a.DB.GetServer(id)
+	if srv == nil {
+		middleware.Fail(c, 2002, "节点不存在")
+		return
+	}
+	if srv.IsSelf {
+		middleware.Fail(c, 1001, "本机节点请走 SSH 表单重新引导")
+		return
+	}
+	var in sshInput
+	if err := c.ShouldBindJSON(&in); err != nil || strings.TrimSpace(in.Password) == "" {
+		middleware.Fail(c, 1001, "参数错误：需要一次性 SSH 密码")
+		return
+	}
+	cred, _ := a.DB.GetCredential(id)
+	if cred == nil {
+		middleware.Fail(c, 2002, "节点无 SSH 凭据，请先在编辑表单重新保存连接信息")
+		return
+	}
+	bootCred := &collector.SSHCred{
+		Host: cred.Host, Port: cred.Port, Username: cred.Username,
+		AuthType: "password", Password: strings.TrimSpace(in.Password),
+	}
+	settings, _ := a.DB.GetSettings()
+	strict := settings["strict_host_key"] == "true"
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 35*time.Second)
+	defer cancel()
+	boot, err := sshkey.Bootstrap(ctx, bootCred, cred.HostKeyFP, strict, id)
+	if err != nil {
+		middleware.Fail(c, 2001, err.Error())
+		return
+	}
+	keyEnc, err := crypto.EncryptString(a.Master, boot.Pair.PrivatePEM)
+	if err != nil {
+		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+		return
+	}
+	// 翻转认证方式：密码字段清空（EncryptString("") 返回 nil = 留空即无值）
+	next := &store.Credential{
+		ServerID: id, Host: cred.Host, Port: cred.Port, Username: cred.Username,
+		AuthType: "key", PrivateKeyEnc: keyEnc,
+		HostKeyFP: boot.HostKeyFP,
+		LastSuccessAt: sql.NullInt64{
+			Int64: nowUnix(), Valid: true,
+		},
+	}
+	if err := a.DB.UpsertCredential(next); err != nil {
+		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
+		return
+	}
+	a.audit(a.actorOf(c), "server_rotate_key", "server:"+itoa(id),
+		"节点 "+srv.Name+" 密钥自愈完成（密码已从面板移除）", ipOf(c))
+	middleware.OK(c, gin.H{"ok": true, "latency_ms": boot.LatencyMs})
 }
 
 // applyProbe 保存试连画像（新建/编辑时 probe 透传）。UpsertProfile 传 0 表示

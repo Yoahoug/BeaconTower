@@ -35,9 +35,12 @@ function writeDraft() {
   if (isEdit.value) return
   try {
     const { password: _pw, privateKey: _pk, passphrase: _pp, ...safe } = form.value
+    // probe 剥离 panel_private_key：面板代管私钥只存在于当次试连响应内存里，
+    // 绝不入草稿缓存（恢复草稿后需重新试连装机才能保存）
+    const { panel_private_key: _ppk, ...safeProbe } = probe.value || {}
     sessionStorage.setItem(
       DRAFT_KEY,
-      JSON.stringify({ form: safe, probe: probe.value }),
+      JSON.stringify({ form: safe, probe: probe.value ? safeProbe : null }),
     )
   } catch {
     /* 存储不可用时静默降级为无缓存 */
@@ -69,7 +72,9 @@ function draftForm() {
         : props.server?.ssh?.host || props.server?.ssh_suggest_host || '',
     port: props.server?.ssh?.port || 22,
     sshUsername: props.server?.ssh?.username || '',
-    authType: props.server?.ssh?.auth_type || 'password',
+    // 认证三态：auto = 面板生成密钥（默认，试连即装钥，密码只作一次性引导不落库）；
+    // password/key = 传统手工凭据。存量节点编辑时按其现有 auth_type 预填。
+    authType: props.server?.ssh?.auth_type || 'auto',
     password: '',
     privateKey: '',
     passphrase: '',
@@ -123,6 +128,12 @@ const saving = ref(false)
 const saveError = ref('')
 const firstInput = ref(null)
 
+// 密码字段标签：auto 模式下是「一次性引导密码」；手工密码模式沿用原语义
+const autoBootHint = computed(() => {
+  if (form.value.authType !== 'auto') return isEdit.value ? '密码（留空保留原值）' : '密码'
+  return probe.value?.bootstrap ? '引导密码（已用毕，面板不会存储）' : 'SSH 密码（仅本次引导使用，不会存储）'
+})
+
 // 任何字段变化都自动续存草稿（新增模式）
 watch(
   form,
@@ -134,14 +145,18 @@ async function runProbe() {
   probeError.value = ''
   probing.value = true
   try {
+    const auto = form.value.authType === 'auto'
     probe.value = await adminClient.testConnection({
       host: form.value.host,
       port: form.value.port,
       username: form.value.sshUsername,
-      auth_type: form.value.authType,
+      auth_type: auto ? 'password' : form.value.authType,
       password: form.value.password || undefined,
       private_key: form.value.privateKey || undefined,
       passphrase: form.value.passphrase || undefined,
+      // 试连即装钥（v2.7）：面板生成密钥装机并验证，密码只作一次性引导
+      bootstrap_key: auto,
+      server_id: props.server?.id || 0,
     })
     writeDraft()
   } catch (e) {
@@ -157,13 +172,19 @@ async function save() {
   if (!form.value.name) return (saveError.value = '请填写节点名称')
   // 本机节点允许留空（纯本地采集）；填了地址就按普通节点校验
   const sshFilled = !isSelf.value || !!form.value.host
+  const auto = form.value.authType === 'auto'
+  const bootKey = probe.value?.bootstrap && probe.value?.panel_private_key
   if (sshFilled) {
     if (!form.value.host || !form.value.sshUsername) return (saveError.value = '请填写 SSH 地址与用户名')
     const hadCred = !!props.server?.ssh?.has_password || !!props.server?.ssh?.has_key
-    if (!hadCred && form.value.authType === 'password' && !form.value.password) {
+    if (auto && !bootKey && !hadCred) {
+      // 引导密钥必须先试连装机（私钥只存在于试连响应里，无画像不能保存）
+      return (saveError.value = '请先「测试连接」完成密钥引导（自动生成密钥需一次成功试连）')
+    }
+    if (!auto && !hadCred && form.value.authType === 'password' && !form.value.password) {
       return (saveError.value = '请填写 SSH 密码')
     }
-    if (!hadCred && form.value.authType === 'key' && !form.value.privateKey) {
+    if (!auto && !hadCred && form.value.authType === 'key' && !form.value.privateKey) {
       return (saveError.value = '请粘贴 SSH 私钥')
     }
   }
@@ -182,12 +203,15 @@ async function save() {
         host: form.value.host,
         port: Number(form.value.port) || 22,
         username: form.value.sshUsername,
-        auth_type: form.value.authType,
-        password: form.value.password || undefined,
-        private_key: form.value.privateKey || undefined,
-        passphrase: form.value.passphrase || undefined,
+        // auto 模式落库为 key（面板自管密钥）；带 panel_private_key 时后端归一
+        auth_type: auto ? 'key' : form.value.authType,
+        password: auto || form.value.authType !== 'password' ? undefined : form.value.password || undefined,
+        private_key: auto ? undefined : form.value.privateKey || undefined,
+        passphrase: auto ? undefined : form.value.passphrase || undefined,
+        // 试连 bootstrap 生成的面板私钥原样带回（不经浏览器暂存）
+        panel_private_key: auto && bootKey ? probe.value.panel_private_key : undefined,
       }
-      payload.probe = probe.value && !probe.value.cached ? probe.value : null
+      payload.probe = probe.value && !probe.value.cached ? { ...probe.value, panel_private_key: undefined } : null
     }
     if (isEdit.value) {
       await adminClient.updateServer(props.server.id, payload)
@@ -298,12 +322,6 @@ onUnmounted(() => {
           <p class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
             凭据加密存储，读取接口永不回显；编辑时留空 = 保留原值
           </p>
-          <p v-if="isSelf" class="bt-text-muted" style="font-size: 12px; margin-bottom: 12px">
-            地址要填<strong>容器能连到的</strong>宿主机地址——已按本容器的默认网关预填
-            （<code v-if="props.server?.ssh_suggest_host">{{ props.server.ssh_suggest_host }}</code><span v-else>如 192.168.240.1</span>，
-            容器内 <code>ip route</code> 的 default 网关）；也可填内网 IP。
-            不要填 WG 地址（切网/重启 WG 时面板会把自己掐断）。
-          </p>
           <div class="bt-form-grid">
             <label class="bt-field">
               <span class="bt-field__label">地址<i class="req">*</i></span>
@@ -320,15 +338,20 @@ onUnmounted(() => {
             <div class="bt-field">
               <span class="bt-field__label" id="auth-type-label">认证方式</span>
               <div class="bt-seg" role="group" aria-labelledby="auth-type-label">
+                <button type="button" class="bt-seg__item" :aria-pressed="form.authType === 'auto'" @click="form.authType = 'auto'">自动密钥</button>
                 <button type="button" class="bt-seg__item" :aria-pressed="form.authType === 'password'" @click="form.authType = 'password'">密码</button>
                 <button type="button" class="bt-seg__item" :aria-pressed="form.authType === 'key'" @click="form.authType = 'key'">私钥</button>
               </div>
             </div>
-            <label v-if="form.authType === 'password'" class="bt-field span-2">
-              <span class="bt-field__label">{{ isEdit ? '密码（留空保留原值）' : '密码' }}</span>
+            <p v-if="form.authType === 'auto'" class="bt-text-muted span-2" style="font-size: 12px; margin: 0 0 4px">
+              推荐。测试连接时面板自动生成专属密钥装到节点并验证，之后 SSH 全走密钥——
+              下方密码仅本次引导使用，<strong>不会被面板存储</strong>。
+            </p>
+            <label v-if="form.authType !== 'key'" class="bt-field span-2">
+              <span class="bt-field__label">{{ autoBootHint }}</span>
               <input v-model="form.password" class="bt-input" type="password" autocomplete="new-password" placeholder="••••••••" />
             </label>
-            <template v-else>
+            <template v-if="form.authType === 'key'">
               <label class="bt-field span-2">
                 <span class="bt-field__label">{{ isEdit ? '私钥（留空保留原值）' : '私钥（OpenSSH 格式）' }}</span>
                 <textarea v-model="form.privateKey" class="bt-textarea mono" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
@@ -340,15 +363,22 @@ onUnmounted(() => {
             </template>
           </div>
 
+          <div v-if="isSelf" class="bt-alert bt-alert--info" style="margin-top: 12px; margin-bottom: 12px" role="note">
+            <AppIcon name="warn" aria-hidden="true" />
+            地址要填<strong>容器能连到的</strong>宿主机地址（表单已按容器默认网关预填
+            <code v-if="props.server?.ssh_suggest_host">{{ props.server.ssh_suggest_host }}</code>；也可填内网 IP）。
+            不要填 WG 地址（切网/重启 WG 时面板会把自己掐断）。
+          </div>
+
           <div v-if="isEdit && probe?.cached && connChanged" class="bt-alert bt-alert--info" style="margin-top: 12px" role="status">
             <AppIcon name="warn" aria-hidden="true" />
             连接信息已修改，下方为旧画像 —— 建议重新试连以刷新画像后再保存。
           </div>
 
           <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap">
-            <button class="bt-btn bt-btn--default" type="button" :disabled="probing || !form.host || !form.sshUsername" @click="runProbe">
+            <button class="bt-btn bt-btn--default" type="button" :disabled="probing || !form.host || !form.sshUsername || (form.authType === 'auto' && !form.password)" @click="runProbe">
               <AppIcon name="refresh" :class="{ 'is-spin': probing }" aria-hidden="true" />
-              {{ probing ? '正在试连…' : '测试连接并回读画像' }}
+              {{ probing ? '正在连接…' : form.authType === 'auto' ? '测试连接并安装密钥' : '测试连接并回读画像' }}
             </button>
             <Transition name="page-sub">
               <span v-if="probeError" class="bt-text-danger" style="font-size: 12px" role="alert">
@@ -362,6 +392,7 @@ onUnmounted(() => {
               <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 8px">
                 <AppIcon name="check" aria-hidden="true" />
                 <span v-if="probe.cached">已保存的画像（修改连接信息后重新试连可刷新）</span>
+                <span v-else-if="probe.bootstrap">密钥已装到节点并验证通过 · 延迟 {{ probe.latency_ms }}ms · 保存后面板将以密钥登录（密码不存储）</span>
                 <span v-else>连接成功 · 延迟 {{ probe.latency_ms }}ms · 保存时将自动带入本次试连画像/指纹/地区</span>
               </div>
               <dl class="bt-def-grid" style="padding-top: 0">

@@ -72,6 +72,7 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.PUT("/servers/order", app.ReorderServers)
 				auth.PUT("/servers/:id/power-calibration", app.RecalibratePower)
 				auth.POST("/servers/test", app.TestConnection)
+				auth.POST("/servers/:id/rotate-key", app.RotateServerKey)
 				auth.POST("/servers/:id/locate", app.Relocate)
 				auth.GET("/settings", app.GetSettings)
 				auth.PUT("/settings", app.SaveSettings)

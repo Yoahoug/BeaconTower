@@ -25,6 +25,38 @@ const confirmDelete = ref(null)
 const deleting = ref(false)
 const expandedId = ref(0)
 const relocatingId = ref(0)
+// 密钥失联修复（v2.7）：密钥登录节点采集失败时，重输一次性密码重建面板代管密钥
+const repairTarget = ref(null)
+const repairPassword = ref('')
+const repairing = ref(false)
+const repairError = ref('')
+
+// 可修复 = 密钥登录、有 SSH 凭据、且最近采集失败（认证类错误才走重装密钥）
+function repairable(s) {
+  return s.ssh?.auth_type === 'key' && s.ssh?.ssh_ready && !!s.power?.last_error
+}
+
+function openRepair(s) {
+  repairTarget.value = s
+  repairPassword.value = ''
+  repairError.value = ''
+}
+
+async function doRepair() {
+  if (!repairTarget.value || !repairPassword.value) return
+  repairing.value = true
+  repairError.value = ''
+  try {
+    await adminClient.rotateServerKey(repairTarget.value.id, repairPassword.value)
+    ui.notify('密钥已重建并验证通过，节点将恢复采集')
+    repairTarget.value = null
+    await admin.loadServers()
+  } catch (e) {
+    repairError.value = e?.message || '修复失败，请确认密码正确'
+  } finally {
+    repairing.value = false
+  }
+}
 
 const sorted = computed(() =>
   [...admin.servers].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
@@ -220,6 +252,9 @@ onMounted(() => {
             </dl>
             <div v-if="s.power?.last_error" class="detail-error" role="alert">
               <AppIcon name="warn" aria-hidden="true" />最近采集失败：{{ s.power.last_error }}
+              <button v-if="repairable(s)" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" style="margin-left: 8px" @click="openRepair(s)">
+                修复密钥
+              </button>
             </div>
             <div v-if="s.note_private" class="detail-note">
               <span class="bt-text-muted" style="font-size: 12px">私有备注（访客不可见）</span>
@@ -245,6 +280,46 @@ onMounted(() => {
         @cancel="confirmDelete = null"
         @confirm="remove"
       />
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="repairTarget" class="bt-modal-mask" @click.self="repairTarget = null">
+        <div class="bt-modal" role="dialog" aria-modal="true" aria-labelledby="repair-key-title">
+          <div class="bt-modal__head">
+            <div id="repair-key-title" class="bt-modal__title">修复密钥 · {{ repairTarget.name }}</div>
+            <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="repairTarget = null">关闭</button>
+          </div>
+          <div class="bt-modal__body">
+            <div class="bt-alert bt-alert--info" style="margin-bottom: 16px" role="note">
+              <AppIcon name="warn" aria-hidden="true" />
+              节点以密钥登录但最近采集失败（可能是系统重装或 authorized_keys 被清理）。
+              输入一次 SSH 密码，面板会重建密钥装到节点并验证，之后继续密钥登录——
+              密码本身不会被存储。若密码也失效，请到机器上恢复访问后再试。
+            </div>
+            <label class="bt-field">
+              <span class="bt-field__label">SSH 密码<i class="req">*</i></span>
+              <input
+                v-model="repairPassword"
+                class="bt-input"
+                type="password"
+                autocomplete="new-password"
+                placeholder="••••••••"
+                @keyup.enter="doRepair"
+              />
+            </label>
+            <div v-if="repairError" class="bt-alert bt-alert--error" style="margin-top: 12px" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />{{ repairError }}
+            </div>
+          </div>
+          <div class="bt-modal__foot">
+            <button class="bt-btn bt-btn--ghost" type="button" @click="repairTarget = null">取消</button>
+            <button class="bt-btn bt-btn--primary" type="button" :disabled="repairing || !repairPassword" @click="doRepair">
+              <AppIcon v-if="repairing" name="refresh" class="is-spin" aria-hidden="true" />
+              {{ repairing ? '重建中…' : '重建密钥' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </Transition>
   </div>
 </template>
