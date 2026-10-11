@@ -24,11 +24,19 @@ import (
 	"github.com/Yoahoug/BeaconTower/internal/wg"
 )
 
-//go:embed web/dist
-var webDist embed.FS
+//go:embed all:web/dist
+var classicDist embed.FS
 
-// hasDist embed 为空目录时 Sub 会失败，router 内据此降级为 dev 模式。
-var hasDist = true
+//go:embed all:web-toy/dist
+var toyDist embed.FS
+
+// 主题产物就绪位（doc/18）：embed 为空目录时 Sub 会失败，据此降级——
+// toy 缺失则整个静态托管进 dev 模式；classic 缺失则只上 toy。
+// go:embed 编译期要求目录存在：构建脚本 scripts/build.sh 会先跑两套前端；
+// 本地裸 go build 时把占位目录 web-toy/dist/.placeholder / web/dist/.placeholder
+// 一并提交在仓库兜底（占位会被真实构建产物覆盖）。
+var toyReady = true
+var classicReady = true
 
 func main() {
 	cfg := config.Load()
@@ -98,7 +106,7 @@ func main() {
 	tasks.Start(db, app.WG, app.FRP, taskStop, blocker)
 	coll.Start()
 
-	engine := router.New(app, webDist, hasDist)
+	engine := router.New(app, toyDist, toyReady, classicDist, classicReady)
 	addr := "0.0.0.0:" + cfg.Port
 	fmt.Printf("[beacontower] listening on %s (data=%s)\n", addr, cfg.DataDir)
 	// 公网暴露面收敛（doc/14 §5）：http.Server 显式超时取代 engine.Run 的零超时。

@@ -191,40 +191,51 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { SystemSettingsData } from '../../../types/backend';
+import type { SystemSettingsData } from '../../../types/backend';
 import { api } from '../../../services/api';
 
 const form = ref<SystemSettingsData>({
+  site_title: '信标塔 · BeaconTower',
   interval_s: 10,
   retention_days: 30,
+  open_7d_history: false,
   show_power_public: true,
   show_cost_public: true,
   electric_price: 0.65,
-  site_title: '信标塔 · BeaconTower',
-  open_7d_history: true,
-  private_mode: false,
   strict_host_key: true,
+  private_mode: false,
 });
 
 const isSaving = ref(false);
 const isSaved = ref(false);
+const errorMsg = ref('');
 
 async function loadData() {
-  form.value = await api.getSettings();
+  try {
+    form.value = await api.getSettings();
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '读取设置失败';
+  }
 }
 
 async function handleSave() {
   if (form.value.interval_s < 5) {
-    alert('采集间隔不能小于 5 秒！');
+    errorMsg.value = '采集间隔不能小于 5 秒！';
     return;
   }
   isSaving.value = true;
-  await api.saveSettings(form.value);
-  isSaving.value = false;
-  isSaved.value = true;
-  setTimeout(() => {
-    isSaved.value = false;
-  }, 2500);
+  errorMsg.value = '';
+  try {
+    await api.saveSettings(form.value);
+    isSaved.value = true;
+    setTimeout(() => {
+      isSaved.value = false;
+    }, 2500);
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '保存失败';
+  } finally {
+    isSaving.value = false;
+  }
 }
 
 onMounted(() => {

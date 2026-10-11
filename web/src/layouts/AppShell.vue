@@ -12,6 +12,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import TabBar from '../components/TabBar.vue'
 import InstallHint from '../components/InstallHint.vue'
+import ThemeCenter from '../components/ThemeCenter.vue'
 import { getCachedStatus, resetAuthCache } from '../api/auth'
 import { useMonitorStore } from '../stores/monitor'
 import { useUiStore } from '../stores/ui'
@@ -93,7 +94,11 @@ function closeDrawer() {
 
 function onKey(e) {
   if (e.key === 'Escape' && ui.drawerOpen) closeDrawer()
+  if (e.key === 'Escape') themeCenterOpen.value = false
 }
+
+// 主题中心（v2.8 双主题架构）：与 toy 侧栏左下主题坞对位的入口
+const themeCenterOpen = ref(false)
 
 // 路由切换时自动收起移动抽屉
 watch(() => route.fullPath, closeDrawer)
@@ -194,7 +199,16 @@ onUnmounted(() => {
           <span>实时功耗</span>
           <strong class="tnum">{{ monitor.summary.measuredCount ? `${monitor.summary.watts.toFixed(1)} W` : '—' }}</strong>
         </div>
-        <div class="app-side-ver">v2.7.3 · SKY BEACON</div>
+        <button
+          class="app-side-theme"
+          type="button"
+          title="切换视觉主题风格"
+          @click="themeCenterOpen = true"
+        >
+          <span aria-hidden="true">🎨</span>
+          <span>主题</span>
+        </button>
+        <div class="app-side-ver">v2.8.0 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -252,9 +266,12 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.7.3 · Sky Beacon</span>
+        <span class="tnum">v2.8.0 · Sky Beacon</span>
       </footer>
     </div>
+
+    <!-- 主题中心弹窗（v2.8 双主题） -->
+    <ThemeCenter :open="themeCenterOpen" @close="themeCenterOpen = false" />
 
     <!-- 移动端底部玻璃 tab bar（仅公开路由，桌面端不渲染） -->
     <TabBar />

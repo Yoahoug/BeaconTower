@@ -7,7 +7,7 @@
           <span>安全与账号</span>
           <span class="toy-badge bg-toy-yellow text-[10px]">密码学防护</span>
         </h2>
-        <p class="text-xs font-bold text-toy-muted">管理员主密码 · 活跃会话控制 · 硬件加密隔离</p>
+        <p class="text-xs font-bold text-toy-muted">管理员主密码修改 · 密码热更新即时生效（其余会话自动吊销）</p>
       </div>
     </div>
 
@@ -78,6 +78,12 @@
               >
                 {{ strength.digit ? '✔ 数字' : '数字' }}
               </span>
+              <span 
+                class="px-2 py-0.5 rounded border border-toy-black font-bold"
+                :class="strength.symbol ? 'bg-toy-mint text-toy-black' : 'bg-white text-toy-muted'"
+              >
+                {{ strength.symbol ? '✔ 符号' : '符号' }}
+              </span>
             </div>
           </div>
 
@@ -140,69 +146,11 @@
       </div>
     </div>
 
-    <!-- 3. 活动会话管理 (Active Sessions) -->
-    <div class="toy-card p-5 bg-white space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-black text-toy-black flex items-center gap-2">
-          <span>活动管理会话 ({{ sessions.length }})</span>
-          <span class="toy-badge bg-toy-mint text-[10px]">会话实时监测</span>
-        </h3>
-        <span class="text-xs font-mono text-toy-muted font-bold">登录失效超时: 7 天</span>
-      </div>
-
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead>
-            <tr class="border-b-2 border-toy-black text-toy-muted font-black text-[11px]">
-              <th class="pb-2">设备平台 / 客户端</th>
-              <th class="pb-2">登录来源 IP</th>
-              <th class="pb-2">登录时间</th>
-              <th class="pb-2">状态</th>
-              <th class="pb-2 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-toy-gray font-mono">
-            <tr v-for="sess in sessions" :key="sess.id" class="hover:bg-toy-bg/50 transition-colors">
-              <td class="py-3 font-bold font-sans text-toy-black">
-                <div class="flex items-center gap-2">
-                  <span>{{ sess.device.includes('iPhone') ? '📱' : '💻' }}</span>
-                  <div>
-                    <div>{{ sess.device }}</div>
-                    <span class="text-[10px] text-toy-muted">{{ sess.browser }}</span>
-                  </div>
-                </div>
-              </td>
-              <td class="py-3 text-toy-black font-extrabold">{{ sess.ip }}</td>
-              <td class="py-3 font-sans text-toy-muted">{{ formatTime(sess.login_at) }}</td>
-              <td class="py-3">
-                <span 
-                  class="toy-badge text-[10px]"
-                  :class="sess.is_current ? 'bg-toy-yellow text-toy-black' : 'bg-toy-bg text-toy-muted'"
-                >
-                  {{ sess.is_current ? '当前会话' : '活动中' }}
-                </span>
-              </td>
-              <td class="py-3 text-right font-sans">
-                <button 
-                  v-if="!sess.is_current"
-                  @click="handleRevoke(sess.id)"
-                  class="px-2 py-1 rounded text-[10px] font-black border border-toy-black bg-white hover:bg-red-50 text-red-600 transition-colors cursor-pointer"
-                >
-                  踢出会话
-                </button>
-                <span v-else class="text-[10px] text-toy-muted font-bold">—</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import { SessionItem } from '../../../types/backend';
+import { ref, computed } from 'vue';
 import { api } from '../../../services/api';
 
 const oldPassword = ref('');
@@ -210,6 +158,7 @@ const newPassword = ref('');
 const confirmPassword = ref('');
 const errorMsg = ref('');
 const successMsg = ref('');
+const busy = ref(false);
 
 const strength = computed(() => {
   const p = newPassword.value;
@@ -218,6 +167,7 @@ const strength = computed(() => {
     lower: /[a-z]/.test(p),
     upper: /[A-Z]/.test(p),
     digit: /[0-9]/.test(p),
+    symbol: /[^A-Za-z0-9]/.test(p),
   };
 });
 
@@ -230,37 +180,20 @@ async function handleSubmitPassword() {
     return;
   }
 
-  const res = await api.changePassword(oldPassword.value, newPassword.value);
-  if (res.success) {
-    successMsg.value = '密码已成功更新！请妥善保管。';
-    oldPassword.value = '';
-    newPassword.value = '';
-    confirmPassword.value = '';
-  } else {
-    errorMsg.value = res.msg || '密码更新失败';
+  busy.value = true;
+  try {
+    // 真实后端：≥10 位须含大小写+数字+符号；成功即热更新并吊销其余会话
+    const res = await api.changePassword(oldPassword.value, newPassword.value);
+    if (res.success) {
+      successMsg.value = '密码已成功更新（热更新即时生效，其余设备会话已吊销）！';
+      oldPassword.value = '';
+      newPassword.value = '';
+      confirmPassword.value = '';
+    } else {
+      errorMsg.value = res.msg || '密码更新失败';
+    }
+  } finally {
+    busy.value = false;
   }
 }
-
-// 会话管理
-const sessions = ref<SessionItem[]>([]);
-
-async function loadSessions() {
-  sessions.value = await api.getSessions();
-}
-
-async function handleRevoke(id: string) {
-  if (confirm('确认强行踢出该设备的登录会话？')) {
-    await api.revokeSession(id);
-    await loadSessions();
-  }
-}
-
-function formatTime(ts: number) {
-  const d = new Date(ts * 1000);
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-onMounted(() => {
-  loadSessions();
-});
 </script>

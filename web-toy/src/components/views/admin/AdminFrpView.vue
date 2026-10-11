@@ -28,6 +28,16 @@
       </div>
     </div>
 
+    <!-- 错误/提示条 -->
+    <div v-if="errorMsg" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
+      <span class="text-xs font-bold text-red-700">⚠ {{ errorMsg }}</span>
+      <button @click="errorMsg = ''" class="text-xs font-black cursor-pointer">✕</button>
+    </div>
+    <div v-if="notice" class="toy-card p-3 bg-toy-mint-light border-2.5 border-toy-black flex items-center justify-between gap-3">
+      <span class="text-xs font-bold text-toy-black">✓ {{ notice }}</span>
+      <button @click="notice = ''" class="text-xs font-black cursor-pointer">✕</button>
+    </div>
+
     <!-- 1. 三大平台状态卡片 -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3.5">
       <div 
@@ -47,29 +57,33 @@
           </div>
           <span 
             class="toy-badge text-[10px]"
-            :class="platform.token_bound ? 'bg-toy-mint text-toy-black' : 'bg-gray-200 text-toy-muted'"
+            :class="platform.status === 'ok' ? 'bg-toy-mint text-toy-black' : 'bg-gray-200 text-toy-muted'"
           >
-            {{ platform.token_bound ? '已授权' : '未绑定' }}
+            {{ platform.status === 'ok' ? '同步正常' : platform.status === 'pending' ? '待同步' : '异常' }}
           </span>
         </div>
 
         <div class="p-2.5 bg-toy-bg rounded-lg border border-toy-black space-y-1 text-xs font-mono">
           <div class="flex justify-between text-toy-muted">
             <span>活跃隧道:</span>
-            <span class="font-extrabold text-toy-black">{{ platform.online_tunnels }}/{{ platform.total_tunnels }} 运行中</span>
+            <span class="font-extrabold text-toy-black">{{ platform.tunnel_online }}/{{ platform.tunnel_total }} 运行中</span>
           </div>
           <div class="flex justify-between text-toy-muted">
             <span>今日消耗:</span>
-            <span class="font-extrabold text-sky-800">{{ formatBytes(platform.today_traffic) }}</span>
+            <span class="font-extrabold text-sky-800">{{ formatBytes(platform.traffic_day_used) }}</span>
           </div>
-          <div v-if="platform.user_info" class="flex justify-between text-toy-muted pt-1 border-t border-toy-black/10">
-            <span>配额状态:</span>
-            <span class="font-bold text-toy-black">{{ platform.user_info.traffic_quota }}</span>
+          <div class="flex justify-between text-toy-muted pt-1 border-t border-toy-black/10">
+            <span>账号:</span>
+            <span class="font-bold text-toy-black">{{ platform.username || "未同步" }}</span>
+          </div>
+          <div v-if="platform.traffic_remain > 0" class="flex justify-between text-toy-muted">
+            <span>剩余流量:</span>
+            <span class="font-bold text-toy-black">{{ formatBytes(platform.traffic_remain) }}</span>
           </div>
         </div>
 
         <div class="flex items-center justify-between text-[11px] pt-1">
-          <span class="font-bold text-toy-muted">账号: {{ platform.user_info?.username || '未同步' }}</span>
+          <span class="font-bold text-toy-muted">连接数: {{ platform.conns }}</span>
           <button 
             @click="syncPlatform(platform.id)"
             class="text-toy-black font-black hover:text-sky-700 hover:underline cursor-pointer"
@@ -126,17 +140,17 @@
                   {{ t.proto.toUpperCase() }}
                 </span>
               </td>
-              <td class="py-3 text-toy-black font-extrabold">{{ t.local_addr }}</td>
-              <td class="py-3 text-toy-muted font-bold">{{ t.remote_addr }}</td>
-              <td class="py-3 text-sky-800 font-bold">{{ formatBytes(t.today_traffic) }}</td>
+              <td class="py-3 text-toy-black font-extrabold">{{ t.local_ip }}:{{ t.local_port }}</td>
+              <td class="py-3 text-toy-muted font-bold">{{ t.remote || '—' }}</td>
+              <td class="py-3 text-sky-800 font-bold">{{ formatBytes(t.today_up + t.today_down) }}</td>
               <td class="py-3">
                 <button 
-                  @click="handleToggleTunnel(t.id)"
+                  @click="handleToggleTunnel(t)"
                   class="px-2.5 py-1 rounded-lg text-[10px] font-black border border-toy-black flex items-center gap-1.5 cursor-pointer transition-colors"
-                  :class="t.running ? 'bg-toy-mint text-toy-black' : 'bg-gray-100 text-toy-muted'"
+                  :class="t.online ? 'bg-toy-mint text-toy-black' : 'bg-gray-100 text-toy-muted'"
                 >
-                  <span class="w-1.5 h-1.5 rounded-full" :class="t.running ? 'bg-toy-black animate-pulse' : 'bg-gray-400'"></span>
-                  <span>{{ t.running ? '运行中' : '已停止' }}</span>
+                  <span class="w-1.5 h-1.5 rounded-full" :class="t.online ? 'bg-toy-black animate-pulse' : 'bg-gray-400'"></span>
+                  <span>{{ t.online ? '运行中' : '已停止' }}</span>
                 </button>
               </td>
               <td class="py-3 text-right space-x-1.5 font-sans">
@@ -189,9 +203,7 @@
               v-model="newTunnel.platform_id"
               class="w-full px-3 py-1.5 text-xs font-black bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none"
             >
-              <option :value="1">Sakura FRP (樱花穿透)</option>
-              <option :value="2">ChmlFrp (极速穿透)</option>
-              <option :value="3">Cloudflare Tunnel</option>
+              <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }} ({{ p.kind }})</option>
             </select>
           </div>
 
@@ -231,16 +243,7 @@
             </div>
           </div>
 
-          <div>
-            <label class="block text-xs font-black text-toy-black mb-1">公网出口域名或端口</label>
-            <input 
-              v-model="newTunnel.remote_addr"
-              type="text" 
-              placeholder="demo.natfrp.net:38291" 
-              class="w-full px-3 py-1.5 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
-              required
-            />
-          </div>
+          <p class="text-[10px] font-bold text-toy-muted">公网出口由平台分配（ChmlFrp 隧道名仅限字母/数字/下划线）</p>
 
           <div class="pt-2 flex items-center justify-end gap-2">
             <button 
@@ -287,12 +290,11 @@
           <div>
             <label class="block text-xs font-black text-toy-black mb-1">选择平台</label>
             <select 
-              v-model="tokenForm.platform_id"
+              v-model="tokenForm.kind"
               class="w-full px-3 py-1.5 text-xs font-black bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none"
             >
-              <option :value="1">Sakura FRP (樱花穿透)</option>
-              <option :value="2">ChmlFrp (极速穿透)</option>
-              <option :value="3">Cloudflare Tunnel</option>
+              <option value="sakura">Sakura FRP (访问密钥)</option>
+              <option value="cloudflare">Cloudflare (API Token)</option>
             </select>
           </div>
 
@@ -375,12 +377,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { FRPPlatformItem, FRPTunnelItem } from '../../../types/backend';
-import { formatBytes } from '../../../services/mock';
+import type { FRPTunnelItem } from '../../../types/backend';
+import { formatBytes } from '../../../services/format';
 import { api } from '../../../services/api';
 
-const platforms = ref<FRPPlatformItem[]>([]);
+const platforms = ref<import('../../../types/backend').FRPPlatformItem[]>([]);
 const tunnels = ref<FRPTunnelItem[]>([]);
+const errorMsg = ref('');
+const notice = ref('');
+const busy = ref(false);
 
 const activeTab = ref('all');
 const filterTabs = [
@@ -396,79 +401,124 @@ const filteredTunnels = computed(() => {
 });
 
 async function loadData() {
-  const res = await api.getFRPOverview();
-  platforms.value = res.platforms;
-  tunnels.value = res.tunnels;
-}
-
-async function handleToggleTunnel(id: number) {
-  await api.toggleFRPTunnel(id);
-  await loadData();
-}
-
-async function handleDeleteTunnel(id: number) {
-  if (confirm('确认删除该内网穿透规则？')) {
-    await api.deleteFRPTunnel(id);
-    await loadData();
+  try {
+    const res = await api.getFRPOverview();
+    platforms.value = res.platforms;
+    tunnels.value = res.tunnels;
+    errorMsg.value = '';
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '读取穿透概览失败';
   }
 }
 
+// 风格内确认弹窗（替代原生 confirm）
+const confirmText = ref('');
+let confirmAction: (() => void | Promise<void>) | null = null;
+function confirmYes() {
+  confirmText.value = '';
+  const a = confirmAction;
+  confirmAction = null;
+  if (a) void a();
+}
+
+async function handleToggleTunnel(t: FRPTunnelItem) {
+  // 后端隧道语义：online=true 想下线 → offline（Sakura 强制下线）；
+  // 已停止想上线 → 各平台 API 未开放重启，如实提示而非假装成功
+  if (!t.online) {
+    errorMsg.value = '面板暂不支持一键重启隧道（平台 API 未开放），请删除后重建或到平台控制台操作';
+    return;
+  }
+  confirmText.value = `确认强制下线隧道「${t.name}」？外网访问将立即中断。`;
+  confirmAction = async () => {
+    try {
+      await api.toggleFRPTunnel(t.id, true);
+      await loadData();
+    } catch (e) {
+      errorMsg.value = e instanceof Error ? e.message : '下线失败';
+    }
+  };
+}
+
+function handleDeleteTunnel(id: number) {
+  confirmText.value = '确认删除该内网穿透规则？此操作会同时删除平台侧的隧道。';
+  confirmAction = async () => {
+    try {
+      await api.deleteFRPTunnel(id);
+      await loadData();
+    } catch (e) {
+      errorMsg.value = e instanceof Error ? e.message : '删除失败';
+    }
+  };
+}
+
 async function syncPlatform(platformId: number) {
-  alert('已成功触发同步：最新隧道状态与流量用量已对齐！');
-  await loadData();
+  busy.value = true;
+  try {
+    await api.syncFRPPlatform(platformId);
+    notice.value = '同步完成：最新隧道状态与流量用量已对齐';
+    await loadData();
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '同步失败';
+  } finally {
+    busy.value = false;
+  }
 }
 
 // 1. 新建隧道弹窗
 const isCreateTunnelModalOpen = ref(false);
-const newTunnel = ref<Partial<FRPTunnelItem>>({
-  platform_id: 1,
+const newTunnel = ref({
+  platform_id: 0,
   name: '',
   proto: 'tcp',
   local_addr: '127.0.0.1:8080',
-  remote_addr: '',
 });
 
 function openCreateTunnelModal() {
   newTunnel.value = {
-    platform_id: 1,
+    platform_id: platforms.value[0]?.id ?? 0,
     name: '',
     proto: 'tcp',
     local_addr: '127.0.0.1:8080',
-    remote_addr: '',
   };
   isCreateTunnelModalOpen.value = true;
 }
 
 async function submitCreateTunnel() {
   if (!newTunnel.value.name) return;
-  const pName = newTunnel.value.platform_id === 1 ? 'Sakura FRP' : newTunnel.value.platform_id === 2 ? 'ChmlFrp' : 'Cloudflare Tunnel';
-  const pKind = newTunnel.value.platform_id === 1 ? 'sakura' : newTunnel.value.platform_id === 2 ? 'chmlfrp' : 'cloudflare';
-  await api.createFRPTunnel({
-    ...newTunnel.value,
-    platform_name: pName,
-    platform_kind: pKind,
-  });
-  isCreateTunnelModalOpen.value = false;
-  await loadData();
+  if (!newTunnel.value.platform_id) {
+    errorMsg.value = '请先绑定至少一个穿透平台';
+    return;
+  }
+  try {
+    await api.createFRPTunnel({ ...newTunnel.value, platform_id: newTunnel.value.platform_id });
+    isCreateTunnelModalOpen.value = false;
+    await loadData();
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '创建隧道失败';
+  }
 }
 
-// 2. 绑定 Token 弹窗
+// 2. 绑定 Token 弹窗（真实：Sakura/Cloudflare 走静态令牌，ChmlFrp 走设备码授权）
 const isTokenModalOpen = ref(false);
 const tokenForm = ref({
-  platform_id: 1,
+  kind: 'sakura',
   token: '',
 });
 
 function openTokenModal() {
-  tokenForm.value = { platform_id: 1, token: '' };
+  tokenForm.value = { kind: 'sakura', token: '' };
   isTokenModalOpen.value = true;
 }
 
 async function submitSaveToken() {
-  await api.saveFRPPlatformToken(tokenForm.value.platform_id, tokenForm.value.token);
-  isTokenModalOpen.value = false;
-  alert('平台 API 凭据已成功保存！');
-  await loadData();
+  try {
+    await api.saveFRPPlatformToken({ kind: tokenForm.value.kind }, tokenForm.value.token);
+    isTokenModalOpen.value = false;
+    notice.value = '平台凭据已绑定并完成首次同步';
+    await loadData();
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '绑定失败';
+  }
 }
 
 // 3. Docker 部署弹窗
@@ -479,7 +529,7 @@ const dockerCommandText = computed(() => {
   if (!deployModalTunnel.value) return '';
   return `docker run -d --restart=always --name=bt-frpc-${deployModalTunnel.value.name} \\
   -e FRP_SERVER=proxy.example.com -e FRP_PORT=7000 \\
-  -e TUNNEL_LOCAL=${deployModalTunnel.value.local_addr} \\
+  -e TUNNEL_LOCAL=${deployModalTunnel.value.local_ip}:${deployModalTunnel.value.local_port} \\
   natfrp/frpc:latest`;
 });
 

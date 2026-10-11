@@ -189,7 +189,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
-import { formatBps } from '../../services/mock';
+import { formatBps } from '../../services/format';
 
 const props = defineProps<{
   currentUpBps: number;

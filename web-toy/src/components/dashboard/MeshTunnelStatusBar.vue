@@ -19,11 +19,11 @@
         </span>
       </div>
       <div class="hidden sm:flex items-center gap-2 text-xs font-mono text-toy-muted font-bold">
-        <span>主中心: Tokyo-01</span>
+        <span>{{ activeHubName ? `主中心: ${activeHubName}` : '组网未初始化' }}</span>
         <span>·</span>
-        <span>在线成员: {{ wg.onlineCount || 6 }} 台</span>
+        <span>在线成员: {{ wg.summary?.member_online ?? 0 }}/{{ wg.summary?.member_total ?? 0 }} 台</span>
         <span>·</span>
-        <span>今日中转: {{ formatBytes(wg.trafficToday || 0) }}</span>
+        <span>今日中转: {{ formatBytes(wg.summary?.traffic_today || 0) }}</span>
       </div>
     </div>
 
@@ -34,15 +34,15 @@
           <path d="M4 14H10L8 20L15 10H9L11 4L4 14Z" fill="#FFE047" stroke="#121212" stroke-width="2" stroke-linejoin="round"/>
         </svg>
         <span>穿透隧道:</span>
-        <span class="font-mono text-toy-pink font-extrabold">{{ frp.sumOnline }}/{{ frp.sumTunnel }} 在线</span>
+        <span class="font-mono text-toy-pink font-extrabold">{{ frp.summary?.tunnel_online ?? 0 }}/{{ frp.summary?.tunnel_total ?? 0 }} 在线</span>
       </div>
       <div class="flex items-center gap-1">
-        <span 
-          v-for="p in frp.platforms" 
-          :key="p.id"
+        <span
+          v-for="p in frp.platforms"
+          :key="p.name"
           class="px-1.5 py-0.5 text-[10px] font-bold border border-toy-black rounded"
-          :class="p.onlineTunnels > 0 ? 'bg-toy-yellow/40 text-toy-black' : 'bg-gray-100 text-toy-muted'"
-          :title="`${p.name}: ${p.onlineTunnels}/${p.totalTunnels} 隧道在线`"
+          :class="p.online ? 'bg-toy-yellow/40 text-toy-black' : 'bg-gray-100 text-toy-muted'"
+          :title="`${p.name}: ${p.tunnel_online}/${p.tunnel_total} 隧道在线`"
         >
           {{ p.name }}
         </span>
@@ -52,11 +52,14 @@
 </template>
 
 <script setup lang="ts">
-import { WGPublicSnapshot, FRPPublicSnapshot } from '../../types/backend';
-import { formatBytes } from '../../services/mock';
+import { computed } from 'vue';
+import type { WGPublicSnapshot, FRPPublicSnapshot } from '../../types/backend';
+import { formatBytes } from '../../services/format';
 
-defineProps<{
+const props = defineProps<{
   wg: WGPublicSnapshot;
   frp: FRPPublicSnapshot;
 }>();
+
+const activeHubName = computed(() => props.wg.hubs?.find((h) => h.is_active)?.name || '');
 </script>

@@ -251,6 +251,30 @@
   color: var(--bt-text-4);
 }
 
+/* 主题入口（v2.8 双主题架构）：与 toy 侧栏左下主题坞对位 */
+.app-side-theme {
+  margin-top: var(--bt-space-2);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--bt-radius-md);
+  border: 1px solid var(--bt-border);
+  background: rgba(255, 255, 255, 0.45);
+  font-size: var(--bt-font-xs);
+  font-weight: var(--bt-weight-semibold);
+  color: var(--bt-text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.app-side-theme:hover {
+  background: rgba(224, 247, 254, 0.8);
+  color: var(--bt-text-1);
+}
+
 /* ================= 右侧主列 ================= */
 .app-main {
   flex: 1;

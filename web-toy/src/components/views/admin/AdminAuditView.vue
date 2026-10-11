@@ -24,6 +24,12 @@
       </div>
     </div>
 
+    <!-- 错误条 -->
+    <div v-if="errorMsg" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
+      <span class="text-xs font-bold text-red-700">⚠ {{ errorMsg }}</span>
+      <button @click="errorMsg = ''" class="text-xs font-black cursor-pointer">✕</button>
+    </div>
+
     <!-- 审计日志表格 -->
     <div class="toy-card p-5 bg-white space-y-4">
       <div class="flex items-center justify-between text-xs font-mono">
@@ -87,7 +93,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { AuditLogItem } from '../../../types/backend';
+import type { AuditLogItem } from '../../../types/backend';
 import { api } from '../../../services/api';
 
 const logs = ref<AuditLogItem[]>([]);
@@ -95,10 +101,12 @@ const total = ref(0);
 const page = ref(1);
 const pages = ref(1);
 const searchQuery = ref('');
+const errorMsg = ref('');
 
 const ACTION_MAP: Record<string, { label: string; cls: string }> = {
   setup: { label: '初始化', cls: 'bg-toy-mint text-toy-black' },
   login: { label: '登录', cls: 'bg-toy-mint text-toy-black' },
+  login_fail: { label: '登录失败', cls: 'bg-red-100 text-red-700' },
   server_create: { label: '新增节点', cls: 'bg-toy-yellow text-toy-black' },
   server_update: { label: '更新节点', cls: 'bg-toy-bg text-toy-black' },
   server_delete: { label: '删除节点', cls: 'bg-red-100 text-red-700' },
@@ -106,6 +114,9 @@ const ACTION_MAP: Record<string, { label: string; cls: string }> = {
   power_calibrate: { label: '功耗校准', cls: 'bg-toy-yellow/60 text-toy-black' },
   settings: { label: '系统设置', cls: 'bg-purple-100 text-purple-800' },
   wg_patrol: { label: '星网巡检', cls: 'bg-toy-mint/60 text-toy-black' },
+  wg_switch_hub: { label: '中心切换', cls: 'bg-toy-yellow text-toy-black' },
+  frp_tunnel_create: { label: '新建隧道', cls: 'bg-toy-cyan-light text-toy-black' },
+  frp_tunnel_delete: { label: '删除隧道', cls: 'bg-red-100 text-red-700' },
 };
 
 function getActionLabel(action: string) {
@@ -127,6 +138,7 @@ function formatTime(ts: number) {
 }
 
 async function loadData() {
+  // 真实后端分页：page/size；搜索为当前页客户端过滤（后端无模糊搜索参数）
   const res = await api.getAuditLogs(searchQuery.value, page.value, 10);
   logs.value = res.list;
   total.value = res.total;
@@ -134,25 +146,34 @@ async function loadData() {
   pages.value = res.pages;
 }
 
+async function safeLoad() {
+  errorMsg.value = '';
+  try {
+    await loadData();
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '读取审计日志失败';
+  }
+}
+
 function handleSearch() {
   page.value = 1;
-  loadData();
+  safeLoad();
 }
 
 function clearSearch() {
   searchQuery.value = '';
   page.value = 1;
-  loadData();
+  safeLoad();
 }
 
 function changePage(newPage: number) {
   if (newPage >= 1 && newPage <= pages.value) {
     page.value = newPage;
-    loadData();
+    safeLoad();
   }
 }
 
 onMounted(() => {
-  loadData();
+  safeLoad();
 });
 </script>

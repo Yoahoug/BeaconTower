@@ -3,7 +3,7 @@
     <!-- 顶栏：返回按钮 + 服务器名称 + 状态 -->
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div class="flex items-center gap-3">
-        <button 
+        <button
           @click="$emit('back')"
           class="toy-btn px-3 py-1.5 rounded-xl bg-white hover:bg-toy-yellow text-xs font-black flex items-center gap-1.5 cursor-pointer"
         >
@@ -15,8 +15,8 @@
           <div>
             <div class="flex items-center gap-2">
               <h2 class="text-lg font-black text-toy-black">{{ server.name }}</h2>
-              <span class="toy-badge bg-toy-yellow/40 text-[11px]">{{ server.region }}</span>
-              <span 
+              <span class="toy-badge bg-toy-yellow/40 text-[11px]">{{ server.region || '未定位' }}</span>
+              <span
                 class="toy-badge"
                 :class="server.status === 'online' ? 'bg-toy-mint text-toy-black' : 'bg-gray-200 text-toy-muted'"
               >
@@ -59,21 +59,21 @@
       </div>
     </div>
 
-    <!-- 2. 历史趋势波形图与时间选择 -->
+    <!-- 2. 历史趋势波形图与时间选择（真实后端 history API） -->
     <div class="toy-card p-5 bg-white space-y-4">
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div class="flex items-center gap-2">
           <span class="text-lg">📊</span>
           <div>
             <h3 class="text-sm font-black text-toy-black">节点资源历史曲线</h3>
-            <p class="text-[10px] font-bold text-toy-muted">包含 CPU、内存、网络上/下行历史</p>
+            <p class="text-[10px] font-bold text-toy-muted">CPU 负载真实采样 · 7d 为小时聚合（或需登录）</p>
           </div>
         </div>
 
         <!-- 时间窗口切换按钮 (1h / 6h / 24h / 7d) -->
         <div class="flex items-center border-2 border-toy-black rounded-lg overflow-hidden bg-toy-bg shadow-toy-sm">
-          <button 
-            v-for="r in (['1h', '6h', '24h', '7d'] as const)" 
+          <button
+            v-for="r in (['1h', '6h', '24h', '7d'] as const)"
             :key="r"
             @click="timeRange = r"
             class="px-2.5 py-1 text-xs font-black transition-colors cursor-pointer"
@@ -86,7 +86,13 @@
 
       <!-- 纯 SVG 历史波形图 -->
       <div class="w-full h-48 bg-toy-bg/50 border-2 border-toy-black rounded-xl p-3 relative overflow-hidden">
-        <svg class="w-full h-full overflow-visible" viewBox="0 0 600 160" preserveAspectRatio="none">
+        <div v-if="historyError" class="absolute inset-0 flex items-center justify-center text-xs font-bold text-toy-muted">
+          {{ historyError }}
+        </div>
+        <div v-else-if="historyLoading" class="absolute inset-0 flex items-center justify-center text-xs font-bold text-toy-muted">
+          加载曲线数据中…
+        </div>
+        <svg v-else class="w-full h-full overflow-visible" viewBox="0 0 600 160" preserveAspectRatio="none">
           <!-- 网格线 -->
           <line x1="0" y1="40" x2="600" y2="40" stroke="#121212" stroke-opacity="0.1" stroke-dasharray="3 3"/>
           <line x1="0" y1="80" x2="600" y2="80" stroke="#121212" stroke-opacity="0.1" stroke-dasharray="3 3"/>
@@ -98,21 +104,22 @@
         </svg>
 
         <div class="absolute bottom-2 right-3 text-[10px] font-mono font-bold text-toy-muted">
-          当前采样 CPU 平均: {{ server.metrics.cpu_pct.toFixed(1) }}%
+          {{ historyPoints.length ? `采样 ${historyPoints.length} 点` : '无采样数据' }}
         </div>
       </div>
     </div>
 
-    <!-- 3. 近 30 天每日收发流量条形图 -->
+    <!-- 3. 近 30 天每日收发流量条形图（真实后端 traffic API） -->
     <div class="toy-card p-5 bg-white space-y-3">
       <div class="flex items-center justify-between">
-        <h3 class="text-sm font-black text-toy-black">近 30 天每日流量汇总 (GB)</h3>
+        <h3 class="text-sm font-black text-toy-black">近 30 天每日流量汇总</h3>
         <span class="text-xs font-mono font-bold text-toy-muted">每日自动归档</span>
       </div>
-      <div class="h-24 flex items-end gap-1.5 pt-4 px-2 bg-toy-bg rounded-xl border-2 border-toy-black overflow-x-auto">
-        <div 
-          v-for="(bar, idx) in trafficBars" 
-          :key="idx" 
+      <div v-if="trafficError" class="p-3 text-xs font-bold text-toy-muted">{{ trafficError }}</div>
+      <div v-else class="h-24 flex items-end gap-1.5 pt-4 px-2 bg-toy-bg rounded-xl border-2 border-toy-black overflow-x-auto">
+        <div
+          v-for="(bar, idx) in trafficBars"
+          :key="idx"
           class="flex-1 min-w-[8px] bg-toy-cyan border border-toy-black rounded-t hover:bg-toy-yellow transition-all cursor-pointer relative group"
           :style="{ height: `${bar.height}%` }"
         >
@@ -121,15 +128,17 @@
             {{ bar.label }}
           </span>
         </div>
+        <div v-if="!trafficBars.length" class="w-full text-center text-xs font-bold text-toy-muted">暂无归档数据</div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import { ServerItem } from '../../types/backend';
-import { formatBytes, formatUptime } from '../../services/mock';
+import { ref, computed, watch } from 'vue';
+import type { ServerItem } from '../../types/backend';
+import { formatBytes, formatUptime } from '../../services/format';
+import { api } from '../../services/api';
 import PixelBotAvatar from '../icons/PixelBotAvatar.vue';
 
 const props = defineProps<{
@@ -141,32 +150,69 @@ defineEmits<{
 }>();
 
 const timeRange = ref<'1h' | '6h' | '24h' | '7d'>('1h');
+const historyPoints = ref<{ ts: number; cpu: number | null }[]>([]);
+const historyLoading = ref(false);
+const historyError = ref('');
+const trafficBars = ref<{ height: number; label: string }[]>([]);
+const trafficError = ref('');
 
-// 模拟历史采样曲线点
-const historyPoints = computed(() => {
-  const count = timeRange.value === '1h' ? 24 : 32;
-  const base = props.server.metrics.cpu_pct;
-  const pts = [];
-  for (let i = 0; i <= count; i++) {
-    const y = Math.max(10, Math.min(90, base + Math.sin(i / 2.5) * 15 + Math.cos(i) * 5));
-    pts.push({ x: (i / count) * 600, y: 160 - (y / 100) * 140 });
+// 真实历史曲线（CPU 维度）：1h/6h/24h 原始采样、7d 小时聚合
+async function loadHistory() {
+  if (!props.server) return;
+  historyLoading.value = true;
+  historyError.value = '';
+  try {
+    const series = await api.getServerHistory(props.server.id, timeRange.value);
+    historyPoints.value = series.map((p) => ({ ts: p.ts, cpu: p.cpu }));
+  } catch (e) {
+    historyPoints.value = [];
+    historyError.value = e instanceof Error ? e.message : '历史数据加载失败';
+  } finally {
+    historyLoading.value = false;
   }
-  return pts;
-});
+}
 
-const chartPolylinePoints = computed(() => historyPoints.value.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '));
-const chartPolygonPoints = computed(() => `0,160 ${chartPolylinePoints.value} 600,160`);
-
-// 模拟 30 天每日流量条
-const trafficBars = computed(() => {
-  const bars = [];
-  for (let i = 0; i < 28; i++) {
-    const val = 15 + Math.sin(i / 2) * 10 + (i % 4) * 8;
-    bars.push({
-      height: Math.min(100, Math.max(15, val * 2.2)),
-      label: `${(val * 1.5).toFixed(1)} GB`,
+// 真实每日流量（in_total/out_total 字节 → GB 条形）
+async function loadTraffic() {
+  if (!props.server) return;
+  trafficError.value = '';
+  try {
+    const resp = await api.getServerTraffic(props.server.id, 30);
+    const pts = resp.points ?? [];
+    const max = Math.max(...pts.map((p) => p.in_total + p.out_total), 1);
+    trafficBars.value = pts.map((p) => {
+      const gb = (p.in_total + p.out_total) / 1024 ** 3;
+      const d = new Date(p.ts * 1000);
+      return {
+        height: Math.max(4, Math.round(((p.in_total + p.out_total) / max) * 100)),
+        label: `${d.getMonth() + 1}/${d.getDate()} · ${gb.toFixed(2)} GB`,
+      };
     });
+  } catch (e) {
+    trafficBars.value = [];
+    trafficError.value = e instanceof Error ? e.message : '流量数据加载失败';
   }
-  return bars;
+}
+
+watch(timeRange, loadHistory, { immediate: true });
+watch(() => props.server?.id, () => {
+  loadHistory();
+  loadTraffic();
+}, { immediate: true });
+
+const chartPolylinePoints = computed(() => {
+  const pts = historyPoints.value.filter((p) => p.cpu != null);
+  if (pts.length < 2) return '';
+  return pts
+    .map((p, i) => {
+      const x = (i / (pts.length - 1)) * 600;
+      const y = 160 - (Math.min(100, Math.max(0, p.cpu!)) / 100) * 140;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+});
+const chartPolygonPoints = computed(() => {
+  const line = chartPolylinePoints.value;
+  return line ? `0,160 ${line} 600,160` : '';
 });
 </script>

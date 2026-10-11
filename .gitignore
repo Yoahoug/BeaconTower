@@ -1,7 +1,9 @@
-# 依赖与构建产物
+# 依赖与构建产物（dist 留 .placeholder 兜底 go:embed 编译期存在性检查）
 node_modules/
-web/dist/
-web-toy/dist/
+web/dist/*
+!web/dist/.placeholder
+web-toy/dist/*
+!web-toy/dist/.placeholder
 
 # 运行时数据（SQLite、密钥）——绝不入库
 data/

@@ -136,7 +136,7 @@
 
 <script setup lang="ts">
 import { PublicSummary } from '../../types/backend';
-import { formatBytes, formatBps } from '../../services/mock';
+import { formatBytes, formatBps } from '../../services/format';
 
 defineProps<{
   summary: PublicSummary;

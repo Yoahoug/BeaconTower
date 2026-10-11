@@ -21,6 +21,7 @@
 | [15-PWA移动端](./15-PWA移动端.md) | PWA 基础设施（manifest/SW/离线快照）、移动端打磨与 iPhone 真机验收清单 |
 | [16-CloudflareTunnel集成](./16-CloudflareTunnel集成.md) | 第三穿透平台 Cloudflare Tunnel（v2.6）：统一容器模型（一 Tunnel = 一连接器容器，节点=ingress 路由）、API Token 绑定与自动发现、cloudflared 官方镜像托管、GraphQL 流量回填、独立专线只读、协议坑位与真机 E2E 记录 |
 | [17-可观测性与IP归属探测改进方案](./17-可观测性与IP归属探测改进方案.md) | 「未定位」地区根因链与修复档位（离线 mmdb / 落库守卫）、WG 任务增量日志与探测明细（待评审） |
+| [18-双前端主题架构](./18-双前端主题架构.md) | v2.8 双主题拓扑（`/`=toy 默认、`/classic/`=玻璃拟态）、localStorage 契约、退役 SW 迁移、toy 真实 API 联调、新增主题标准步骤 |
 
 ## 一句话架构
 
@@ -32,7 +33,8 @@
 
 ## 当前状态
 
-- 🔄 前端视觉层 v3 全量重构中（毛玻璃方向）：`web/`（Vue 3 + Pinia + ECharts 按需引入 + PWA），数据源为后端公开 API + SSE，功能与数据契约不变
+- ✅ v2.8 双前端主题架构（设计见 doc/18）：`web-toy/`（默认主题，Neubrutalism，`/`）+ `web/`（classic 玻璃拟态，`/classic/`）两套独立应用同仓单镜像，LocalStorage 偏好互切；toy 数据层 v2.8 完成真实后端联调（SSE + 会话/CSRF + WG/FRP/审计全量端点），mock 仅存于显式 dev 开关之后
+- 🔄 classic 玻璃拟态为 v3 视觉方向的现行实现：`web/`（Vue 3 + Pinia + ECharts 按需引入 + PWA），数据源为后端公开 API + SSE，功能与数据契约不变
 - ✅ 后端 M1–M6 全量落地（Go + Gin + SQLite + SSH 采集 + SSE + 历史聚合 + 单容器发布）：初始化/登录会话/CSRF、节点 CRUD+试连画像/TOFU、采集与展示设置、安全改密（热更新）、审计日志、功耗（RAPL/电池校准/kWh）、`go:embed` 托管前端、Docker 单镜像（~35MB）
 - ✅ 管理面板完整前端（`/admin/servers|settings|security|audit` 嵌套路由：初始化向导、登录、节点管理含 SSH 试连回读、采集与展示设置、安全与账号、审计日志；M0.5 的浏览器本地 mock 已在 M1 移除）
 - ✅ 功耗监控展示（RAPL 实时功率/温度/kWh/电费 + 全网功耗走势，不可用机型优雅降级；设计见 doc/09）

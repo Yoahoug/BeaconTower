@@ -234,7 +234,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { ServerItem } from '../../types/backend';
-import { formatBytes, formatBps, formatUptime } from '../../services/mock';
+import { formatBytes, formatBps, formatUptime } from '../../services/format';
 import PixelBotAvatar from '../icons/PixelBotAvatar.vue';
 import OSDistroBadge from '../icons/OSDistroBadge.vue';
 

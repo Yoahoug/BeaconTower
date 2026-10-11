@@ -2,6 +2,8 @@
 node_modules/
 web/node_modules/
 web/dist/
+web-toy/node_modules/
+web-toy/dist/
 data/
 *.db
 *.db-wal

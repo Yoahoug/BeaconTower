@@ -29,10 +29,20 @@
       </div>
     </div>
 
+    <!-- 错误/提示条（真实操作反馈） -->
+    <div v-if="errorMsg" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
+      <span class="text-xs font-bold text-red-700">⚠ {{ errorMsg }}</span>
+      <button @click="errorMsg = ''" class="text-xs font-black cursor-pointer">✕</button>
+    </div>
+    <div v-if="switchTaskId" class="toy-card p-3 bg-toy-yellow/30 border-2.5 border-toy-black flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-toy-black animate-ping"></span>
+      <span class="text-xs font-black text-toy-black">中心切换任务 #{{ switchTaskId }} 执行中，完成后自动刷新…</span>
+    </div>
+
     <!-- 1. 主备中心 A/B 状态卡片 -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <!-- 现役主中心 Active Hub -->
-      <div 
+      <div
         v-if="activeHub"
         class="toy-card p-4.5 bg-white border-2.5 border-toy-black relative overflow-hidden"
       >
@@ -61,10 +71,10 @@
             </span>
           </div>
           <button 
-            @click="probeHub(activeHub.id)" 
+            @click="probeHub(activeHub.server_id)" 
             class="px-2.5 py-1 bg-white border border-toy-black rounded-lg text-[11px] font-bold hover:bg-toy-yellow cursor-pointer"
           >
-            {{ hubLatency[activeHub.id] !== undefined ? `${hubLatency[activeHub.id]}ms` : '探测延迟' }}
+            {{ hubLatency[activeHub.server_id] !== undefined ? `${hubLatency[activeHub.server_id]}ms` : '探测延迟' }}
           </button>
         </div>
       </div>
@@ -97,7 +107,7 @@
             <span class="font-extrabold text-toy-black">密钥与路由配置实时对齐</span>
           </div>
           <button 
-            @click="handleSwitchHub(standbyHub.id)" 
+            @click="handleSwitchHub(standbyHub.server_id)" 
             class="toy-btn px-3 py-1 bg-toy-yellow text-[11px] font-black rounded-lg cursor-pointer"
           >
             一键接管为主中心
@@ -111,13 +121,13 @@
       <div class="flex items-center gap-3">
         <span class="flex items-center gap-1.5 text-toy-black">
           <span class="w-2 h-2 rounded-full bg-toy-mint"></span>
-          虚拟专用网段: <span class="bg-white px-2 py-0.5 rounded border border-toy-black font-black">{{ overview.network.cidr }}</span>
+          虚拟专用网段: <span class="bg-white px-2 py-0.5 rounded border border-toy-black font-black">{{ overview.network?.subnet || "未初始化" }}</span>
         </span>
         <span class="hidden sm:inline text-toy-muted">|</span>
-        <span class="text-toy-muted">保活周期: {{ overview.network.keepalive_s }}s</span>
+        <span class="text-toy-muted">保活周期: {{ overview.network?.keepalive ?? "—" }}s</span>
       </div>
       <div class="text-toy-muted">
-        在网节点: <span class="text-toy-black font-extrabold">{{ overview.peers.length }}</span> 台 · 外部终端: <span class="text-toy-black font-extrabold">{{ overview.devices.length }}</span> 台
+        在网节点: <span class="text-toy-black font-extrabold">{{ serverPeers.length }}</span> 台 · 外部终端: <span class="text-toy-black font-extrabold">{{ devicePeers.length }}</span> 台
       </div>
     </div>
 
@@ -138,32 +148,32 @@
           <!-- 中心 Hub (带硬阴影圆框) -->
           <circle cx="302" cy="87" r="32" fill="#121212" />
           <circle cx="300" cy="85" r="32" fill="#FFE047" stroke="#121212" stroke-width="2.5" />
-          <text x="300" y="81" font-size="11" font-weight="900" text-anchor="middle" fill="#121212">Tokyo-Hub</text>
-          <text x="300" y="96" font-size="9" font-weight="700" font-family="monospace" text-anchor="middle" fill="#121212">10.88.0.1</text>
+          <text x="300" y="81" font-size="11" font-weight="900" text-anchor="middle" fill="#121212">{{ shortName(activeHub?.name || "未初始化") }}</text>
+          <text x="300" y="96" font-size="9" font-weight="700" font-family="monospace" text-anchor="middle" fill="#121212">{{ overview.network?.hub_ip || "—" }}</text>
 
           <!-- 节点 1: NAS -->
           <circle cx="102" cy="42" r="24" fill="#121212" />
           <circle cx="100" cy="40" r="24" fill="#FFFFFF" stroke="#121212" stroke-width="2" />
-          <text x="100" y="37" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">HomeLab</text>
-          <text x="100" y="49" font-size="8" font-family="monospace" text-anchor="middle" fill="#71717A">10.88.0.3</text>
+          <text x="100" y="37" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">{{ shortName(serverPeers[0]?.name || "—") }}</text>
+          <text x="100" y="49" font-size="8" font-family="monospace" text-anchor="middle" fill="#71717A">{{ serverPeers[0]?.wg_ip || "—" }}</text>
 
           <!-- 节点 2: HK 备中心 -->
           <circle cx="102" cy="132" r="24" fill="#121212" />
           <circle cx="100" cy="130" r="24" fill="#E2E8F0" stroke="#121212" stroke-width="2" />
-          <text x="100" y="127" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">HK-Edge</text>
-          <text x="100" y="139" font-size="8" font-family="monospace" text-anchor="middle" fill="#71717A">10.88.0.2</text>
+          <text x="100" y="127" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">{{ shortName(standbyHub?.name || serverPeers[1]?.name || "—") }}</text>
+          <text x="100" y="139" font-size="8" font-family="monospace" text-anchor="middle" fill="#71717A">{{ serverPeers[1]?.wg_ip || "—" }}</text>
 
           <!-- 外部设备 1: iPhone -->
           <circle cx="502" cy="42" r="24" fill="#121212" />
           <circle cx="500" cy="40" r="24" fill="#00E599" stroke="#121212" stroke-width="2" />
-          <text x="500" y="37" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">iPhone 16</text>
-          <text x="500" y="49" font-size="8" font-family="monospace" text-anchor="middle" fill="#121212">10.88.0.11</text>
+          <text x="500" y="37" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">{{ shortName(devicePeers[0]?.name || "—") }}</text>
+          <text x="500" y="49" font-size="8" font-family="monospace" text-anchor="middle" fill="#121212">{{ devicePeers[0]?.wg_ip || "—" }}</text>
 
           <!-- 外部设备 2: MacBook -->
           <circle cx="502" cy="132" r="24" fill="#121212" />
           <circle cx="500" cy="130" r="24" fill="#00E599" stroke="#121212" stroke-width="2" />
-          <text x="500" y="127" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">MacBook</text>
-          <text x="500" y="139" font-size="8" font-family="monospace" text-anchor="middle" fill="#121212">10.88.0.12</text>
+          <text x="500" y="127" font-size="9" font-weight="900" text-anchor="middle" fill="#121212">{{ shortName(devicePeers[1]?.name || "—") }}</text>
+          <text x="500" y="139" font-size="8" font-family="monospace" text-anchor="middle" fill="#121212">{{ devicePeers[1]?.wg_ip || "—" }}</text>
         </svg>
       </div>
     </div>
@@ -196,22 +206,22 @@
               <tr v-for="peer in overview.peers" :key="peer.id" class="hover:bg-toy-bg/50 transition-colors">
                 <td class="py-3 font-bold font-sans text-toy-black">
                   <div class="flex items-center gap-1.5">
-                    <span v-if="peer.name.includes('Master')" class="text-xs">👑</span>
+                    <span v-if="peer.server_id && peer.server_id === overview.network?.active_hub_server_id" class="text-xs">👑</span>
                     <span>{{ peer.name }}</span>
                   </div>
                 </td>
-                <td class="py-3 font-extrabold text-toy-black">{{ peer.ip }}</td>
-                <td class="py-3 text-toy-muted">{{ peer.endpoint }}</td>
-                <td class="py-3 text-toy-black font-sans font-bold">{{ peer.handshake_ago || '—' }}</td>
+                <td class="py-3 font-extrabold text-toy-black">{{ peer.wg_ip }}</td>
+                <td class="py-3 text-toy-muted">{{ peerStatusText(peer) }}</td>
+                <td class="py-3 text-toy-black font-sans font-bold">{{ handshakeAgo(peer.last_handshake) }}</td>
                 <td class="py-3 text-toy-muted">
-                  {{ formatBytes(peer.month_tx) }} / {{ formatBytes(peer.month_rx) }}
+                  {{ formatBytes(peer.tx_bytes) }} / {{ formatBytes(peer.rx_bytes) }}
                 </td>
                 <td class="py-3 text-right">
                   <span 
                     class="toy-badge text-[10px]"
                     :class="peer.status === 'online' ? 'bg-toy-mint text-toy-black' : 'bg-gray-200 text-toy-muted'"
                   >
-                    {{ peer.status === 'online' ? '● 在线' : '○ 离线' }}
+                    {{ peer.status === 'online' ? '● 在线' : peer.status === 'left' ? '○ 已移出' : '○ 离线' }}
                   </span>
                 </td>
               </tr>
@@ -224,7 +234,7 @@
       <div class="toy-card p-5 bg-white space-y-3">
         <div class="flex items-center justify-between">
           <h3 class="text-sm font-black text-toy-black flex items-center gap-2">
-            <span>外部接入终端 ({{ overview.devices.length }})</span>
+            <span>外部接入终端 ({{ devicePeers.length }})</span>
             <span class="toy-badge bg-toy-mint text-[10px]">WireGuard Client</span>
           </h3>
           <button 
@@ -248,14 +258,14 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-toy-gray font-mono">
-              <tr v-for="dev in overview.devices" :key="dev.id" class="hover:bg-toy-bg/50 transition-colors">
+              <tr v-for="dev in devicePeers" :key="dev.id" class="hover:bg-toy-bg/50 transition-colors">
                 <td class="py-3 font-bold font-sans text-toy-black flex items-center gap-2">
                   <span>📱</span>
                   <span>{{ dev.name }}</span>
                 </td>
-                <td class="py-3 font-extrabold text-toy-black">{{ dev.ip }}</td>
-                <td class="py-3 font-sans font-bold text-toy-muted">{{ dev.handshake_ago || '—' }}</td>
-                <td class="py-3 text-toy-muted">{{ formatBytes(dev.month_rx + dev.month_tx) }}</td>
+                <td class="py-3 font-extrabold text-toy-black">{{ dev.wg_ip }}</td>
+                <td class="py-3 font-sans font-bold text-toy-muted">{{ handshakeAgo(dev.last_handshake) }}</td>
+                <td class="py-3 text-toy-muted">{{ formatBytes(dev.rx_bytes + dev.tx_bytes) }}</td>
                 <td class="py-3">
                   <span 
                     class="toy-badge text-[10px]"
@@ -395,69 +405,156 @@
         </form>
       </div>
     </div>
+
+    <!-- 风格内确认弹窗（替代原生 confirm） -->
+    <div v-if="confirmText" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+      <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }" role="alertdialog" aria-modal="true">
+        <h3 class="text-base font-black text-toy-black flex items-center gap-2"><span>⚠️</span>请确认</h3>
+        <p class="mt-2 text-xs font-bold text-toy-muted">{{ confirmText }}</p>
+        <div class="mt-4 flex items-center justify-end gap-2">
+          <button @click="confirmText = ''" class="px-3 py-1.5 rounded-xl border-2 border-toy-black bg-white text-xs font-black hover:bg-toy-bg cursor-pointer">取消</button>
+          <button @click="confirmYes" class="toy-btn px-4 py-1.5 rounded-xl bg-toy-pink text-white text-xs font-black cursor-pointer">确认</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue';
 import QRCode from 'qrcode';
-import { WGOverviewData, WGPeerItem } from '../../../types/backend';
-import { formatBytes } from '../../../services/mock';
+import type { WGOverviewData } from '../../../types/backend';
+import { formatBytes } from '../../../services/format';
 import { api } from '../../../services/api';
 
+type WGPeer = WGOverviewData["peers"][number];
+
 const overview = ref<WGOverviewData>({
-  network: { cidr: '10.88.0.0/24', keepalive_s: 25, active_hub_id: 1 },
+  network: null,
   hubs: [],
+  retired_hubs: [],
   peers: [],
-  devices: [],
+  servers: [],
+  running_task: false,
 });
 
 const isPatrolling = ref(false);
 const hubLatency = ref<Record<number, number>>({});
+const errorMsg = ref('');
+const switchTaskId = ref<number | null>(null);
 
-const activeHub = computed(() => overview.value.hubs.find(h => h.is_active));
-const standbyHub = computed(() => overview.value.hubs.find(h => !h.is_active));
+const serverPeers = computed(() => overview.value.peers.filter((p) => p.kind === 'server'));
+const devicePeers = computed(() => overview.value.peers.filter((p) => p.kind === 'device'));
 
-async function loadData() {
-  overview.value = await api.getWGOverview();
+const activeHub = computed(() => overview.value.hubs.find((h) => h.is_active));
+const standbyHub = computed(() => overview.value.hubs.find((h) => !h.is_active && h.status !== 'retired'));
+
+function shortName(name: string): string {
+  return name.length > 9 ? name.slice(0, 8) + '…' : name;
 }
 
-async function handleSwitchHub(hubId: number) {
-  if (confirm('确认将温备援中心提升为主中心？系统将零停机切换路由广播并下发新端点。')) {
-    await api.switchWGHub(hubId);
-    await loadData();
+function handshakeAgo(ts: number | null): string {
+  if (!ts) return '从未';
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 0) return '刚刚';
+  if (diff < 60) return `${diff} 秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
+function peerStatusText(p: WGPeer): string {
+  if (p.status === 'online') return '握手正常';
+  if (p.last_error) return p.last_error.length > 28 ? p.last_error.slice(0, 27) + '…' : p.last_error;
+  return '待巡检';
+}
+
+async function loadData() {
+  try {
+    overview.value = await api.getWGOverview();
+    errorMsg.value = '';
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '读取组网信息失败';
   }
 }
 
-async function probeHub(hubId: number) {
-  const res = await api.probeWGHub(hubId);
-  if (res.ok) {
-    hubLatency.value[hubId] = res.latency_ms;
+async function pollSwitchTask(taskId: number) {
+  // 切换是后台任务：2s 轮询直到 success/failed（对齐后端 wg_task 语义）
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await api.pollSwitchTask(taskId);
+    if (r.done) {
+      switchTaskId.value = null;
+      errorMsg.value = r.ok ? '' : `中心切换失败：${r.result || r.status}`;
+      await loadData();
+      return;
+    }
+  }
+}
+
+async function handleSwitchHub(hubServerId: number) {
+  errorMsg.value = '';
+  const hub = overview.value.hubs.find((h) => h.server_id === hubServerId);
+  confirmText.value = `确认将「${hub?.name ?? hubServerId}」提升为主中心？系统将金丝雀两阶段零停机切换，期间进度在后台任务中执行。`;
+  confirmAction = async () => {
+    try {
+      const r = await api.switchWGHub(hubServerId);
+      switchTaskId.value = r.task_id ?? null;
+      if (r.task_id) void pollSwitchTask(r.task_id);
+      else await loadData();
+    } catch (e) {
+      errorMsg.value = e instanceof Error ? e.message : '切换发起失败';
+    }
+  };
+}
+
+async function probeHub(hubServerId: number) {
+  try {
+    const res = await api.probeWGHub(hubServerId);
+    if (res.ok && res.rttMs !== undefined) {
+      hubLatency.value[hubServerId] = res.rttMs;
+    } else {
+      errorMsg.value = res.hint || '探测未通过';
+    }
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '探测失败';
   }
 }
 
 async function handlePatrol() {
   isPatrolling.value = true;
-  setTimeout(async () => {
-    isPatrolling.value = false;
+  try {
+    await api.patrol();
     await loadData();
-    alert('全网星型拓扑巡检完成：6 个节点与 3 台外部终端握手响应均在 50ms 以内，无丢包与路由漂移！');
-  }, 1200);
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '巡检失败';
+  } finally {
+    isPatrolling.value = false;
+  }
 }
 
 // 客户端设备与二维码弹窗
-const selectedDevice = ref<WGPeerItem | null>(null);
+const selectedDevice = ref<WGPeer | null>(null);
 const currentConfText = ref('');
+const currentConfFile = ref('wg0.conf');
 const qrCanvasRef = ref<HTMLCanvasElement | null>(null);
 const isCopied = ref(false);
 
-async function viewDeviceConfig(dev: WGPeerItem) {
+async function viewDeviceConfig(dev: WGPeer) {
   selectedDevice.value = dev;
   isCopied.value = false;
-  currentConfText.value = await api.getWGDeviceConf(dev.id);
+  try {
+    const r = await api.getWGDeviceConf(dev.id);
+    currentConfText.value = r.conf;
+    currentConfFile.value = r.filename || `${dev.name}-wg0.conf`;
+  } catch (e) {
+    currentConfText.value = '';
+    errorMsg.value = e instanceof Error ? e.message : '读取配置失败（导入成员不持私钥，无法导出）';
+    return;
+  }
 
   await nextTick();
-  if (qrCanvasRef.value) {
+  if (qrCanvasRef.value && currentConfText.value) {
     QRCode.toCanvas(qrCanvasRef.value, currentConfText.value, {
       width: 160,
       margin: 1,
@@ -478,16 +575,31 @@ function downloadConfFile() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${selectedDevice.value.name}-wg0.conf`;
+  a.download = currentConfFile.value;
   a.click();
   URL.revokeObjectURL(url);
 }
 
+// 风格内确认弹窗（替代原生 confirm）
+const confirmText = ref('');
+let confirmAction: (() => void | Promise<void>) | null = null;
+function confirmYes() {
+  confirmText.value = '';
+  const a = confirmAction;
+  confirmAction = null;
+  if (a) void a();
+}
+
 async function handleDeleteDevice(id: number) {
-  if (confirm('确认注销该外部设备凭据？注销后该设备将无法通过此密钥接入专用网段。')) {
-    await api.deleteWGDevice(id);
-    await loadData();
-  }
+  confirmText.value = '确认移除该外部设备凭据？移除后该设备将无法通过此密钥接入专用网段。';
+  confirmAction = async () => {
+    try {
+      await api.deleteWGDevice(id);
+      await loadData();
+    } catch (e) {
+      errorMsg.value = e instanceof Error ? e.message : '移除失败';
+    }
+  };
 }
 
 // 新增设备弹窗
@@ -501,10 +613,16 @@ function openAddDeviceModal() {
 
 async function submitAddDevice() {
   if (!newDeviceName.value.trim()) return;
-  const dev = await api.addWGDevice(newDeviceName.value.trim());
-  isAddDeviceModalOpen.value = false;
-  await loadData();
-  await viewDeviceConfig(dev);
+  try {
+    const dev = await api.addWGDevice(newDeviceName.value.trim());
+    isAddDeviceModalOpen.value = false;
+    if (dev.warn) errorMsg.value = dev.warn;
+    await loadData();
+    const created = devicePeers.value.find((d) => d.id === dev.id);
+    if (created) await viewDeviceConfig(created);
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '生成设备凭据失败';
+  }
 }
 
 onMounted(() => {
