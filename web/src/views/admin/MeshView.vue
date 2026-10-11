@@ -42,6 +42,11 @@ const runningTask = computed(() => !!admin.wgOverview?.running_task)
 const serverPeers = computed(() => peers.value.filter((p) => p.kind === 'server'))
 const devicePeers = computed(() => peers.value.filter((p) => p.kind === 'device'))
 
+// 服务器清单按 id 取（就绪度行的一键配置要拿 ssh_ready 判断能不能跑）
+function serverById(id) {
+  return (servers.value || []).find((x) => x.id === id) || null
+}
+
 // ---------- 文案与格式 ----------
 function statusTag(s) {
   switch (s) {
@@ -381,6 +386,32 @@ async function registerStandby(s) {
   standbyReg.value = { ...standbyReg.value, [s.id]: { busy: false, error: '' } }
 }
 
+// ---------- 一键配置为中心（备援/现役） ----------
+// 与「只读登记」的区别：这条路会写目标机（装包、写 /etc/wireguard、放行、拉起），
+// 全新机器走它；机器上已有手工 WG 配置的走「只读登记」。故先确认再执行。
+const provisionConfirm = ref(null) // 待确认的服务器对象
+const provisioning = ref(false)
+
+function askProvision(s) {
+  provisionConfirm.value = s
+}
+
+async function doProvision() {
+  const s = provisionConfirm.value
+  if (!s) return
+  provisioning.value = true
+  try {
+    const r = await admin.provisionHub({ server_id: s.id })
+    provisionConfirm.value = null
+    ui.notify(`${s.name} 配置任务已启动（${r.role === 'hub' ? '现役中心' : '备援中心'}）`)
+    watchTask(r.task_id)
+  } catch (e) {
+    ui.notify(e?.message || '配置失败')
+  } finally {
+    provisioning.value = false
+  }
+}
+
 // ---------- hub 切换 ----------
 const switchModal = ref(null)
 const switchTargetId = ref(0)
@@ -605,6 +636,8 @@ async function createDevice() {
     restoreFocus()
     ui.notify(r.warn ? `设备已创建，但 ${r.warn}` : `设备已创建（${r.wg_ip}）`)
     if (hubModal.value) await reloadHub()
+    // 建完直接出码：手机端就是「报个名字 → 扫码导入」，不用再回列表里找这一行
+    await openConf({ id: r.id, name }, activeHub.value?.server_id || 0)
   } catch (e) {
     if (deviceModal.value) deviceModal.value.error = e?.message || '创建失败'
   } finally {
@@ -614,6 +647,21 @@ async function createDevice() {
 
 let confSeq = 0
 
+// fillConfQR 把 conf 渲染成二维码填进已打开的弹窗（A/B 切换与「刚建完直接出码」共用）。
+async function fillConfQR(seq, conf, filename) {
+  confModal.value.conf = conf
+  confModal.value.filename = filename
+  try {
+    const url = await QRCode.toDataURL(conf, { width: 320, margin: 1 })
+    if (seq !== confSeq || !confModal.value) return
+    confModal.value.dataUrl = url
+  } catch (e) {
+    if (seq === confSeq && confModal.value) confModal.value.error = e?.message || '二维码生成失败'
+  } finally {
+    if (confModal.value && seq === confSeq) confModal.value.loading = false
+  }
+}
+
 async function openConf(peer, hubId = 0) {
   const seq = ++confSeq
   confModal.value = { peer, hubId, conf: '', filename: '', dataUrl: '', error: '', loading: true }
@@ -621,16 +669,53 @@ async function openConf(peer, hubId = 0) {
   try {
     const r = await admin.peerConf(peer.id, hubId)
     if (seq !== confSeq || !confModal.value) return // 已关闭或已切到其他 hub（A/B 竞态，丢弃旧响应）
-    confModal.value.conf = r.conf
-    confModal.value.filename = r.filename
-    const url = await QRCode.toDataURL(r.conf, { width: 320, margin: 1 })
-    if (seq !== confSeq || !confModal.value) return
-    confModal.value.dataUrl = url
+    await fillConfQR(seq, r.conf, r.filename)
   } catch (e) {
     if (seq !== confSeq || !confModal.value) return
     confModal.value.error = e?.message || '配置导出失败'
+    confModal.value.loading = false
+  }
+}
+
+// openConfDirect 用接口已经返回的 conf 直接出码（重新签发后不用再跑一次导出请求）。
+function openConfDirect(peer, hubId, conf, filename) {
+  const seq = ++confSeq
+  confModal.value = { peer, hubId, conf: '', filename: '', dataUrl: '', error: '', loading: true }
+  rememberFocus()
+  void fillConfQR(seq, conf, filename)
+}
+
+// ---------- 重新签发使用端凭证 ----------
+// 导入成员面板没有私钥，出不了二维码。这里换一套面板托管的密钥：同 IP、同 PSK，
+// 在各中心整体替换（重建 conf + syncconf 会撤掉旧公钥），设备按新码重新导入即可。
+// 已是面板托管的成员走同一接口 = 重新下发（不换钥），所以重复点也安全。
+const reissueConfirm = ref(null)
+const reissuing = ref(false)
+
+function askReissue(p) {
+  reissueConfirm.value = p
+}
+
+async function doReissue() {
+  const p = reissueConfirm.value
+  if (!p) return
+  reissuing.value = true
+  try {
+    const r = await admin.reissuePeer(p.id)
+    reissueConfirm.value = null
+    const bad = (r.results || []).filter((x) => !x.ok)
+    if (bad.length) {
+      ui.notify(`${p.name}：已签发，但 ${bad.map((b) => b.name || b.server_id).join('、')} 替换失败`)
+    } else {
+      ui.notify(`${p.name} 已重新签发（${r.synced}/${r.total} 台中心已替换公钥）`)
+    }
+    if (hubModal.value) await reloadHub()
+    if (r.conf) openConfDirect({ id: p.id, name: p.name }, hubModal.value?.hubId || 0, r.conf, r.filename)
+    else if (r.render_error) ui.notify(`凭证已签发，但二维码渲染失败：${r.render_error}`)
+  } catch (e) {
+    ui.notify(e?.message || '重新签发失败')
   } finally {
-    if (confModal.value && seq === confSeq) confModal.value.loading = false
+    reissuing.value = false
   }
 }
 
@@ -642,6 +727,21 @@ function downloadConf() {
   a.download = confModal.value.filename || 'wg0.conf'
   a.click()
   URL.revokeObjectURL(a.href)
+}
+
+// downloadPeerConf 服务器成员的 conf 由面板经 SSH 下发，这里只提供下载备查（不出二维码）。
+async function downloadPeerConf(p) {
+  try {
+    const r = await admin.peerConf(p.id, hubModal.value?.hubId || 0)
+    const blob = new Blob([r.conf], { type: 'text/plain' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = r.filename || 'wg0.conf'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e) {
+    if (hubModal.value) hubModal.value.error = e?.message || '导出失败'
+  }
 }
 
 // ---------- 成员操作 ----------
@@ -952,7 +1052,7 @@ onBeforeUnmount(() => {
             <div class="mesh-hub-actions">
               <template v-if="h.is_active">
                 <span v-if="standbyHubs.length" class="bt-tag bt-tag--info">流量额度用完时切到备援</span>
-                <span v-else class="mesh-hub-sub">尚无备援：登记网外节点后即可一键切换</span>
+                <span v-else class="mesh-hub-sub">尚无备援：把网外节点「配置为备援」后即可一键切换</span>
               </template>
               <button v-else class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="runningTask" @click.stop="openSwitch(h)">
                 <AppIcon name="pulse" aria-hidden="true" />切换为现役
@@ -991,7 +1091,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="bt-card__body">
             <div v-if="s.is_self" class="mesh-hub-line mesh-hub-sub">本机（面板宿主）· 采集走本地进程，组网需经宿主 SSH</div>
-            <div v-else class="mesh-hub-line mesh-hub-sub">不在本网 · 登记只读取它的 WG 配置，不改动它</div>
+            <div v-else class="mesh-hub-line mesh-hub-sub">不在本网 · 一键配置会生成密钥、下发全部成员并拉起接口</div>
             <div class="mesh-hub-actions">
               <button
                 v-if="s.is_self"
@@ -1002,18 +1102,31 @@ onBeforeUnmount(() => {
               >
                 <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '纳管中…' : '纳管本机入网' }}
               </button>
-              <button
-                v-else
-                class="bt-btn bt-btn--ghost bt-btn--sm"
-                type="button"
-                :disabled="runningTask || !activeHub || standbyReg[s.id]?.busy"
-                @click="registerStandby(s)"
-              >
-                <AppIcon name="shield" aria-hidden="true" />{{ standbyReg[s.id]?.busy ? '登记中…' : '准备为备援' }}
-              </button>
+              <template v-else>
+                <button
+                  class="bt-btn bt-btn--primary bt-btn--sm"
+                  type="button"
+                  :disabled="runningTask || provisioning || !s.ssh_ready"
+                  @click="askProvision(s)"
+                >
+                  <AppIcon name="shield" aria-hidden="true" />配置为备援
+                </button>
+                <button
+                  class="bt-btn bt-btn--ghost bt-btn--sm"
+                  type="button"
+                  title="机器上已有手工配好的 WG 配置，只读取登记、不写目标机"
+                  :disabled="runningTask || !activeHub || standbyReg[s.id]?.busy"
+                  @click="registerStandby(s)"
+                >
+                  {{ standbyReg[s.id]?.busy ? '登记中…' : '只读登记' }}
+                </button>
+              </template>
             </div>
             <div v-if="s.is_self && !s.ssh_ready" class="mesh-hub-line mesh-hub-sub">
               先在<RouterLink to="/admin/servers">节点管理</RouterLink>录宿主 SSH（容器可达地址）后即可纳管
+            </div>
+            <div v-if="!s.is_self && !s.ssh_ready" class="mesh-hub-line mesh-hub-sub">
+              先在<RouterLink to="/admin/servers">节点管理</RouterLink>录入 SSH 凭据（面板代管密钥会自动装机）后即可一键配置
             </div>
             <div v-if="standbyReg[s.id]?.error" class="bt-alert bt-alert--error mesh-hub-alert" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ standbyReg[s.id].error }}
@@ -1067,8 +1180,10 @@ onBeforeUnmount(() => {
                   <button v-if="p.kind === 'server'" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="verifyingId === p.id" @click="verifyPeer(p)">
                     {{ verifyingId === p.id ? '验证中…' : '验证' }}
                   </button>
-                  <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, activeHub?.server_id || 0)">
-                    凭证 / QR
+                  <!-- 二维码/重命名/重新签发都收在中心面板的「使用端凭证」里：这里是成员一览，
+                       设备行只留一个入口跳过去，避免同一件事有两处按钮 -->
+                  <button v-if="p.kind === 'device' && activeHub" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openHub(activeHub)">
+                    <AppIcon name="key" aria-hidden="true" />管理凭证
                   </button>
                   <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
                     <AppIcon name="trash" aria-hidden="true" />移出
@@ -1236,9 +1351,20 @@ onBeforeUnmount(() => {
                 <b>{{ r.name }}</b>
                 <span class="mono bt-text-muted">{{ r.endpoint || '端点未知' }}</span>
                 <span class="bt-tag" :class="r.ready ? 'bt-tag--success' : 'bt-tag--warning'">{{ r.ready ? '就绪' : r.missing }}</span>
+                <button
+                  class="bt-btn bt-btn--ghost bt-btn--sm"
+                  type="button"
+                  :disabled="runningTask || provisioning || !serverById(r.server_id)?.ssh_ready"
+                  :title="serverById(r.server_id)?.ssh_ready ? '' : '该节点没有可用的 SSH 凭据'"
+                  @click="askProvision(serverById(r.server_id) || { id: r.server_id, name: r.name })"
+                >
+                  <AppIcon name="shield" aria-hidden="true" />{{ r.ready ? '重新下发' : '一键配置' }}
+                </button>
               </div>
               <p class="bt-modal__desc">
                 两台都就绪时，使用端凭证有 A/B 两份：切换中心后导入另一份即可（密钥不变，只有端点一行不同）。
+                「一键配置」由面板生成/重写配置并经 SSH 下发（装包、放行、拉起、实测都在任务里跑完）；
+                唯一要人工的是到云控制台安全组放行该中心监听端口的 UDP（放行 TCP 不算数）。
               </p>
             </section>
 
@@ -1257,7 +1383,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="bt-table-wrap">
                 <table class="bt-table mesh-table">
-                  <caption>设备凭证 · 一键下发到所有中心</caption>
+                  <caption>设备凭证 · 手机/笔记本扫码即用</caption>
                   <thead>
                     <tr>
                       <th scope="col">名称</th><th scope="col">WG IP</th><th scope="col">状态</th>
@@ -1284,8 +1410,23 @@ onBeforeUnmount(() => {
                           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="hubModal.renamingId = 0">取消</button>
                         </template>
                         <template v-else>
-                          <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, hubModal.hubId)">
-                            凭证 / QR
+                          <button
+                            v-if="p.can_export"
+                            class="bt-btn bt-btn--ghost bt-btn--sm"
+                            type="button"
+                            @click="openConf(p, hubModal.hubId)"
+                          >
+                            <AppIcon name="key" aria-hidden="true" />凭证 / QR
+                          </button>
+                          <button
+                            v-else
+                            class="bt-btn bt-btn--ghost bt-btn--sm"
+                            type="button"
+                            :disabled="reissuing"
+                            title="导入成员：面板没有它的私钥，出不了二维码。点这里换一套面板托管的密钥（同 IP 同 PSK）并在所有中心替换，设备按新码重新导入即可"
+                            @click="askReissue(p)"
+                          >
+                            <AppIcon name="key" aria-hidden="true" />{{ reissuing ? '签发中…' : '生成二维码' }}
                           </button>
                           <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="startRename(p)">
                             <AppIcon name="edit" aria-hidden="true" />重命名
@@ -1307,6 +1448,11 @@ onBeforeUnmount(() => {
                   </tbody>
                 </table>
               </div>
+              <p v-if="hubModal.data.creds.some((p) => !p.can_export)" class="bt-modal__desc">
+                标「导入」的使用端是面板从现网上收编的：只有公钥，没有私钥，出不了二维码。
+                点「生成二维码」会用同 IP、同 PSK 换一套面板托管的密钥并在所有中心替换，
+                设备按新码重新导入即可（期间该设备会短暂失联）。
+              </p>
             </section>
 
             <!-- 成员（SSH 服务器） -->
@@ -1331,7 +1477,11 @@ onBeforeUnmount(() => {
                         <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" :disabled="verifyingId === p.id" @click="verifyPeer(p)">
                           {{ verifyingId === p.id ? '验证中…' : '验证' }}
                         </button>
-                        <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="openConf(p, hubModal.hubId)">凭证 / QR</button>
+                        <!-- 服务器成员的配置由面板经 SSH 下发，这里只留「下载 .conf」备查：
+                             二维码是使用端（设备）的事，集中在上面「使用端凭证」里出 -->
+                        <button v-if="p.can_export" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="downloadPeerConf(p)">
+                          <AppIcon name="download" aria-hidden="true" />下载 .conf
+                        </button>
                         <button class="bt-btn bt-btn--ghost bt-btn--sm bt-text-danger" type="button" @click="confirmDelete = p">
                           <AppIcon name="trash" aria-hidden="true" />移出
                         </button>
@@ -1539,7 +1689,7 @@ onBeforeUnmount(() => {
             <label class="bt-field"><span class="bt-field__label">设备名称</span>
               <input v-model="deviceModal.name" class="bt-input" type="text" placeholder="如 iPhone 15" @keyup.enter="createDevice" />
             </label>
-            <p class="bt-modal__desc">面板生成密钥并热加入现役 hub；创建后点成员表「凭证 / QR」扫码导入。</p>
+            <p class="bt-modal__desc">面板生成密钥并热加入所有中心；创建后直接出二维码，手机扫码即可导入。</p>
             <div v-if="deviceModal.error" class="bt-alert bt-alert--error" role="alert">
               <AppIcon name="warn" aria-hidden="true" />{{ deviceModal.error }}
             </div>
@@ -1581,6 +1731,10 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <img :src="confModal.dataUrl" alt="WireGuard 配置二维码" class="mesh-qr" />
+            <p class="bt-modal__desc">
+              手机：WireGuard App →「+」→ 从二维码导入；桌面端：下载下面的 .conf 再「导入隧道」。
+              二维码里就是完整配置（含私钥），等同于把凭证交给扫码的人，别外传。
+            </p>
             <textarea class="bt-textarea mono mesh-conf-text" readonly :value="confModal.conf" rows="10" />
             <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" @click="downloadConf">
               <AppIcon name="download" aria-hidden="true" />下载 .conf
@@ -1702,6 +1856,29 @@ onBeforeUnmount(() => {
       </div>
     </div>
     </Transition>
+
+    <!-- 一键配置为中心（会写目标机，先确认） -->
+    <ConfirmDialog
+      v-if="provisionConfirm"
+      :title="`配置为中心节点 · ${provisionConfirm.name}`"
+      :message="`面板会在该机器上安装 wireguard-tools、备份并写入 /etc/wireguard 配置、放行 UDP、开启转发并拉起接口，完成后按全部成员与设备生成全量 peer（同名旧配置自动备份）。确认执行？`"
+      confirm-text="开始配置"
+      :busy="provisioning"
+      @cancel="provisionConfirm = null"
+      @confirm="doProvision"
+    />
+
+    <!-- 重新签发使用端凭证（换钥，设备要重新导入） -->
+    <ConfirmDialog
+      v-if="reissueConfirm"
+      :title="`重新签发凭证 · ${reissueConfirm.name}`"
+      :message="`该使用端是导入成员，面板没有它的私钥。重新签发会生成一套面板托管的密钥（保留原 WG IP 与 PSK）并在所有中心替换，这台设备需用新二维码重新导入，期间会短暂失联。确认执行？`"
+      confirm-text="重新签发"
+      :danger="true"
+      :busy="reissuing"
+      @cancel="reissueConfirm = null"
+      @confirm="doReissue"
+    />
 
     <!-- 移出确认 -->
     <ConfirmDialog

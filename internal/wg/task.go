@@ -247,8 +247,10 @@ func (r *Runner) RunApply(taskID int64) {
 	//（hub 步骤刚开始时还没有任何面板托管成员，只能写「未实测」）。
 	cur, _ := r.DB.ListWGTaskSteps(taskID)
 	logByStep := map[int64]string{}
+	statusByStep := map[int64]string{}
 	for _, st := range cur {
 		logByStep[st.ID] = st.Log
+		statusByStep[st.ID] = st.Status
 	}
 	for _, st := range steps {
 		role := roleByServer[st.ServerID.Int64]
@@ -266,7 +268,13 @@ func (r *Runner) RunApply(taskID int64) {
 		if prev := strings.TrimSpace(logByStep[st.ID]); prev != "" {
 			note = prev + "；" + note
 		}
-		_ = r.DB.FinishWGTaskStep(st.ID, "ok", note, time.Now().Unix())
+		// 实测结论只给「已成功」的步骤补记；失败/跳过的步骤保持原状态——否则一个
+		// 配置失败的 hub 会因为有探测输出被翻成「成功」，用户看到绿标却连不上
+		status := statusByStep[st.ID]
+		if status == "" {
+			status = "ok"
+		}
+		_ = r.DB.FinishWGTaskStep(st.ID, status, note, time.Now().Unix())
 	}
 
 	// 3) 汇总
@@ -636,7 +644,7 @@ func (r *Runner) RemovePeer(peer *store.WGPeer) (detail string, err error) {
 	if e := HubRemovePeer(ctx, conn, network.Iface, peer.PublicKey); e != nil {
 		return detail, fmt.Errorf("hub 移除 peer 失败: %w", e)
 	}
-	if e := r.rebuildHubConf(ctx, network, hub, conn, peer.ID); e != nil {
+	if e := r.RebuildHubConf(ctx, network, hub, conn, peer.ID); e != nil {
 		return detail, fmt.Errorf("hub 配置重写失败: %w", e)
 	}
 	// 3) 备援中心一并移除（尽力而为）：成员是热加到所有中心的，只清现役会留下
@@ -669,7 +677,7 @@ func (r *Runner) removePeerFromStandbys(network *store.WGNetwork, peer *store.WG
 		}
 		if rerr := HubRemovePeer(ctx, conn, network.Iface, peer.PublicKey); rerr != nil {
 			note += fmt.Sprintf("；备援 %s 移除失败: %v", name, rerr)
-		} else if rerr := r.rebuildHubConf(ctx, network, h, conn, peer.ID); rerr != nil {
+		} else if rerr := r.RebuildHubConf(ctx, network, h, conn, peer.ID); rerr != nil {
 			note += fmt.Sprintf("；备援 %s 配置重写失败: %v", name, rerr)
 		} else {
 			note += fmt.Sprintf("；备援 %s 已同步移除", name)
@@ -680,8 +688,10 @@ func (r *Runner) removePeerFromStandbys(network *store.WGNetwork, peer *store.WG
 	return note
 }
 
-// rebuildHubConf 按 DB 现状（排除 excludePeerID）重写 hub conf 并 syncconf。
-func (r *Runner) rebuildHubConf(ctx context.Context, network *store.WGNetwork, hub *store.WGHub, conn *sshx.Conn, excludePeerID int64) error {
+// RebuildHubConf 按 DB 现状（排除 excludePeerID）重写 hub conf 并 syncconf。
+// syncconf 是「以文件为准」的同步：文件里没有的 peer 会被撤掉，因此换钥/换 IP
+// 这类「整体替换」也走这条路（旧公钥不会残留在运行态里）。
+func (r *Runner) RebuildHubConf(ctx context.Context, network *store.WGNetwork, hub *store.WGHub, conn *sshx.Conn, excludePeerID int64) error {
 	bits, err := subnetBits(network.Subnet)
 	if err != nil {
 		return err

@@ -36,7 +36,7 @@ func (o HubProbeOutcome) FailMessage(port int) string {
 	if n := len(o.Peers); n > 1 {
 		tried = fmt.Sprintf("（已依次用 %d 个成员身份尝试：%s）", n, strings.Join(o.Peers, "、"))
 	}
-	return fmt.Sprintf("UDP %d 从面板侧握手无回应%s：多半是 UDP 入方向没放行——云服务器（阿里云/腾讯云等）到控制台 → 实例 → 安全组 → 配置规则 → 入方向，添加「协议 UDP、端口 %d/%d、源 0.0.0.0/0」，注意放行 TCP 不代表放行 UDP；服务器 ufw/firewalld 也需放行。若该中心是备援，先用「同步到所有中心」把成员补齐再测（目标 %s）", p, tried, p, p, o.Result.Target)
+	return fmt.Sprintf("UDP %d 从面板侧握手无回应%s：多半是 UDP 入方向没放行——云服务器（阿里云/腾讯云等）到控制台 → 实例 → 安全组 → 配置规则 → 入方向，添加「协议 UDP、端口 %d/%d、源 0.0.0.0/0」，注意放行 TCP 不代表放行 UDP；服务器 ufw/firewalld 也需放行。若该中心是备援且还没下发过全量成员，先在中心面板点「一键配置 / 重新下发」补齐（单台使用端也可点「同步到所有中心」）（目标 %s）", p, tried, p, p, o.Result.Target)
 }
 
 // pickProbePeers 按「适合当探针」的优先级取前 n 台托管成员（n<=0 取全部）。

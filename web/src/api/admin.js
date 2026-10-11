@@ -45,8 +45,10 @@ const realAdmin = {
   wgPlan: (payload) => http.post('/v1/admin/wg/plan', payload, { timeoutMs: 60000, retries: 0 }),
   wgApply: (payload) => http.post('/v1/admin/wg/apply', payload, { timeoutMs: 30000, retries: 0 }),
   wgImport: (payload) => http.post('/v1/admin/wg/import', payload, { timeoutMs: 30000, retries: 0 }),
-  // 登记备援：只读目标节点 conf 建槽位，不改对方配置（MeshView「未纳管 → 准备为备援」）
+  // 登记备援（只读）：读目标节点 conf 建槽位，不改对方配置（适合机器上已有手工 WG）
   wgRegisterStandby: (serverId) => http.post('/v1/admin/wg/hubs/standby', { server_id: serverId }, { timeoutMs: 60000, retries: 0 }),
+  // 一键配置为中心（备援/现役）：面板生成密钥、渲染全量 conf 并 SSH 下发，落后台任务
+  wgHubProvision: (payload) => http.post('/v1/admin/wg/hubs/provision', payload, { timeoutMs: 30000, retries: 0 }),
   // 纳管已手工配好 WG 的节点（含本机）：只读它的 conf，不改动它
   wgAdoptServer: (serverId) => http.post('/v1/admin/wg/adopt', { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
   // 中心节点面板 + 凭证中心
@@ -54,6 +56,8 @@ const realAdmin = {
   wgHubProbe: (id) => http.post(`/v1/admin/wg/hubs/${id}/probe`, {}, { timeoutMs: 40000, retries: 0 }),
   wgPeerRename: (id, name) => http.put(`/v1/admin/wg/peers/${id}`, { name }),
   wgPeerSyncHubs: (id) => http.post(`/v1/admin/wg/peers/${id}/sync-hubs`, {}, { timeoutMs: 90000, retries: 0 }),
+  // 重新签发使用端凭证：导入成员换面板托管密钥，各中心整体替换后可出二维码
+  wgPeerReissue: (id) => http.post(`/v1/admin/wg/peers/${id}/reissue`, {}, { timeoutMs: 120000, retries: 0 }),
   wgTakeover: (payload) => http.post('/v1/admin/wg/takeover', payload, { timeoutMs: 30000, retries: 0 }),
   wgHubCleanup: (id) => http.del(`/v1/admin/wg/hubs/${id}`, { retries: 0 }),
   wgSwitchHub: (payload) => http.post('/v1/admin/wg/switch-hub', payload, { timeoutMs: 30000, retries: 0 }),
@@ -149,11 +153,13 @@ export const adminClient = {
   wgApply: (payload) => withTimeout(realAdmin.wgApply(payload), 35000),
   wgImport: (payload) => withTimeout(realAdmin.wgImport(payload), 35000),
   wgRegisterStandby: (serverId) => withTimeout(realAdmin.wgRegisterStandby(serverId), 45000),
+  wgHubProvision: (payload) => withTimeout(realAdmin.wgHubProvision(payload), 35000),
   wgAdoptServer: (serverId) => withTimeout(realAdmin.wgAdoptServer(serverId), 95000),
   wgHubDetail: (id) => withTimeout(realAdmin.wgHubDetail(id), 20000),
   wgHubProbe: (id) => withTimeout(realAdmin.wgHubProbe(id), 45000),
   wgPeerRename: (id, name) => realAdmin.wgPeerRename(id, name),
   wgPeerSyncHubs: (id) => withTimeout(realAdmin.wgPeerSyncHubs(id), 95000),
+  wgPeerReissue: (id) => withTimeout(realAdmin.wgPeerReissue(id), 125000),
   wgTakeover: (payload) => withTimeout(realAdmin.wgTakeover(payload), 35000),
   wgHubCleanup: (id) => withTimeout(realAdmin.wgHubCleanup(id), 20000),
   wgSwitchHub: (payload) => withTimeout(realAdmin.wgSwitchHub(payload), 35000),

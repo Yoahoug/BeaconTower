@@ -191,9 +191,16 @@ export const useAdminStore = defineStore('admin', {
       return r
     },
 
-    // 未纳管节点 → 备援槽位（只读对方 conf；成功后该节点即进网）
+    // 未纳管节点 → 备援槽位（只读对方 conf；适合机器上已有手工 WG 的场景）
     async registerStandby(serverId) {
       const r = await adminClient.wgRegisterStandby(serverId)
+      await this.loadWg()
+      return r
+    },
+
+    // 未纳管节点 → 一键配置为中心（面板生成密钥、渲染全量 conf、SSH 下发，后台任务）
+    async provisionHub(payload) {
+      const r = await adminClient.wgHubProvision(payload)
       await this.loadWg()
       return r
     },
@@ -224,6 +231,13 @@ export const useAdminStore = defineStore('admin', {
 
     async syncPeerHubs(id) {
       const r = await adminClient.wgPeerSyncHubs(id)
+      await this.loadWg()
+      return r
+    },
+
+    // 重新签发使用端凭证（导入成员换面板托管密钥，各中心整体替换）
+    async reissuePeer(id) {
+      const r = await adminClient.wgPeerReissue(id)
       await this.loadWg()
       return r
     },

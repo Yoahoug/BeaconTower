@@ -214,7 +214,7 @@ func TestProbeHubEndpointAllUnknownPeerReportsBothCauses(t *testing.T) {
 		t.Fatalf("都不认识时应判不通: %+v", out)
 	}
 	msg := out.FailMessage(hub.ListenPort)
-	for _, want := range []string{"放行 UDP", "同步到所有中心", "2 个成员身份"} {
+	for _, want := range []string{"放行 UDP", "一键配置", "同步到所有中心", "2 个成员身份"} {
 		if !contains(msg, want) {
 			t.Fatalf("文案缺少 %q: %s", want, msg)
 		}

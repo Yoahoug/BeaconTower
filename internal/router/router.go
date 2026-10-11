@@ -82,6 +82,8 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.POST("/wg/apply", app.WGApply)
 				auth.POST("/wg/import", app.WGImport)
 				auth.POST("/wg/hubs/standby", app.WGRegisterStandby)
+				// 一键把网外节点配置为中心（备援/现役）：整链路静默跑完，进度落 wg_task
+				auth.POST("/wg/hubs/provision", app.WGHubProvision)
 				auth.POST("/wg/adopt", app.WGAdoptServer)
 				// 中心节点面板 + 凭证中心
 				auth.GET("/wg/hubs/:id", app.WGHubDetail)
@@ -90,6 +92,8 @@ func New(app *handler.App, webDist embed.FS, hasDist bool) *gin.Engine {
 				auth.POST("/wg/takeover", app.WGTakeover)
 				auth.PUT("/wg/peers/:id", app.WGPeerRename)
 				auth.POST("/wg/peers/:id/sync-hubs", app.WGPeerSyncHubs)
+				// 重新签发使用端凭证：导入成员换面板托管密钥，各中心整体替换后可出二维码
+				auth.POST("/wg/peers/:id/reissue", app.WGPeerReissue)
 				auth.GET("/wg/creds.zip", app.WGCredsZip)
 				auth.POST("/wg/switch-hub", app.WGSwitchHub)
 				auth.POST("/wg/patrol", app.WGPatrol)
