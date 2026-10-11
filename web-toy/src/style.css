@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* 玩具新野兽派按钮 */
+@layer components {
+  .toy-btn {
+    @apply border-2.5 border-toy-black font-bold transition-all duration-150 select-none cursor-pointer;
+    box-shadow: 3px 3px 0px #121212;
+  }
+  .toy-btn:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0px #121212;
+  }
+  .toy-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0px #121212;
+  }
+
+  /* 玩具卡片 */
+  .toy-card {
+    @apply bg-white border-2.5 border-toy-black rounded-xl;
+    box-shadow: 4px 4px 0px #121212;
+  }
+
+  /* 玩具内凹槽（用于进度条槽、状态栏槽） */
+  .toy-groove {
+    @apply bg-toy-gray/60 border-2 border-toy-black rounded-lg overflow-hidden;
+  }
+
+  /* 玩具胶囊徽章 */
+  .toy-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold border-2 border-toy-black rounded-md;
+    box-shadow: 2px 2px 0px #121212;
+  }
+}
+
+/* 呼吸灯动画 */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.92); }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 2.4s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}

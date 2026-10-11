@@ -1,0 +1,10 @@
+{
+  "name": "beacontower-workspace",
+  "private": true,
+  "scripts": {
+    "dev:toy": "npm --prefix web-toy run dev",
+    "dev:classic": "npm --prefix web run dev",
+    "build:toy": "npm --prefix web-toy run build",
+    "build:classic": "npm --prefix web run build"
+  }
+}
