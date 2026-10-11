@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -718,6 +719,7 @@ func (a *App) WGApply(c *gin.Context) {
 			return
 		}
 	}
+	log.Printf("[wg] apply task %d：中心 %s(#%d) + %d 个成员", taskID, names[hubID], hubID, len(alloc))
 	go a.WG.RunApply(taskID)
 	a.audit(a.actorOf(c), "wg_apply", fmt.Sprintf("task:%d", taskID),
 		fmt.Sprintf("hub=%d spokes=%v", hubID, spokeIDs(alloc)), ipOf(c))
@@ -1077,6 +1079,7 @@ func (a *App) WGImport(c *gin.Context) {
 			return
 		}
 	}
+	log.Printf("[wg] import task %d：hub=%d standby=%d 候选成员 %d 台", taskID, in.HubServerID, in.StandbyServerID, len(candidates))
 	go a.WG.RunImport(taskID)
 	a.audit(a.actorOf(c), "wg_import", fmt.Sprintf("task:%d", taskID),
 		fmt.Sprintf("hub=%d standby=%d candidates=%v", in.HubServerID, in.StandbyServerID, candidates), ipOf(c))
@@ -1116,6 +1119,7 @@ func (a *App) WGRegisterStandby(c *gin.Context) {
 		middleware.Fail(c, 2010, "登记备援失败: "+err.Error())
 		return
 	}
+	log.Printf("[wg] standby register：%s(#%d) endpoint=%s port=%d", srv.Name, in.ServerID, hub.Endpoint, hub.ListenPort)
 	a.audit(a.actorOf(c), "wg_standby_register", srv.Name,
 		fmt.Sprintf("endpoint=%s port=%d", hub.Endpoint, hub.ListenPort), ipOf(c))
 	// 面板侧 UDP 实测：登记成功后顺手验证「这台备援真的能被握手到吗」
@@ -1252,6 +1256,7 @@ func (a *App) WGTakeover(c *gin.Context) {
 		middleware.Fail(c, 5000, "任务创建失败: "+err.Error())
 		return
 	}
+	log.Printf("[wg] takeover task %d：目标 #%d，原现役 #%d，金丝雀 #%d", taskID, in.TargetServerID, oldID, canaryID)
 	nameOf := func(id int64) string {
 		if s, _ := a.DB.GetServer(id); s != nil {
 			return s.Name
@@ -1372,6 +1377,7 @@ func (a *App) WGSwitchHub(c *gin.Context) {
 		middleware.Fail(c, 5000, "任务创建失败: "+err.Error())
 		return
 	}
+	log.Printf("[wg] switch_hub task %d：目标 #%d，金丝雀 #%d", taskID, in.TargetServerID, canaryID)
 	nameOf := func(id int64) string {
 		if s, _ := a.DB.GetServer(id); s != nil {
 			return s.Name

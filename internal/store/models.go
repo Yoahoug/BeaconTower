@@ -579,6 +579,14 @@ func (db *DB) UpdateRegion(serverID int64, region, source string) error {
 	return err
 }
 
+// UpdateProfileGeo 回填画像里的国家/城市（重新定位/归属修复用）。
+// 单独一条窄更新：画像由采集链路整行回写，这些路径不能拿旧快照参与。
+func (db *DB) UpdateProfileGeo(serverID int64, country, city string) error {
+	_, err := db.SQL.Exec(`UPDATE server_profile SET geo_country = ?, geo_city = ? WHERE server_id = ?`,
+		country, city, serverID)
+	return err
+}
+
 func (db *DB) UpdatePowerCalibration(serverID int64, baseW float64, source string) error {
 	_, err := db.SQL.Exec(`UPDATE server_profile SET base_load_w = ?, base_load_source = ?
 		WHERE server_id = ?`, baseW, source, serverID)

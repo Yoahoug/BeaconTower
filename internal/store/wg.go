@@ -365,20 +365,24 @@ func (db *DB) StartWGTaskStep(id int64, now int64) error {
 	return err
 }
 
-// FinishWGTaskStep 步骤收尾（log 非空时覆盖追加）。
+// FinishWGTaskStep 步骤收尾：状态与结束时间落库，log 非空时**追加**到既有日志。
+// 执行期的分阶段日志由 AppendWGTaskStepLog 先写，收尾结论接在末尾——旧实现
+// 是整段覆盖，过程日志会被收尾结论吃掉（线上「执行中步骤无日志」的结构性成因）。
 func (db *DB) FinishWGTaskStep(id int64, status, log string, now int64) error {
 	if log != "" {
-		_, err := db.SQL.Exec(`UPDATE wg_task_step SET status=?, log=?, finished_at=? WHERE id=?`,
-			status, log, now, id)
+		_, err := db.SQL.Exec(`UPDATE wg_task_step SET status=?, finished_at=?,
+			log = CASE WHEN COALESCE(log,'') = '' THEN ? ELSE log || char(10) || ? END WHERE id=?`,
+			status, now, log, log, id)
 		return err
 	}
-	_, err := db.SQL.Exec(`UPDATE wg_task_step SET status=?, finished_at=? WHERE id=?`, status, now, id)
+	_, err := db.SQL.Exec(`UPDATE wg_task_step SET status=?, finished_at=? WHERE id=?`, status, now)
 	return err
 }
 
-// AppendWGTaskStepLog 追加一行步骤日志（保留既有内容）。
+// AppendWGTaskStepLog 追加一行步骤日志（保留既有内容，行间以换行分隔）。
 func (db *DB) AppendWGTaskStepLog(id int64, line string) error {
-	_, err := db.SQL.Exec(`UPDATE wg_task_step SET log = COALESCE(log,'') || ? WHERE id=?`, line+"\n", id)
+	_, err := db.SQL.Exec(`UPDATE wg_task_step SET log = CASE WHEN COALESCE(log,'') = ''
+		THEN ? ELSE log || char(10) || ? END WHERE id=?`, line, line, id)
 	return err
 }
 
@@ -386,8 +390,10 @@ func (db *DB) AppendWGTaskStepLog(id int64, line string) error {
 // 按 DB 现状筛，而不是调用方手里的旧快照：中途中止时前面的步骤已经跑过并写了
 // 状态与日志，拿旧快照逐个回写会把它们一并改成「未执行」，真实过程就查不到了。
 func (db *DB) SkipPendingWGTaskSteps(taskID int64, msg string, now int64) error {
-	_, err := db.SQL.Exec(`UPDATE wg_task_step SET status='skipped', log=?, finished_at=?
-		WHERE task_id=? AND status IN ('pending','running')`, msg, now, taskID)
+	// 追加而非覆盖：running 步骤可能已有分阶段过程日志，捕一段「未执行」会把它抹掉
+	_, err := db.SQL.Exec(`UPDATE wg_task_step SET status='skipped', finished_at=?,
+		log = CASE WHEN COALESCE(log,'') = '' THEN ? ELSE log || char(10) || ? END
+		WHERE task_id=? AND status IN ('pending','running')`, now, msg, msg, taskID)
 	return err
 }
 

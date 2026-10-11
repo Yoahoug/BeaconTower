@@ -65,6 +65,44 @@ const (
 	spokeTimeout = 90 * time.Second
 )
 
+// stepLogger 分阶段过程日志写入器：每行前缀 [+Δms]，Δ 相对本步开始。
+// 写入走 AppendWGTaskStepLog（保留既有内容），收尾结论由 FinishWGTaskStep 追加到
+// 末尾——过程与结论互不覆盖，任务执行中刷新即可看到进展（doc/17 §2）。
+// stepID <= 0 时静默（部分调用不带任务步骤）。
+func (r *Runner) stepLogger(stepID int64) func(format string, args ...any) {
+	start := time.Now()
+	return func(format string, args ...any) {
+		if stepID <= 0 {
+			return
+		}
+		line := fmt.Sprintf("[+%dms] %s", time.Since(start).Milliseconds(), fmt.Sprintf(format, args...))
+		_ = r.DB.AppendWGTaskStepLog(stepID, line)
+	}
+}
+
+// nodeLabel 日志里的节点称呼：优先节点名，兜底 #id。
+func (r *Runner) nodeLabel(serverID int64) string {
+	if srv, _ := r.DB.GetServer(serverID); srv != nil && strings.TrimSpace(srv.Name) != "" {
+		return srv.Name
+	}
+	return fmt.Sprintf("#%d", serverID)
+}
+
+// warnSuffix 预检 Warn 级问题的日志摘要（无则空串）。Warn 不阻断但要看得到：
+// 「同名接口将覆盖」这类信息只出现在向导弹窗里，日志里没有就排不了障。
+func warnSuffix(issues []Issue) string {
+	var msgs []string
+	for _, i := range issues {
+		if i.Level == Warn {
+			msgs = append(msgs, i.Msg)
+		}
+	}
+	if len(msgs) == 0 {
+		return ""
+	}
+	return "（提示：" + strings.Join(msgs, "；") + "）"
+}
+
 // ---------- 凭据与建连 ----------
 
 func (r *Runner) credFor(serverID int64) (*sshx.Cred, string, error) {
@@ -192,26 +230,43 @@ func (r *Runner) RunApply(taskID int64) {
 	}
 	// spokes 并行 goroutine 会写计数：必须原子操作（race 安全）
 	var okN, failN, skipN atomic.Int64
+	taskStart := time.Now()
+	hubN, spokeN := 0, 0
+	for _, st := range steps {
+		switch roleByServer[st.ServerID.Int64] {
+		case string(RoleHub), string(RoleStandby):
+			hubN++
+		case string(RoleSpoke):
+			spokeN++
+		}
+	}
+	log.Printf("[wg] task %d 开始：%d 个中心/备援 + %d 个成员", taskID, hubN, spokeN)
 	// 1) hub/standby 先行（串行；spoke 依赖其公钥与端点）
 	for _, st := range steps {
 		role := roleByServer[st.ServerID.Int64]
 		if role != string(RoleHub) && role != string(RoleStandby) {
 			continue
 		}
-		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
-		err := r.applyHubNode(context.Background(), network, st.ServerID.Int64, role, reprovByServer[st.ServerID.Int64])
+		started := time.Now()
+		_ = r.DB.StartWGTaskStep(st.ID, started.Unix())
+		err := r.applyHubNode(context.Background(), network, st.ServerID.Int64, role, reprovByServer[st.ServerID.Int64], st.ID)
 		if err != nil {
 			failN.Add(1)
 			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())
-			log.Printf("[wg] task %d hub step %d 失败: %v", taskID, st.ID, err)
+			log.Printf("[wg] task %d 中心 %s 失败，耗时 %s: %v", taskID, r.nodeLabel(st.ServerID.Int64),
+				time.Since(started).Round(time.Millisecond), err)
 		} else {
 			okN.Add(1)
 			// 配置完成即实测：面板侧对中心端点发真握手，结论写进步骤日志
-			note := ""
+			note := fmt.Sprintf("完成：耗时 %s", time.Since(started).Round(time.Millisecond))
 			if hubRow, _ := r.DB.GetWGHub(st.ServerID.Int64); hubRow != nil {
-				note = r.HubUDPNote(context.Background(), hubRow, hubRow.ListenPort, false)
+				if p := r.HubUDPNote(context.Background(), hubRow, hubRow.ListenPort, false); p != "" {
+					note += "\n" + p
+				}
 			}
 			_ = r.DB.FinishWGTaskStep(st.ID, "ok", note, time.Now().Unix())
+			log.Printf("[wg] task %d 中心 %s 完成，耗时 %s", taskID, r.nodeLabel(st.ServerID.Int64),
+				time.Since(started).Round(time.Millisecond))
 		}
 	}
 	// 2) spokes 并行
@@ -224,9 +279,11 @@ func (r *Runner) RunApply(taskID int64) {
 		runWG.Add(1)
 		go func(st *store.WGTaskStep) {
 			defer runWG.Done()
-			_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
-			skipped, err := r.applySpokeNode(context.Background(), network, st.ServerID.Int64, reprovByServer[st.ServerID.Int64])
+			started := time.Now()
+			_ = r.DB.StartWGTaskStep(st.ID, started.Unix())
+			skipped, err := r.applySpokeNode(context.Background(), network, st.ServerID.Int64, reprovByServer[st.ServerID.Int64], st.ID)
 			now := time.Now().Unix()
+			elapsed := time.Since(started).Round(time.Millisecond)
 			switch {
 			case err != nil && skipped:
 				skipN.Add(1)
@@ -234,10 +291,11 @@ func (r *Runner) RunApply(taskID int64) {
 			case err != nil:
 				failN.Add(1)
 				_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), now)
-				log.Printf("[wg] task %d spoke step %d 失败: %v", taskID, st.ID, err)
+				log.Printf("[wg] task %d 成员 %s 失败，耗时 %s: %v", taskID, r.nodeLabel(st.ServerID.Int64), elapsed, err)
 			default:
 				okN.Add(1)
-				_ = r.DB.FinishWGTaskStep(st.ID, "ok", "", now)
+				_ = r.DB.FinishWGTaskStep(st.ID, "ok", fmt.Sprintf("完成：耗时 %s", elapsed), now)
+				log.Printf("[wg] task %d 成员 %s 完成，耗时 %s", taskID, r.nodeLabel(st.ServerID.Int64), elapsed)
 			}
 		}(st)
 	}
@@ -265,8 +323,13 @@ func (r *Runner) RunApply(taskID int64) {
 		if note == "" {
 			continue
 		}
-		if prev := strings.TrimSpace(logByStep[st.ID]); prev != "" {
-			note = prev + "；" + note
+		// 去重：同一端口的成功实测在阶段 1 已写过就不再重复（结论行由 Finish 追加，
+		// 旧的「prev +；+ note」拼法会把同一句探测结论在日志里写两遍）。
+		// 结论有变（如再测变成失败）仍要追加，让回归可见。
+		prev := logByStep[st.ID]
+		if strings.Contains(prev, fmt.Sprintf("UDP %d 面板侧握手成功", hubRow.ListenPort)) &&
+			strings.Contains(note, "握手成功") {
+			continue
 		}
 		// 实测结论只给「已成功」的步骤补记；失败/跳过的步骤保持原状态——否则一个
 		// 配置失败的 hub 会因为有探测输出被翻成「成功」，用户看到绿标却连不上
@@ -287,16 +350,20 @@ func (r *Runner) RunApply(taskID int64) {
 		status = "partial"
 	}
 	_ = r.DB.FinishWGTask(taskID, status, summary, time.Now().Unix())
-	log.Printf("[wg] task %d 结束: %s (%s)", taskID, status, summary)
+	log.Printf("[wg] task %d 结束: %s (%s)，总耗时 %s", taskID, status, summary,
+		time.Since(taskStart).Round(time.Millisecond))
 }
 
 // applyHubNode 配置 hub/standby 节点：预检 → 安装 → 转发/防火墙 →
 // 全量重写 conf（含 DB 全部成员）→ 拉起 → 自检。
-func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, serverID int64, role string, reprovision bool) error {
+// stepID > 0 时分阶段往任务步骤日志写过程行（执行中即可见）。
+func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, serverID int64, role string, reprovision bool, stepID int64) error {
+	logStep := r.stepLogger(stepID)
 	hub, err := r.DB.GetWGHub(serverID)
 	if err != nil || hub == nil {
 		return errors.New("中心节点槽位不存在")
 	}
+	logStep("开始配置：角色 %s · 接口 %s · 端口 %d · 预算 %s", role, network.Iface, hub.ListenPort, hubTimeout)
 	// 退役槽位重新启用 = 新机器新身份：接管时它的密钥/端口被迁移给了目标机，
 	// 若沿用会把同一身份同时装在两台机器上（互相抢端点），必须先清掉再自愈生成。
 	if hub.Status == "retired" {
@@ -337,23 +404,35 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 		wgRole = RoleHub
 	}
 	probe.TargetSubnet = network.Subnet
-	if issues := Judge(probe, wgRole, network.Iface, hub.ListenPort, reprovision); HasErr(issues) {
+	issues := Judge(probe, wgRole, network.Iface, hub.ListenPort, reprovision)
+	if HasErr(issues) {
+		logStep("预检未通过：%s", joinIssues(issues))
 		return fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
-	if _, err := InstallWireGuard(dctx, conn, probe, true); err != nil {
+	logStep("预检通过：%s %s%s", probe.OsID, probe.OsVer, warnSuffix(issues))
+	if changed, err := InstallWireGuard(dctx, conn, probe, true); err != nil {
 		return err
+	} else if changed {
+		logStep("WireGuard 已安装（wireguard-tools + 防火墙工具）")
+	} else {
+		logStep("WireGuard 工具齐备，跳过安装")
 	}
 	if err := EnsureForward(dctx, conn); err != nil {
 		return fmt.Errorf("开启转发失败: %w", err)
 	}
+	logStep("IPv4 转发已开启")
 	// 非阻断：ufw 放行失败只记日志继续（云厂商安全组仍需人工放行，conf 该写还得写；
 	// 旧实现 return err 与注释相反，一次 ufw 抖动就让整个 hub 配置不被写入）
 	if err := EnsureUFWAllow(dctx, conn, hub.ListenPort); err != nil {
 		log.Printf("[wg] hub %d ufw 放行 UDP %d 失败（继续写入配置）: %v", serverID, hub.ListenPort, err)
+		logStep("ufw 放行 UDP %d 失败（继续写入配置）：%v", hub.ListenPort, err)
+	} else {
+		logStep("ufw 已放行 UDP %d（未启用 ufw 视为通过）", hub.ListenPort)
 	}
 	if err := BackupConf(dctx, conn, network.Iface); err != nil {
 		return err
 	}
+	logStep("原配置已备份（无原配置则跳过）")
 	// 全量成员渲染（hub 侧无 Endpoint/keepalive；PSK 解密注入）
 	peers, err := r.DB.ListWGPeers()
 	if err != nil {
@@ -375,6 +454,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 			PersistentKeepalive: 0,
 		})
 	}
+	logStep("配置渲染完成：%d 个成员 peer（含 PSK）", len(blocks))
 	priv := r.decrypt(hub.PrivateKeyEnc)
 	conf, err := HubConfFile(priv, network.HubIP+"/"+strconv.Itoa(bits), hub.ListenPort, network.MTU, blocks)
 	if err != nil {
@@ -383,6 +463,7 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if err := WriteConf(dctx, conn, network.Iface, conf); err != nil {
 		return fmt.Errorf("写入配置失败: %w", err)
 	}
+	logStep("配置已写入 %s（权限 600，%d 字节）", network.Iface, len(conf))
 	if err := BringUp(dctx, conn, network.Iface, probe.Systemd); err != nil {
 		return fmt.Errorf("拉起接口失败: %w", err)
 	}
@@ -390,20 +471,27 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 	if err != nil {
 		return err
 	}
-	up := false
+	up, peerN := false, 0
 	for _, d := range devs {
 		if d.Interface == network.Iface {
 			up = true
+			peerN = len(d.Peers)
 		}
 	}
 	if !up {
 		return errors.New("接口已写入但未处于运行状态")
 	}
+	logStep("接口已启动，自检通过：%s 运行中（%d 个 peer）", network.Iface, peerN)
 	// 端点缺失时自动解析（spoke 拨出目标）
 	if hub.Endpoint == "" {
 		if ep := r.resolveEndpoint(serverID, hub.ListenPort); ep != "" {
 			hub.Endpoint = ep
 		}
+	}
+	if hub.Endpoint == "" {
+		logStep("警告：中心端点未解析（画像公网 IP 与凭据 host 都为空），成员没有拨入目标")
+	} else {
+		logStep("中心端点：%s", hub.Endpoint)
 	}
 	hub.Status = "ok"
 	hub.LastError = ""
@@ -413,8 +501,9 @@ func (r *Runner) applyHubNode(ctx context.Context, network *store.WGNetwork, ser
 }
 
 // applySpokeNode 接入 spoke 节点：预检 → 安装 → 写 conf → 拉起 → ping hub 验证。
-// 返回 skipped=true 表示无需执行（已在线）。
-func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, serverID int64, reprovision bool) (skipped bool, err error) {
+// 返回 skipped=true 表示无需执行（已在线）。stepID > 0 时写分阶段过程日志。
+func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, serverID int64, reprovision bool, stepID int64) (skipped bool, err error) {
+	logStep := r.stepLogger(stepID)
 	peer, err := r.DB.GetWGPeerByServer(serverID)
 	if err != nil || peer == nil {
 		return false, errors.New("成员记录不存在")
@@ -422,12 +511,14 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	// 已在线成员无需重配；但 reprovision（重下发/校正）必须真跑一遍，
 	// 否则「面板认为在线」的漂移配置永远校正不了
 	if peer.Status == "online" && !reprovision {
+		logStep("成员已在线且未带校正标志，无需重配")
 		return true, errors.New("节点已在线")
 	}
 	hub, err := r.DB.GetWGHub(network.ActiveHubServerID)
 	if err != nil || hub == nil || !ValidKey(hub.PublicKey) {
 		return false, errors.New("中心节点未就绪（缺少公钥），请先配置中心节点")
 	}
+	logStep("开始接入：%s → %s（接口 %s，预算 %s）", peer.WgIP, hub.Endpoint, network.Iface, spokeTimeout)
 	bits, err := subnetBits(network.Subnet)
 	if err != nil {
 		return false, err
@@ -446,11 +537,18 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 		return false, fmt.Errorf("预检失败: %w", err)
 	}
 	probe.TargetSubnet = network.Subnet
-	if issues := Judge(probe, RoleSpoke, network.Iface, 0, reprovision); HasErr(issues) {
+	issues := Judge(probe, RoleSpoke, network.Iface, 0, reprovision)
+	if HasErr(issues) {
+		logStep("预检未通过：%s", joinIssues(issues))
 		return false, fmt.Errorf("预检不通过: %s", joinIssues(issues))
 	}
-	if _, err := InstallWireGuard(dctx, conn, probe, false); err != nil {
+	logStep("预检通过：%s %s%s", probe.OsID, probe.OsVer, warnSuffix(issues))
+	if changed, err := InstallWireGuard(dctx, conn, probe, false); err != nil {
 		return false, err
+	} else if changed {
+		logStep("WireGuard 已安装（wireguard-tools）")
+	} else {
+		logStep("WireGuard 工具齐备，跳过安装")
 	}
 	if err := BackupConf(dctx, conn, network.Iface); err != nil {
 		return false, err
@@ -469,12 +567,21 @@ func (r *Runner) applySpokeNode(ctx context.Context, network *store.WGNetwork, s
 	if err := WriteConf(dctx, conn, network.Iface, conf); err != nil {
 		return false, fmt.Errorf("写入配置失败: %w", err)
 	}
+	logStep("配置已写入 %s（权限 600，%d 字节，中心端点 %s）", network.Iface, len(conf), endpoint)
 	if err := BringUp(dctx, conn, network.Iface, probe.Systemd); err != nil {
 		return false, fmt.Errorf("拉起接口失败: %w", err)
 	}
 	online, detail, err := VerifySpoke(dctx, conn, network.HubIP, network.Iface, hub.PublicKey)
 	if err != nil {
 		return false, err
+	}
+	if online {
+		if detail == "" {
+			detail = "接口运行中"
+		}
+		logStep("接口已启动，入网验证通过：%s", detail)
+	} else {
+		logStep("接口已启动，入网验证未通过：%s", detail)
 	}
 	now := time.Now().Unix()
 	peer.CheckedAt.Scan(now)

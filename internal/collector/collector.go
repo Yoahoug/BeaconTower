@@ -310,8 +310,12 @@ func (c *Collector) applySample(srv *store.Server, cred *store.Credential, res *
 	}
 	if raw.PubIP != "" && raw.PubIP != prof.PublicIP {
 		prof.PublicIP = raw.PubIP
+		// 只在解析出文本时回写：解析失败（nil）不动既有 region，也不给 auto 节点
+		// 写空值/占位文案——「未定位」落库的写入口之一（doc/17）
 		if r := geoip.Lookup(raw.PubIP); r != nil && srv.RegionSource == "auto" && c.db != nil {
-			_ = c.db.UpdateRegion(srv.ID, geoip.RegionText(r), "auto")
+			if text := geoip.RegionText(r); text != "" {
+				_ = c.db.UpdateRegion(srv.ID, text, "auto")
+			}
 		}
 		prof.GeoCountry, prof.GeoCity = geoCountryCity(raw.PubIP)
 	}

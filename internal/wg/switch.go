@@ -93,7 +93,7 @@ func (r *Runner) RunSwitchHub(taskID int64) {
 	hubOK := true
 	for _, st := range hubSteps {
 		_ = r.DB.StartWGTaskStep(st.ID, time.Now().Unix())
-		if err := r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby), true); err != nil {
+		if err := r.applyHubNode(context.Background(), network, in.TargetServerID, string(RoleStandby), true, st.ID); err != nil {
 			hubOK = false
 			failN++
 			_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+err.Error(), time.Now().Unix())

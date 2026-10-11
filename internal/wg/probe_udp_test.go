@@ -211,6 +211,8 @@ func TestIsHandshakeResponse(t *testing.T) {
 
 func TestProbeUDPWithStubResponder(t *testing.T) {
 	// 假响应方：收到发起包后回一个 type 2（receiver index 取自请求），验证探测成功路径。
+	// 回包前睡 3ms：Windows 上 time.Now() 的粒度在毫秒级（相邻调用常返回同刻，
+	// 实测本机 500/500 次同刻），亚毫秒的即时回包会把 RTT 量化成 0，断言失去意义。
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -226,6 +228,7 @@ func TestProbeUDPWithStubResponder(t *testing.T) {
 			if n != wgInitMsgLen {
 				continue
 			}
+			time.Sleep(3 * time.Millisecond)
 			_, _ = pc.WriteTo(respPacket(binary.LittleEndian.Uint32(buf[4:8])), addr)
 		}
 	}()
@@ -253,6 +256,56 @@ func TestProbeUDPWithStubResponder(t *testing.T) {
 	}
 	if out.RTT >= budget/6 {
 		t.Fatalf("RTT 应为一个往返的量级（< %v），实际 %v", budget/6, out.RTT)
+	}
+}
+
+// 第二发才收到回应：尝试序号必须报 2，单次 RTT 是第二发自身的往返，
+// 累计 RTT 含第一发的等待——「1.173s」这类数字要能分辨是链路慢还是丢包重试（doc/17）。
+func TestProbeUDPSecondAttemptSucceeds(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 256)
+		seen := 0
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n != wgInitMsgLen {
+				continue
+			}
+			seen++
+			if seen == 1 {
+				continue // 模拟丢包：第一发丢弃
+			}
+			time.Sleep(3 * time.Millisecond) // 同 TestProbeUDPWithStubResponder：避开毫秒级时钟粒度
+			_, _ = pc.WriteTo(respPacket(binary.LittleEndian.Uint32(buf[4:8])), addr)
+		}
+	}()
+
+	kp, _ := GenerateKeyPair()
+	priv, _ := decodeKey(kp.Private)
+	resp := newTestResponder(t)
+	budget := 900 * time.Millisecond // 尝试间隔 gap = budget/6 = 150ms
+	out, err := ProbeUDP(context.Background(), pc.LocalAddr().String(), resp.pub, priv, budget)
+	if err != nil {
+		t.Fatalf("探测不应报错: %v", err)
+	}
+	if !out.OK || out.Attempt != 2 {
+		t.Fatalf("第二发才回应应报第 2 次尝试成功: %+v", out)
+	}
+	if out.SingleRTT <= 0 || out.SingleRTT > 100*time.Millisecond {
+		t.Fatalf("单次 RTT 应为第二发自身的往返（3ms 量级）: %v", out.SingleRTT)
+	}
+	if out.RTT < out.SingleRTT {
+		t.Fatalf("累计 RTT 不应小于单次 RTT: %v vs %v", out.RTT, out.SingleRTT)
+	}
+	if out.RTT < 100*time.Millisecond {
+		t.Fatalf("累计 RTT 应包含第一发的等待（>=100ms）: %v", out.RTT)
 	}
 }
 

@@ -126,7 +126,7 @@ func (r *Runner) RunTakeover(taskID int64) {
 				_ = r.DB.FinishWGTaskStep(st.ID, "failed", prepFailed, time.Now().Unix())
 				break
 			}
-			if err := r.applyHubNode(ctx, network, in.TargetServerID, string(RoleStandby), true); err != nil {
+			if err := r.applyHubNode(ctx, network, in.TargetServerID, string(RoleStandby), true, st.ID); err != nil {
 				prepFailed = err.Error()
 				_ = r.DB.FinishWGTaskStep(st.ID, "failed", "失败: "+prepFailed, time.Now().Unix())
 				break

@@ -256,8 +256,10 @@ func (a *App) CreateServer(c *gin.Context) {
 		middleware.AbortCode(c, http.StatusOK, 5000, "服务器内部错误")
 		return
 	}
+	// 显式 region 混入展示占位文案（历史行为：前端会把「未定位」预填回传）时按
+	// 「未指定」处理：否则它会以 manual 落库，自动定位/重定位永久跳过（doc/17）
 	region, source := "", "auto"
-	if in.Region != nil && strings.TrimSpace(*in.Region) != "" {
+	if in.Region != nil && strings.TrimSpace(*in.Region) != "" && !geoip.IsPlaceholder(*in.Region) {
 		region, source = strings.TrimSpace(*in.Region), "manual"
 	} else if in.Probe != nil && in.Probe.Geo != nil {
 		if r := geoip.Lookup(in.Probe.Geo.PublicIP); r != nil {
@@ -344,9 +346,15 @@ func (a *App) UpdateServer(c *gin.Context) {
 		srv.Enabled = toBool(v)
 	}
 	if v, ok := in["region"]; ok {
-		if s := strings.TrimSpace(toStr(v)); s != "" {
+		s := strings.TrimSpace(toStr(v))
+		switch {
+		case s != "" && !geoip.IsPlaceholder(s):
 			srv.Region, srv.RegionSource = s, "manual"
-		} else {
+		case geoip.IsPlaceholder(s):
+			// 占位文案按空值处理：清掉并交还自动定位——否则 manual 会把它永久固化，
+			// 采集侧自愈（仅 auto）从此再也不碰这台节点（doc/17「未定位」事故）
+			srv.Region, srv.RegionSource = "", "auto"
+		default:
 			srv.RegionSource = "auto"
 		}
 	}
@@ -577,18 +585,29 @@ func (a *App) Relocate(c *gin.Context) {
 		ip = cred.Host
 	}
 	r := geoip.Lookup(ip)
+	if r == nil {
+		// 解析链全败（无离线库且在线源不可达）：如实报失败，不写任何值——
+		// 旧实现会把占位文案「未定位」写进库，正是事故的写入口之一（doc/17）
+		middleware.Fail(c, 2001, "定位失败：IP 归属解析不可用。可先在数据目录放置离线库（geolite2-city.mmdb），或配置 BEACON_PROXY_URL 后重试")
+		return
+	}
+	// 画像 geo 是原始归属数据（只读回显），定位成功即回填，与 region 是否人工指定无关
+	_ = a.DB.UpdateProfileGeo(id, r.Country, r.City)
 	region := geoip.RegionText(r)
 	source := "auto"
-	if r != nil && r.Country == "LAN" {
-		source = "manual"
+	if r.Country == "LAN" {
+		source = "manual" // 内网节点没有可跟随的自动归属，钉住
 	}
-	if srv.RegionSource == "auto" {
+	updated := false
+	if srv.RegionSource == "auto" && region != "" {
 		_ = a.DB.UpdateRegion(id, region, source)
 		srv.Region, srv.RegionSource = region, source
+		updated = true
 	}
 	a.audit(a.actorOf(c), "server_locate", "server:"+itoa(id),
 		"重新定位节点 "+srv.Name+" → "+region, ipOf(c))
-	middleware.OK(c, gin.H{"ok": true, "region": srv.Region, "region_source": srv.RegionSource})
+	middleware.OK(c, gin.H{"ok": true, "region": srv.Region, "region_source": srv.RegionSource,
+		"updated": updated, "resolved": gin.H{"country": r.Country, "city": r.City, "region": region}})
 }
 
 // ---------- 试连 / 密钥引导 ----------
@@ -662,6 +681,10 @@ func (a *App) TestConnection(c *gin.Context) {
 func (a *App) respondProbe(c *gin.Context, res *collector.DialResult) {
 	raw := res.Raw
 	geo := geoip.Lookup(raw.PubIP)
+	country, city := "", ""
+	if geo != nil {
+		country, city = geo.Country, geo.City
+	}
 	middleware.OK(c, gin.H{
 		"ok": true, "latency_ms": res.LatencyMs,
 		"profile": gin.H{
@@ -672,8 +695,8 @@ func (a *App) respondProbe(c *gin.Context, res *collector.DialResult) {
 			"power": gin.H{"rapl": raw.HasRapl, "battery": raw.HasBat,
 				"base_load_w": 0, "base_load_source": "default"},
 		},
-		"geo": gin.H{"public_ip": raw.PubIP, "country": geo.Country,
-			"city": geo.City, "region_text": geoip.RegionText(geo)},
+		"geo": gin.H{"public_ip": raw.PubIP, "country": country,
+			"city": city, "region_text": geoip.RegionText(geo)},
 		"host_key_fp": res.HostKeyFP,
 	})
 }
@@ -692,6 +715,10 @@ func (a *App) testBootstrap(c *gin.Context, ctx context.Context, cred *collector
 	}
 	raw := boot.Raw
 	geo := geoip.Lookup(raw.PubIP)
+	country, city := "", ""
+	if geo != nil {
+		country, city = geo.Country, geo.City
+	}
 	middleware.OK(c, gin.H{
 		"ok": true, "latency_ms": boot.LatencyMs, "bootstrap": true,
 		// 私钥内存态直传保存请求（不落 sessionStorage、不回显编辑表单）
@@ -704,8 +731,8 @@ func (a *App) testBootstrap(c *gin.Context, ctx context.Context, cred *collector
 			"power": gin.H{"rapl": raw.HasRapl, "battery": raw.HasBat,
 				"base_load_w": 0, "base_load_source": "default"},
 		},
-		"geo": gin.H{"public_ip": raw.PubIP, "country": geo.Country,
-			"city": geo.City, "region_text": geoip.RegionText(geo)},
+		"geo": gin.H{"public_ip": raw.PubIP, "country": country,
+			"city": city, "region_text": geoip.RegionText(geo)},
 		"host_key_fp": boot.HostKeyFP,
 	})
 }

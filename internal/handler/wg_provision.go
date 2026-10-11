@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -134,6 +135,8 @@ func (a *App) WGHubProvision(c *gin.Context) {
 		return
 	}
 	go a.WG.RunApply(taskID)
+	log.Printf("[wg] provision：%s(#%d) → %s（端口 %d，task %d，reprovision=%v）",
+		srv.Name, in.ServerID, role, hubRow.ListenPort, taskID, reprovision)
 	a.audit(a.actorOf(c), "wg_hub_provision", srv.Name,
 		fmt.Sprintf("task:%d role=%s port=%d reprovision=%v", taskID, role, hubRow.ListenPort, reprovision), ipOf(c))
 	middleware.OK(c, gin.H{"task_id": taskID, "role": role, "listen_port": hubRow.ListenPort})
@@ -218,6 +221,11 @@ func (a *App) WGPeerReissue(c *gin.Context) {
 			filename = wgConfFileName(peer.Name, wgConfTag(netRow, hub.ServerID))
 		}
 	}
+	verb := "仅重新下发"
+	if rotated {
+		verb = "轮换密钥"
+	}
+	log.Printf("[wg] reissue：成员 %s(#%d) %s，重建中心 %d/%d 成功", peer.Name, peer.ID, verb, okN, total)
 	a.audit(a.actorOf(c), "wg_peer_reissue", peer.Name,
 		fmt.Sprintf("rotated=%v ok=%d/%d err=%s", rotated, okN, total, renderErr), ipOf(c))
 	middleware.OK(c, gin.H{

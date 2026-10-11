@@ -276,6 +276,13 @@ func (r *Runner) HubUDPNote(ctx context.Context, hub *store.WGHub, port int, inc
 	if !out.Result.OK {
 		return out.FailMessage(port)
 	}
-	return fmt.Sprintf("UDP %d 面板侧握手成功（%s，探针成员 %s）：端口已放行",
-		port, out.Result.RTT.Round(time.Millisecond), out.Peer)
+	// 第一发即成功只报纯往返；多试才成功必须带尝试次数与单次 RTT——否则「1.173s」
+	// 会被误读成链路 RTT（那是「第 N 发才收到回应」的累计计时，doc/17 附录 A）
+	if out.Result.Attempt <= 1 || out.Result.SingleRTT <= 0 {
+		return fmt.Sprintf("UDP %d 面板侧握手成功（%s，探针成员 %s）：端口已放行",
+			port, out.Result.RTT.Round(time.Millisecond), out.Peer)
+	}
+	return fmt.Sprintf("UDP %d 面板侧握手成功（第 %d 次尝试才成功：单次 RTT %s，自首包累计 %s，探针成员 %s）：端口已放行",
+		port, out.Result.Attempt, out.Result.SingleRTT.Round(time.Millisecond),
+		out.Result.RTT.Round(time.Millisecond), out.Peer)
 }

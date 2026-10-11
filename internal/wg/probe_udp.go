@@ -201,6 +201,10 @@ type ProbeUDPResult struct {
 	RTT     time.Duration
 	Target  string
 	Attempt int
+	// SingleRTT = 真正收到回应的那一包自身的往返（不含先前尝试的等待）；
+	// RTT = 自首包发出起的累计值。两者接近说明第一发即成功；SingleRTT 明显更小
+	// 则说明前面若干次尝试没有拿到回应（丢包/慢回），报「RTT」必须带上尝试次数。
+	SingleRTT time.Duration
 	// Refused = 收到 ICMP 端口不可达（写/读时报 ECONNREFUSED）：目标主机在线、路径通，
 	// 但该端口确实没有监听——与「安全组静默丢包」是完全不同的结论。
 	Refused bool
@@ -233,7 +237,10 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 		deadline = dl
 	}
 	gap := timeout / time.Duration(2*attempts)
-	idxes := make(map[uint32]bool, attempts)
+	// 逐包记「尝试序号 + 发出时刻」：回应可能对应先前某一次尝试，报出的尝试序号
+	// 与单次 RTT 都以真正收到回应的那一包为准（累计 RTT 仍自首包起算）。
+	attemptOf := make(map[uint32]int, attempts)
+	sentAt := make(map[uint32]time.Time, attempts)
 	buf := make([]byte, 256)
 	start := time.Now()
 
@@ -250,9 +257,13 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 				}
 				return false
 			}
-			for idx := range idxes {
+			got := time.Now()
+			for idx, attemptNo := range attemptOf {
 				if IsHandshakeResponse(buf[:n], idx) {
-					res.OK, res.RTT = true, time.Since(start)
+					res.OK = true
+					res.Attempt = attemptNo
+					res.SingleRTT = got.Sub(sentAt[idx])
+					res.RTT = got.Sub(start)
 					return true
 				}
 			}
@@ -278,7 +289,8 @@ func ProbeUDP(ctx context.Context, endpoint string, responderPub, initiatorPriv 
 			}
 			return res, fmt.Errorf("UDP 发送失败: %w", err)
 		}
-		idxes[idx] = true
+		attemptOf[idx] = i
+		sentAt[idx] = time.Now()
 		res.Attempt = i
 		// 收到即返回；最后一轮把剩余预算都用来收
 		until := start.Add(time.Duration(i) * gap)
