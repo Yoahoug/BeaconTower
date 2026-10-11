@@ -8,7 +8,7 @@
 
 | 项 | 实现 |
 | --- | --- |
-| manifest | `web/public/manifest.webmanifest`（手写，字段语义可见）：`display: standalone`、`start_url: /`、`scope: /`、`theme_color #e8f0fd`、`background_color #edf1f9` |
+| manifest | `web/public/manifest.webmanifest`（手写，字段语义可见）：`display: standalone`、`start_url: /`、`scope: /`；`theme_color` / `background_color` 随设计系统基调取值（v3 深色重构后需同步更新） |
 | 图标 | `web/public/icons/`：192 / 512 / 512 maskable（满幅品牌渐变 + 信标缩至 78% 安全区）/ 180 apple-touch-icon，全部由 index.html 内联 SVG logo 生成（cairosvg），满幅渐变底避免系统给透明角填白 |
 | Service Worker | `vite-plugin-pwa`（devDependency，generateSW 模式）：Workbox 预缓存 app shell（构建产物 ~30 个条目），`registerType: 'autoUpdate'`——新版本下载后下次导航生效，不打扰使用中用户 |
 | API 缓存策略 | `/api/*` 一律 **NetworkOnly**（含 SSE）；`navigateFallback` 指向 index.html 并 denylist `/api/`。不用 NetworkFirst：断网时把旧缓存当新鲜数据展示，监控数据宁缺毋假——离线数据由 §3 的快照机制负责并明确标注 |
@@ -20,7 +20,7 @@
 - **底部玻璃 tab bar**（`components/TabBar.vue`）：只有公开路由（概览/穿透/组网），遵守「公开 UI 不设任何管理入口」约束；选中态与侧栏同语言（白色药丸 + 品牌色）；`env(safe-area-inset-bottom)` 适配 home indicator。
 - **全局手势卫生**（`@media (pointer: coarse)`）：`-webkit-tap-highlight-color: transparent`（去 iOS 点按灰块）、`touch-action: manipulation`（消除双击缩放延迟）、`overscroll-behavior-y: none`（PWA 独立窗口下拉不露白底）。
 - **安全区**：`.app-shell` 顶部 `env(safe-area-inset-top)`（配 black-translucent 状态栏）；内容区/页脚底部为 tab bar + home indicator 让位。
-- **玻璃规范**：tab bar 与引导卡沿用 tokens 的玻璃变量（`--bt-glass-hi`/`--bt-glass-border` + backdrop-blur），并带 `prefers-reduced-transparency` 降级（doc/10 §3 要求）。
+- **玻璃质感**：tab bar 与引导卡沿用当前设计系统的玻璃配方（backdrop-blur + 半透明描边 + 顶部高光），并带 `prefers-reduced-transparency` 降级。
 
 ## 3. 离线体验（断网不白屏）
 
