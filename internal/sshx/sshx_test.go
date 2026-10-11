@@ -347,3 +347,25 @@ func TestTailWriterChunked(t *testing.T) {
 		t.Fatal("超限块应保留其尾部")
 	}
 }
+
+// TestClassifyErrNoDoublePrefix v2.7.0 线上事故回归：authMethods 给出的
+// 「认证失败：私钥为空…」不得再被包一层成「认证失败：认证失败：…」。
+func TestClassifyErrNoDoublePrefix(t *testing.T) {
+	// key 认证但私钥为空
+	_, err := authMethods(&Cred{AuthType: "key"})
+	if err == nil {
+		t.Fatalf("期望私钥为空错误")
+	}
+	got := ClassifyErr(err).Error()
+	if strings.Count(got, "认证失败") != 1 {
+		t.Fatalf("分类后应只有一层「认证失败」前缀: %q", got)
+	}
+	if !strings.Contains(got, "修复密钥") {
+		t.Fatalf("私钥为空文案应指向修复路径: %q", got)
+	}
+	// 已分类消息透传不重复包裹
+	pre := errors.New("认证失败：用户名或密码/密钥错误")
+	if got := ClassifyErr(pre).Error(); got != pre.Error() {
+		t.Fatalf("已分类消息应原样透传: %q", got)
+	}
+}

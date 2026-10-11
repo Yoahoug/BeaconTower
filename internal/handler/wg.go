@@ -349,12 +349,22 @@ func (a *App) WGPlan(c *gin.Context) {
 	if udpIss, _ := a.wgUDPProbeIssues(ctx, hubID, hubPort); len(udpIss) > 0 {
 		hubIssues = append(hubIssues, udpIss...)
 	}
+	// blocked 必须覆盖全部参与方：成员级 error（如本机 key 认证私钥为空）与中心级
+	// 同样阻断执行。只算 hubIssues 时成员红标只展示不拦截，「确认执行组网」
+	// 会在必败状态下可点（v2.7.0 线上实测）。
+	allBlocked := wg.HasErr(hubIssues)
+	for _, iss := range issuesByServer {
+		if allBlocked {
+			break
+		}
+		allBlocked = wg.HasErr(iss)
+	}
 	middleware.OK(c, gin.H{
 		"network": gin.H{"subnet": netRow.Subnet, "hub_ip": netRow.HubIP, "iface": netRow.Iface,
 			"keepalive": netRow.Keepalive, "mtu": netRow.MTU},
 		"hub":     hubViewWithIssues(hubView, hubIssues),
 		"spokes":  a.wgSpokesView(spokes, alloc, issuesByServer),
-		"blocked": wg.HasErr(hubIssues),
+		"blocked": allBlocked,
 	})
 	a.audit(a.actorOf(c), "wg_plan", fmt.Sprintf("hub:%d", hubID), "预检探测", ipOf(c))
 }

@@ -31,9 +31,12 @@ const repairPassword = ref('')
 const repairing = ref(false)
 const repairError = ref('')
 
-// 可修复 = 密钥登录、有 SSH 凭据、且最近采集失败（认证类错误才走重装密钥）
+// 可修复 = 密钥登录且有 SSH 凭据，且满足其一：
+// ① 最近采集失败（远端节点，密钥可能失联）；② ssh_ready=false（本机节点或
+// 引导期事故遗留的「key 认证 + 私钥缺失」——采集不走 SSH 不会有采集错误，按凭据形态判定）
 function repairable(s) {
-  return s.ssh?.auth_type === 'key' && s.ssh?.ssh_ready && !!s.power?.last_error
+  if (s.ssh?.auth_type !== 'key') return false
+  return !!s.power?.last_error || !s.ssh?.ssh_ready
 }
 
 function openRepair(s) {
@@ -253,6 +256,14 @@ onMounted(() => {
             <div v-if="s.power?.last_error" class="detail-error" role="alert">
               <AppIcon name="warn" aria-hidden="true" />最近采集失败：{{ s.power.last_error }}
               <button v-if="repairable(s)" class="bt-btn bt-btn--ghost bt-btn--sm" type="button" style="margin-left: 8px" @click="openRepair(s)">
+                修复密钥
+              </button>
+            </div>
+            <!-- 本机/引导事故：key 认证但私钥缺失（ssh_ready=false），采集无错误可挂，
+                 独立于 last_error 展示修复入口 -->
+            <div v-if="!s.power?.last_error && repairable(s)" class="detail-error" role="alert">
+              <AppIcon name="warn" aria-hidden="true" />密钥认证缺失私钥（密钥引导未完成），组网/穿透托管将无法连接此节点
+              <button class="bt-btn bt-btn--ghost bt-btn--sm" type="button" style="margin-left: 8px" @click="openRepair(s)">
                 修复密钥
               </button>
             </div>

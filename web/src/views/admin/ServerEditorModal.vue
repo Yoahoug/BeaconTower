@@ -158,6 +158,12 @@ async function runProbe() {
       bootstrap_key: auto,
       server_id: props.server?.id || 0,
     })
+    // 记录引导时的连接信息：保存时校验私钥装到的是同一台机器
+    if (probe.value) {
+      probe.value._bootHost = form.value.host
+      probe.value._bootPort = Number(form.value.port) || 22
+      probe.value._bootUser = form.value.sshUsername
+    }
     writeDraft()
   } catch (e) {
     probe.value = null
@@ -174,17 +180,28 @@ async function save() {
   const sshFilled = !isSelf.value || !!form.value.host
   const auto = form.value.authType === 'auto'
   const bootKey = probe.value?.bootstrap && probe.value?.panel_private_key
+  // 引导密钥只在「试连时连接信息与当前表单一致」才有效——改过地址/端口后
+  // 私钥装到的是旧机器，必须重新试连
+  const bootKeyFresh =
+    bootKey &&
+    probe.value?._bootHost === form.value.host &&
+    Number(probe.value?._bootPort) === Number(form.value.port) &&
+    probe.value?._bootUser === form.value.sshUsername
   if (sshFilled) {
     if (!form.value.host || !form.value.sshUsername) return (saveError.value = '请填写 SSH 地址与用户名')
-    const hadCred = !!props.server?.ssh?.has_password || !!props.server?.ssh?.has_key
-    if (auto && !bootKey && !hadCred) {
-      // 引导密钥必须先试连装机（私钥只存在于试连响应里，无画像不能保存）
+    const hadKey = !!props.server?.ssh?.has_key
+    if (auto && !bootKeyFresh && !hadKey) {
       return (saveError.value = '请先「测试连接」完成密钥引导（自动生成密钥需一次成功试连）')
     }
-    if (!auto && !hadCred && form.value.authType === 'password' && !form.value.password) {
+    if (auto && !bootKeyFresh && hadKey) {
+      // 存量节点重选自动密钥但没重新引导：回落保留原有密钥（后端硬校验兜底）
+      // ——这里不阻塞保存，但提示用户；payload 里不覆盖 panel_private_key
+      return (saveError.value = '密钥引导未完成：请先点「测试连接并安装密钥」，或切换到对应认证方式后保存')
+    }
+    if (!auto && !hadKey && form.value.authType === 'password' && !form.value.password) {
       return (saveError.value = '请填写 SSH 密码')
     }
-    if (!auto && !hadCred && form.value.authType === 'key' && !form.value.privateKey) {
+    if (!auto && !hadKey && form.value.authType === 'key' && !form.value.privateKey) {
       return (saveError.value = '请粘贴 SSH 私钥')
     }
   }
@@ -208,8 +225,9 @@ async function save() {
         password: auto || form.value.authType !== 'password' ? undefined : form.value.password || undefined,
         private_key: auto ? undefined : form.value.privateKey || undefined,
         passphrase: auto ? undefined : form.value.passphrase || undefined,
-        // 试连 bootstrap 生成的面板私钥原样带回（不经浏览器暂存）
-        panel_private_key: auto && bootKey ? probe.value.panel_private_key : undefined,
+        // 试连 bootstrap 生成的面板私钥原样带回（不经浏览器暂存）；
+        // 引导过期（改过连接信息）时不得携带，后端硬校验会拒绝 key+无私钥
+        panel_private_key: auto && bootKeyFresh ? probe.value.panel_private_key : undefined,
       }
       payload.probe = probe.value && !probe.value.cached ? { ...probe.value, panel_private_key: undefined } : null
     }

@@ -125,6 +125,10 @@ type sshInput struct {
 	// PanelPrivateKey 面板自管密钥（试连 bootstrap 返回的私钥原样带回落库）。
 	// 命名与用户粘贴的 private_key 区分，避免前端误把用户输入当引导密钥。
 	PanelPrivateKey string `json:"panel_private_key,omitempty"`
+	// BootstrapKey/ServerID 试连引导标记（前端放在 ssh 对象内透传，v2.7.1 起兼容
+	// 顶层与 ssh 内两种位置——试连即装钥，密码一次性使用不落库）。
+	BootstrapKey bool  `json:"bootstrap_key,omitempty"`
+	ServerID     int64 `json:"server_id,omitempty"`
 }
 
 type probeInput struct {
@@ -216,6 +220,17 @@ func (a *App) CreateServer(c *gin.Context) {
 		in.SSH.AuthType = "key"
 		in.SSH.PrivateKey = in.SSH.PanelPrivateKey
 		in.SSH.PanelPrivateKey = ""
+		// 引导密钥模式下密码只作一次性引导，绝不落库（测试抓出：原实现
+		// 只换了私钥，密码仍被加密存储）
+		in.SSH.Password = ""
+		in.SSH.Passphrase = ""
+	}
+	// 硬校验：key 认证必须有私钥。缺守卫时前端把 auth_type 归一为 key 而
+	// panel_private_key 缺失（引导标记没送达后端）会存出「key 认证 + 私钥为空」
+	// 的失联节点（v2.7.0 线上事故：采集/组网全部「认证失败：私钥为空」）。
+	if in.SSH.AuthType == "key" && in.SSH.PrivateKey == "" {
+		middleware.Fail(c, 1001, "参数错误：密钥认证需要私钥——请先「测试连接」完成密钥引导，或改用密码认证")
+		return
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -373,6 +388,12 @@ func (a *App) UpdateServer(c *gin.Context) {
 				cred.AuthType = "key"
 				cred.PasswordEnc = nil
 				cred.PassphraseEnc = nil
+			}
+			// 硬校验：不允许存出「key 认证 + 私钥为空」的失联状态（v2.7.0 线上事故）。
+			// 翻转为 key 但没带私钥 = 引导没完成，原凭据原样保留。
+			if cred.AuthType == "key" && len(cred.PrivateKeyEnc) == 0 {
+				middleware.Fail(c, 1001, "参数错误：密钥认证需要私钥——请先「测试连接」完成密钥引导，或改用密码认证")
+				return
 			}
 			if pv, ok := m["password"]; ok && toStr(pv) != "" {
 				enc, err := crypto.EncryptString(a.Master, toStr(pv))
@@ -589,7 +610,8 @@ func (a *App) TestConnection(c *gin.Context) {
 		Password   string `json:"password"`
 		PrivateKey string `json:"private_key"`
 		Passphrase string `json:"passphrase"`
-		// 密钥引导（v2.7）：试连成功即装钥，密码仅一次性使用不落库
+		// 密钥引导（v2.7）：试连成功即装钥，密码仅一次性使用不落库。
+		// v2.7.1 兼容：前端把 bootstrap_key 放在 ssh 对象里，两处任一为 true 即引导。
 		BootstrapKey bool  `json:"bootstrap_key"`
 		ServerID     int64 `json:"server_id"` // 存量节点自愈/新节点预览注释用（0 = 未定）
 	}
@@ -603,10 +625,14 @@ func (a *App) TestConnection(c *gin.Context) {
 			AuthType: in.AuthType, Password: in.Password,
 			PrivateKey: in.PrivateKey, Passphrase: in.Passphrase}
 	}
-	if in.BootstrapKey {
+	boot := in.BootstrapKey || sshIn.BootstrapKey
+	if in.ServerID == 0 {
+		in.ServerID = sshIn.ServerID
+	}
+	if boot {
 		sshIn.AuthType = "password" // 引导恒走密码通道
 	}
-	port, msg := validateSSH(sshIn, !in.BootstrapKey)
+	port, msg := validateSSH(sshIn, !boot)
 	if msg != "" {
 		middleware.Fail(c, 1001, msg)
 		return
@@ -620,7 +646,7 @@ func (a *App) TestConnection(c *gin.Context) {
 	strict := settings["strict_host_key"] == "true"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	if in.BootstrapKey {
+	if boot {
 		a.testBootstrap(c, ctx, cred, in.ServerID, strict)
 		return
 	}
@@ -699,8 +725,13 @@ func (a *App) RotateServerKey(c *gin.Context) {
 		return
 	}
 	if srv.IsSelf {
-		middleware.Fail(c, 1001, "本机节点请走 SSH 表单重新引导")
-		return
+		// 本机节点采集不走 SSH，但录入的宿主凭据参与 WG 组网/穿透托管——
+		// key 认证私钥缺失（引导期事故遗留）时同样需要自愈，不能一刀切拒绝
+		cred0, _ := a.DB.GetCredential(id)
+		if cred0 == nil || cred0.AuthType != "key" || len(cred0.PrivateKeyEnc) > 0 {
+			middleware.Fail(c, 1001, "本机节点当前凭据可用（采集走本地进程），无需修复密钥；若要重置宿主 SSH 请在编辑表单重新引导")
+			return
+		}
 	}
 	var in sshInput
 	if err := c.ShouldBindJSON(&in); err != nil || strings.TrimSpace(in.Password) == "" {

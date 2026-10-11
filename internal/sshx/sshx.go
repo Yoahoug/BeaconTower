@@ -57,7 +57,9 @@ func authMethods(c *Cred) ([]ssh.AuthMethod, error) {
 		return []ssh.AuthMethod{ssh.Password(c.Password)}, nil
 	case "key":
 		if c.PrivateKey == "" {
-			return nil, errors.New("认证失败：私钥为空")
+			// 指向修复路径而非只报现象：这几乎总是「key 认证但库里无私钥」
+			// （引导没完成/密钥失联），节点详情有「修复密钥」入口
+			return nil, errors.New("认证失败：私钥为空——请在节点管理打开该节点的详情，点「修复密钥」重建（或在编辑表单重新完成密钥引导）")
 		}
 		var signer ssh.Signer
 		var err error
@@ -85,13 +87,19 @@ func ClassifyErr(err error) error {
 		return re
 	}
 	msg := err.Error()
+	// 已分类的消息（「认证失败：…」前缀）原样透传，避免被下面的分支
+	// 再包一层变成「认证失败：认证失败：…」双层前缀
+	if strings.HasPrefix(msg, "认证失败：") {
+		return err
+	}
 	switch {
 	case strings.Contains(msg, "unable to authenticate"),
 		strings.Contains(msg, "Authentication failed"),
 		strings.Contains(msg, "permission denied"),
-		strings.Contains(msg, "no supported methods"),
-		strings.Contains(msg, "认证失败"):
+		strings.Contains(msg, "no supported methods"):
 		return fmt.Errorf("认证失败：%s", trimErr(msg))
+	case strings.Contains(msg, "认证失败"):
+		return err // authMethods 已给出具体原因（如 私钥为空/密码为空），保留原文
 	case strings.Contains(msg, "connection refused"):
 		return errors.New("连接被拒绝：目标端口未监听 SSH")
 	case strings.Contains(msg, "no route"),
