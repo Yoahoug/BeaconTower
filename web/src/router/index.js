@@ -34,7 +34,9 @@ const LoginView = () => import('../views/admin/LoginView.vue')
 const SetupView = () => import('../views/admin/SetupView.vue')
 
 const router = createRouter({
-  history: createWebHistory(),
+  // base 跟随 Vite base（classic 为 /classic/）：主题挂在子路径下，缺了它
+  // 所有路由都匹配不上，页面直接落到自带 404 视图。
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',

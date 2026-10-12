@@ -3,6 +3,10 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // v2.8 起 classic 主题挂载在 /classic/（doc/18）：资源、SW、manifest 的 URL
+  // 全部按此前缀生成，与后端 router 的主题作用域（/classic/assets、/classic/sw.js…）
+  // 对齐。缺了它产物引用根 /assets/*，会被根作用域的 toy 资源接管而 404（白屏）。
+  base: '/classic/',
   plugins: [
     vue(),
     // PWA（doc/15）：Workbox 预缓存 app shell，/api 全走网络绝不缓存。

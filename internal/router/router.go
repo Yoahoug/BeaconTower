@@ -199,10 +199,12 @@ func New(app *handler.App, toyDist embed.FS, toyReady bool, classicDist embed.FS
 
 	// 主题入口：/ → 默认主题；?theme=<id> → 302 到对应主题挂载路径。
 	// 目标即默认主题或 ID 未知时清参落回默认主题，绝不形成重定向环。
+	// 302 带上 ?theme=<id>：目标主题的 boot 脚本据此写偏好（显式覆盖），
+	// 否则参数在跳转中丢失，偏好还是旧值时会被 boot 又弹回原主题。
 	r.GET("/", func(c *gin.Context) {
 		if id := c.Query("theme"); id != "" {
 			if target, ok := byID[id]; ok && !target.isDefault {
-				c.Redirect(http.StatusFound, target.mountPath)
+				c.Redirect(http.StatusFound, target.mountPath+"?theme="+id)
 				return
 			}
 		}
@@ -299,6 +301,20 @@ func serveThemeFile(c *gin.Context, t *themeApp, p string) {
 	if n := path.Base(p); strings.HasPrefix(n, "workbox-") && strings.HasSuffix(n, ".js") {
 		c.Header("Cache-Control", "public, max-age=86400")
 		c.FileFromFS(n, http.FS(t.fs))
+		return
+	}
+	// 主题 boot 脚本（doc/18）：各主题作用域一份，index.html 里以阻塞式同源脚本
+	// 引它（内联会被自身 CSP 的 default-src 'self' 拦掉，静默失效）。内容必须与
+	// 当前主题拓扑一致，故 no-cache；缺失按 404 处理，绝不回吐 HTML（nosniff 下
+	// MIME 不符的脚本会被浏览器拒绝，等于悄悄不执行）。
+	if p == "/boot-theme.js" {
+		c.Header("Cache-Control", "no-cache")
+		b, err := fs.ReadFile(t.fs, "boot-theme.js")
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Data(http.StatusOK, "text/javascript; charset=utf-8", b)
 		return
 	}
 	// 根级静态文件白名单：短缓存语义与旧版一致（不设 Cache-Control），

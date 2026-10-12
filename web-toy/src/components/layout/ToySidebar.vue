@@ -218,7 +218,7 @@
 
           <!-- 正规产品版本号 (对齐原版 v2.4 · SKY BEACON) -->
           <div class="flex items-center justify-between text-[10px] font-bold text-toy-muted px-1">
-            <span>v2.8.0 · TOY BEACON</span>
+            <span>v2.8.1 · TOY BEACON</span>
             <span class="inline-flex items-center gap-1 text-[9px] text-toy-mint">
               <span class="w-1.5 h-1.5 rounded-full bg-toy-mint"></span> 运行中
             </span>

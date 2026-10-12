@@ -208,7 +208,7 @@ onUnmounted(() => {
           <span aria-hidden="true">🎨</span>
           <span>主题</span>
         </button>
-        <div class="app-side-ver">v2.8.0 · SKY BEACON</div>
+        <div class="app-side-ver">v2.8.1 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -266,7 +266,7 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.8.0 · Sky Beacon</span>
+        <span class="tnum">v2.8.1 · Sky Beacon</span>
       </footer>
     </div>
 

@@ -16,38 +16,9 @@
     <meta name="apple-mobile-web-app-title" content="信标塔" />
     <!-- 黑色半透明状态栏：正文延伸到状态栏底下，由安全区 padding 兜底 -->
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <script>
-      // 主题同步 boot（阻塞执行，模块加载前跑完，防闪屏；doc/18）：
-      // classic 挂在 /classic/。1) ?theme=<id> → 写偏好并 replace 到该主题路径；
-      // 2) 无参且偏好 ≠ 当前主题 → replace 过去。仅在「偏好 ≠ 当前」时跳，
-      // 双向只会发生一次跳转，无重定向死循环。
-      (function () {
-        try {
-          var THEMES = {
-            toy: { path: '/', current: false },
-            classic: { path: '/classic/', current: true },
-          };
-          var qs = new URLSearchParams(window.location.search);
-          var wanted = qs.get('theme');
-          if (wanted && THEMES[wanted]) {
-            localStorage.setItem('beacontower_preferred_theme', wanted);
-            qs.delete('theme');
-            var rest = qs.toString();
-            var target = THEMES[wanted].path + (rest ? '?' + rest : '');
-            if (target !== window.location.pathname + window.location.search) {
-              window.location.replace(target);
-            }
-            return;
-          }
-          var pref = localStorage.getItem('beacontower_preferred_theme');
-          if (pref && THEMES[pref] && !THEMES[pref].current) {
-            window.location.replace(THEMES[pref].path);
-          }
-        } catch (e) {
-          /* localStorage 不可用（隐私模式）：原地渲染当前主题 */
-        }
-      })();
-    </script>
+    <!-- 主题同步 boot：阻塞式同源脚本，模块加载前跑完（防闪屏；doc/18）。
+         不能内联——应用 CSP 为 default-src 'self'，内联脚本会被静默拦截。 -->
+    <script src="/boot-theme.js"></script>
   </head>
   <body>
     <div id="app"></div>
