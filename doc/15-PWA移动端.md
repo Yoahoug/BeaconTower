@@ -1,4 +1,4 @@
-# 15 · PWA 移动端（v2.5）
+# 15 · PWA 移动端（v2.5，v2.8.3 修订见 §8）
 
 > 同一份 Vue 前端，iPhone「添加到主屏幕」后独立窗口运行，观感接近原生。
 > 桌面端布局零回归（所有新增 UI 只在 ≤720px 视口生效）。
@@ -10,10 +10,10 @@
 | --- | --- |
 | manifest | `web/public/manifest.webmanifest`（手写，字段语义可见）：`display: standalone`、`start_url: /`、`scope: /`；`theme_color` / `background_color` 随设计系统基调取值（v3 深色重构后需同步更新） |
 | 图标 | `web/public/icons/`：192 / 512 / 512 maskable（满幅品牌渐变 + 信标缩至 78% 安全区）/ 180 apple-touch-icon，全部由 index.html 内联 SVG logo 生成（cairosvg），满幅渐变底避免系统给透明角填白 |
-| Service Worker | `vite-plugin-pwa`（devDependency，generateSW 模式）：Workbox 预缓存 app shell（构建产物 ~30 个条目），`registerType: 'autoUpdate'`——新版本下载后下次导航生效，不打扰使用中用户 |
-| API 缓存策略 | `/api/*` 一律 **NetworkOnly**（含 SSE）；`navigateFallback` 指向 index.html 并 denylist `/api/`。不用 NetworkFirst：断网时把旧缓存当新鲜数据展示，监控数据宁缺毋假——离线数据由 §3 的快照机制负责并明确标注 |
+| Service Worker | `vite-plugin-pwa`（devDependency，**injectManifest** 模式，v2.8.3 起自管源码 `web/src/sw.js`）：Workbox 预缓存构建产物（31 条目，含 `index.html`）+ **导航 NetworkFirst**（1.5s 上限：在线必拿服务器最新壳，慢网/断网才回退预缓存）；`skipWaiting()` 在 install 事件内调用、`activate` 时 `clientsClaim()`；`rollupFormat: 'iife'` 产出单文件经典脚本（不依赖 Safari 16.4+ 的模块化 SW）。详见 §8 |
+| API 缓存策略 | `/api/*` **不注册任何 SW 路由**：请求不进 SW（SSE 长连也不在 SW 里挂待决 fetch 事件），断网宁缺毋假，离线数据由 §3 的快照机制负责并明确标注。壳不做「只认预缓存」的 `navigateFallback`——那正是 §8「旧壳钉死」的成因 |
 | MIME（Go 侧） | 路由层显式注册 `.webmanifest → application/manifest+json` 等；`/sw.js`、`/workbox-*.js` 以 JS MIME 服务（workbox 运行时在 dist 根，不在 /assets 下，掉进 SPA 回退会让 SW install 静默失败）；HEAD 与 GET 并行注册（gin 不自动派生 HEAD，iOS 安装预检走 HEAD） |
-| index.html | manifest link、apple-touch-icon、`apple-mobile-web-app-capable/title/status-bar-style=black-translucent`、`viewport-fit=cover`（正文延伸到刘海/圆角外，由安全区 padding 兜底） |
+| index.html | manifest link、apple-touch-icon、`apple-mobile-web-app-capable/title/status-bar-style=black-translucent`、`viewport-fit=cover`（正文延伸到刘海/圆角外，由安全区 padding 兜底）；主题 boot 脚本 `<script defer src="/boot-theme.js">`（v2.8.3 起由阻塞改 defer：主题同步仍在模块执行前完成，首屏少一次串行往返） |
 
 ## 2. 移动端原生感（≤720px 生效，桌面零回归）
 
@@ -70,3 +70,59 @@ Web 端没有 beforeinstallprompt（那是 Chromium 的），iOS 只能引导用
 - [ ] 关飞行模式：提示消失，数据恢复实时
 - [ ] 节点详情/穿透/组网页返回导航正常；深链（如 /server/1）从主屏打开可直达
 - [ ] 锁屏半小时后打开：自动刷新到最新数据，无卡死
+- [ ] 侧栏抽屉：右下角菜单按钮打开后不被顶栏/底部 tab bar 遮挡，点遮罩可关
+- [ ] 发版后（服务端已更新）打开 App 即为新界面；版本串见侧栏底部
+
+## 8. v2.8.3 修订（2026-10-12）：SW 自管，收口「旧壳钉死」
+
+**症状**：classic 主题连发两版（v2.8.1 白屏修复、v2.8.2 抽屉层级）后，手机从主屏 PWA
+启动始终是旧界面；杀进程重开、Safari 强刷都无效——同一域名在桌面浏览器打开却已是新版。
+
+**根因**（两层，缺一不可；本地以「部署后重启容器 + 重开页面」稳定复现）：
+
+1. **壳只认预缓存**。generateSW 默认产出 `createHandlerBoundToURL('index.html')`，导航
+   命中 Workbox 的 PrecacheRoute 后完全不看网络——只要「接管」没发生，界面就被预缓存里
+   的旧壳钉死，与服务端已发布的新版无关。
+2. **新 SW 不接管**。`registerType: 'autoUpdate'` 把 `skipWaiting()` 放在脚本顶层执行，
+   实测部分 Chromium 内核（含 iOS 侧 WebView）「promise resolve 但不生效」：install 完成
+   即停在 waiting；postMessage 催办、关闭全部客户端、页面侧 `reg.update()` 都推不动它。
+
+**修复**（细节见提交 `73eb3ef`）：
+
+- `web/vite.config.js`：`strategies: 'injectManifest'` + `rollupFormat: 'iife'`，SW 源码
+  `web/src/sw.js`：
+  - 导航改 **NetworkFirst（1.5s 上限）**：在线必拿服务器最新壳，慢网/断网才回退预缓存。
+    1.5s 是「启动不干等」与「壳够新鲜」的折中；兜底的预缓存壳在 skipWaiting 生效后
+    已随 SW 更新，代价只是可能晚一个版本；
+  - **路由注册顺序：先导航路由、后 `precacheAndRoute`**。反过来的话 PrecacheRoute 会按
+    `directoryIndex` 先认领 `/classic/` 这类目录导航，NetworkFirst 永远轮不到；
+  - `skipWaiting()` 移入 install 事件（规范与各内核公认时机）+ `message` 催办兜底；
+  - `activate` 时 `clientsClaim()`：新 SW 立即接管已开页面；
+  - `/api/**` 不注册任何路由。
+- `web/src/pwa.js`（新）：页面侧更新治理——启动与回前台 `reg.update()`（10 分钟节流）、
+  发现 waiting 就 `SKIP_WAITING` 催办、催办 4s 仍未接管则一次性自愈（注销 + 重载，
+  sessionStorage 记时 60s 内不重复）。
+- `web/index.html` / `web-toy/index.html`：boot 脚本阻塞改 `defer`。
+- 显式声明 `workbox-precaching` / `workbox-routing`（此前靠 vite-plugin-pwa 传递依赖）。
+- `web/vite.config.js` 加一个构建后补回 `dist/.placeholder` 的小插件（vite 清空 outDir
+  会删掉这个 go:embed 兜底文件，此前每次构建都在 git 里显示「已删除」）。
+
+**验证**（本机浏览器 + 线上域名；均先清空注册与缓存模拟首装）：
+
+| 项 | 结果 |
+| --- | --- |
+| 首装 | `active` 立即接管（clientsClaim），预缓存 31 条目，含 `index.html`（键名带 `?__WB_REVISION__=` 后缀） |
+| 在线导航 | 受控且 `transferSize>0`（来自网络），版本串 v2.8.3；域名侧 TTFB 434ms |
+| 断网导航 | `transferSize=0`（预缓存合成壳），应用正常挂载，用时 489ms（不干等超时） |
+| 卡死自愈 | 注销 + 重载后必得新壳（原死局路径） |
+| 移动端 390×844 | 抽屉 z=31 / 遮罩 30 高于顶栏与 tab bar 20；展开后命中面在抽屉内；安全区上下各 8px |
+
+**旧版自愈（已装 PWA 的手机，一次性）**：v2.8.1 / v2.8.2 的旧壳没有自愈能力，需人工触发
+一次——从主屏 App 上滑彻底关闭后重开；若仍是旧界面，则删除主屏图标后重新「添加到主屏幕」
+（或在 Safari 的「网站数据」里删除本站数据）。此后新架构（NetworkFirst 壳 + 自愈）不再需要
+人工干预。
+
+**教训**：① PWA 的「发布生效」取决于 **SW 生命周期**，不是 HTTP 缓存——壳一旦只认预缓存，
+就等于把发布权交给浏览器；② `skipWaiting` 放在哪是兼容性问题，不是代码风格问题；
+③ 判断「这份壳来自网络还是缓存」看 `performance.getEntriesByType('navigation')[0].transferSize`
+（>0 走网络），比盯着界面猜省事。
