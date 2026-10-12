@@ -122,6 +122,10 @@
   /* ---------- 层级 ---------- */
   --bt-z-background: 0;
   --bt-z-sticky: 20;
+  /* 移动抽屉层（doc/18）：必须高于粘性顶栏与底部 tab bar（同为 sticky=20），
+     否则抽屉被它们盖住；遮罩也在这两栏之上，打开抽屉时整页一起压暗。 */
+  --bt-z-drawer-mask: 30;
+  --bt-z-drawer: 31;
   --bt-z-dropdown: 40;
   --bt-z-modal-mask: 60;
   --bt-z-modal: 61;

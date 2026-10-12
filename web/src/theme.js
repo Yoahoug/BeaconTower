@@ -22,7 +22,7 @@ export const THEMES = [
   },
   {
     id: 'classic',
-    name: 'Classic Glass · 经典天空玻璃拟态',
+    name: 'Sky Glass · 天空玻璃拟态',
     desc: '经典亮色拟态界面，极光渐变背景与半透明玻璃卡片设计。',
     path: '/classic/',
     icon: '🪟',

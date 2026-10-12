@@ -97,6 +97,13 @@ function onKey(e) {
   if (e.key === 'Escape') themeCenterOpen.value = false
 }
 
+// 视口离开移动断点（手机横屏、窗口放大）时收起抽屉：>720px 没有抽屉语义，
+// 留着 drawerOpen 会让遮罩把整个桌面压暗，且侧栏已变回常驻态无处可收
+const mqMobile = window.matchMedia('(max-width: 720px)')
+function onViewportChange(e) {
+  if (!e.matches) closeDrawer()
+}
+
 // 主题中心（v2.8 双主题架构）：与 toy 侧栏左下主题坞对位的入口
 const themeCenterOpen = ref(false)
 
@@ -106,11 +113,13 @@ watch(() => route.fullPath, closeDrawer)
 onMounted(() => {
   monitor.start()
   window.addEventListener('keydown', onKey)
+  mqMobile.addEventListener('change', onViewportChange)
 })
 
 onUnmounted(() => {
   monitor.stop()
   window.removeEventListener('keydown', onKey)
+  mqMobile.removeEventListener('change', onViewportChange)
 })
 </script>
 
@@ -208,7 +217,7 @@ onUnmounted(() => {
           <span aria-hidden="true">🎨</span>
           <span>主题</span>
         </button>
-        <div class="app-side-ver">v2.8.1 · SKY BEACON</div>
+        <div class="app-side-ver">v2.8.2 · SKY BEACON</div>
       </div>
     </aside>
 
@@ -266,7 +275,7 @@ onUnmounted(() => {
 
       <footer class="app-footer">
         <span>BeaconTower · 数据经加密 SSH 自动采集 · 公开页面不展示 IP 及敏感信息</span>
-        <span class="tnum">v2.8.1 · Sky Beacon</span>
+        <span class="tnum">v2.8.2 · Sky Beacon</span>
       </footer>
     </div>
 

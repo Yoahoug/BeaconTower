@@ -17,7 +17,7 @@
 
 ## 功能一览
 
-- **双主题前端架构**（v2.8 新增）：默认主题 **Toy Neubrutalism**（`/`，玩具积木风）与经典 **Sky Glass 玻璃拟态**（`/classic/`）两套独立 Vue 应用打包进同一镜像，侧栏主题中心一键互切、偏好存 LocalStorage（`beacontower_preferred_theme`）；架构预留主题注册表，未来新主题即插即用（设计见 [doc/18](./doc/18-双前端主题架构.md)）
+- **双主题前端架构**（v2.8 新增）：默认主题 **Toy Neubrutalism**（`/`，玩具积木风）与经典 **Sky Glass · 天空玻璃拟态**（`/classic/`）两套独立 Vue 应用打包进同一镜像，侧栏主题中心一键互切、偏好存 LocalStorage（`beacontower_preferred_theme`）；架构预留主题注册表，未来新主题即插即用（设计见 [doc/18](./doc/18-双前端主题架构.md)）
 - **零 Agent 采集**：面板定时 SSH 连接各节点执行只读命令（`/proc`、`df`、`sysfs`），被监控机不装任何东西；面板自身自动作为「本机」节点展示（本地进程采集，免 SSH）
 - **系统画像自动回读**：添加节点只需 SSH 地址 + 账号，主机名 / 系统 / CPU / 内存 / 磁盘 / 虚拟化 / 公网 IP 归属自动探测（v2.7.3 修复定位不可用时把「未定位」占位写进节点的问题：在线多源兜底 + 可选离线库，定位失败可随时「重新定位」）
 - **面板代管密钥**（v2.7 新增）：添加节点默认「自动密钥」——填一次密码引导，面板生成节点专属 Ed25519 密钥装机并验证，之后 SSH 全走密钥、**面板不再存储密码**；密钥失联（重装系统等）在节点详情「修复密钥」重输一次密码即可重建，见[下文](#隐私与安全)
@@ -35,7 +35,7 @@
 
 ## 截图
 
-| 总览（默认主题 · Toy Neubrutalism） | 总览（Classic Glass · `/classic/`） |
+| 总览（默认主题 · Toy Neubrutalism） | 总览（Sky Glass · `/classic/`） |
 | --- | --- |
 | <img src="docs/img/overview-toy.png" alt="toy 主题总览：KPI 积木胶囊 + 实时波形 + 节点卡片网格" width="440"> | <img src="docs/img/overview.png" alt="classic 主题总览：KPI 玻璃条 + 全网吞吐趋势 + 节点卡片网格" width="440"> |
 

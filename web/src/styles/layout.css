@@ -446,7 +446,8 @@
 .app-scrim {
   position: fixed;
   inset: 0;
-  z-index: calc(var(--bt-z-sticky) - 1);
+  /* 盖住顶栏与底部 tab bar（同为 sticky=20），抽屉层之下、抽屉本体之上 */
+  z-index: var(--bt-z-drawer-mask);
   background: rgba(73, 88, 138, 0.32);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
@@ -498,7 +499,9 @@
   .app-topbar {
     margin: var(--bt-space-2) var(--bt-space-2) 0;
     padding: 0 var(--bt-space-3);
-    top: var(--bt-space-2);
+    /* 吸顶时也要让开刘海/状态栏（PWA 独立窗口下 .app-shell 的 padding-top 只
+       影响初始位置，滚动后粘住的位置由这里的 top 决定） */
+    top: calc(var(--bt-space-2) + env(safe-area-inset-top, 0px));
   }
 
   .app-topbar__menu-btn {
@@ -509,15 +512,17 @@
     padding: var(--bt-space-4) var(--bt-space-3) var(--bt-space-5);
   }
 
-  /* 移动端：侧栏变抽屉 */
+  /* 移动端：侧栏变抽屉。层级必须高于顶栏/底部 tab bar（同为 sticky=20），
+     否则抽屉被它们压住两条；上下留安全区，别把品牌区和主题坞顶到刘海/横条下 */
   .app-sidebar {
     position: fixed;
     left: var(--bt-space-2);
-    top: var(--bt-space-2);
-    bottom: var(--bt-space-2);
+    top: calc(var(--bt-space-2) + env(safe-area-inset-top, 0px));
+    bottom: calc(var(--bt-space-2) + env(safe-area-inset-bottom, 0px));
     height: auto;
     width: 260px;
     margin: 0;
+    z-index: var(--bt-z-drawer);
     transform: translateX(calc(-100% - var(--bt-space-4)));
     transition: transform var(--bt-duration-base) var(--bt-ease-out);
     box-shadow: var(--bt-shadow-modal);
