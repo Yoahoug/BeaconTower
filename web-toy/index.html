@@ -5,9 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/beacon-toy.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>信标塔 · BeaconTower</title>
-    <!-- 主题同步 boot：阻塞式同源脚本，模块加载前跑完（防闪屏；doc/18）。
+    <!-- 主题同步 boot：同源脚本，defer 到解析后、模块执行前跑完（防闪屏；doc/18）。
+         defer 而非阻塞：少一个串行 RTT（此前的阻塞式会让首屏多等一次网络往返）。
          不能内联——应用 CSP 为 default-src 'self'，内联脚本会被静默拦截。 -->
-    <script src="/boot-theme.js"></script>
+    <script defer src="/boot-theme.js"></script>
   </head>
   <body class="bg-toy-bg text-toy-black antialiased selection:bg-toy-yellow selection:text-toy-black">
     <div id="app"></div>

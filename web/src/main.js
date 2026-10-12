@@ -20,10 +20,10 @@ app.use(router)
 app.directive('spotlight', vSpotlight)
 app.mount('#app')
 
-// PWA Service Worker（vite-plugin-pwa 生成，registerType: autoUpdate）：
-// 新 SW 安装完成即接管，下次导航加载新版本；无弹窗打扰。
+// PWA（v2.8.3 起自管，doc/15 修订）：注册 + 更新治理（启动查更新、
+// waiting 催办、卡死自愈）。首屏渲染后再动态引入，不抢启动带宽。
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    import('virtual:pwa-register').then(({ registerSW }) => registerSW({ immediate: true }))
+    import('./pwa').then(({ setupPwa }) => setupPwa())
   })
 }
