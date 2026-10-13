@@ -18,7 +18,6 @@ import (
 const (
 	QzhuaIssuer       = "https://account-api.qzhua.net"
 	QzhuaDeviceAuthEP = QzhuaIssuer + "/oauth2/device_authorization"
-	QzhuaTokenEP      = QzhuaIssuer + "/oauth2/token"
 
 	// DefaultChmlfrpClientID 是 ChmlFrp 官方启动器（TechCat-Team/ChmlFrpLauncher）
 	// 使用的公共客户端，无 client_secret、已开启设备码授权，实测可直接用于
@@ -31,6 +30,10 @@ const (
 	// offline_access 用于换取 refresh_token。
 	chmlfrpScope = "profile email offline_access chmlfrp_api"
 )
+
+// QzhuaTokenEP 令牌端点。声明为变量而非常量只为测试可注入（httptest 假端点
+// 验证「持平台锁时续期不自锁死」的回归用例），生产代码勿改写。
+var QzhuaTokenEP = QzhuaIssuer + "/oauth2/token"
 
 // Token OAuth2 令牌响应。
 type Token struct {

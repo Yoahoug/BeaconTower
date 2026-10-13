@@ -55,6 +55,14 @@ type Runner struct {
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
 
+	// tokenLocks 每个平台一把「令牌续期锁」，与操作锁 locks 分离：Sync/建改删
+	// 等路径都是「先持平台操作锁、再调 client()」，而 client() 在令牌过期时要
+	// 续期。续期若复用操作锁就是自己锁自己（sync.Mutex 不可重入），线上实测
+	// 首轮同步即永久卡死整个平台（只能重启进程）。续期与同步落库互不写对方
+	// 的列（SaveFRPPlatformProfile 不碰凭据、UpdateFRPPlatformCreds 不碰
+	// 画像），所以两把锁各自串行即可，不需要互相嵌套。
+	tokenLocks map[int64]*sync.Mutex
+
 	// chmlTokens ChmlFrp 续期结果进程内缓存：双检锁快路径 + 落库失败兜底
 	chmlTokens tokenMemCache
 
@@ -72,14 +80,15 @@ func NewRunner(db *store.DB, master []byte, clientID string) *Runner {
 		Master:     master,
 		Flow:       NewDeviceFlow(clientID),
 		locks:      map[int64]*sync.Mutex{},
+		tokenLocks: map[int64]*sync.Mutex{},
 		chmlTokens: tokenMemCache{entries: map[int64]tokenMemEntry{}},
 		errSeen:    map[int64]errThrottle{},
 	}
 }
 
-// lockFor 每个平台一把锁。ChmlFrp 的 refresh_token 是一次性的：
-// 两个 goroutine 同时刷新会把令牌烧掉（一个成功、另一个拿到 invalid_grant，
-// 且失败方的落库可能覆盖成功方的），因此续期与同步必须串行到平台粒度。
+// lockFor 每个平台一把锁。平台级写操作与同步串行（ChmlFrp 的 refresh_token
+// 是一次性的：两个 goroutine 同时刷新会把令牌烧掉，且失败方的落库可能覆盖
+// 成功方的）。注意：本锁不得在已持有的路径里二次获取（见 tokenLocks 注释）。
 func (r *Runner) lockFor(id int64) *sync.Mutex {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -88,6 +97,19 @@ func (r *Runner) lockFor(id int64) *sync.Mutex {
 	}
 	m := &sync.Mutex{}
 	r.locks[id] = m
+	return m
+}
+
+// tokenLockFor 令牌续期专用锁。与 lockFor 分开的原因见 tokenLocks 字段注释：
+// 调用方（Sync/建改删）已持有平台操作锁，续期复用操作锁就是自锁死。
+func (r *Runner) tokenLockFor(id int64) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m, ok := r.tokenLocks[id]; ok {
+		return m
+	}
+	m := &sync.Mutex{}
+	r.tokenLocks[id] = m
 	return m
 }
 
@@ -159,25 +181,25 @@ func (r *Runner) client(ctx context.Context, p *store.FRPPlatform) (platform, er
 		}
 		// 双检锁：读路径（流量图表/配置下载等）不持平台锁也会走到这里，
 		// 与后台同步并发时两个 goroutine 同时刷新会烧掉一次性 refresh_token。
-		// 拿平台锁前先看内存缓存/库里的令牌是否已被别的 goroutine 续过。
+		// 拿锁前先看内存缓存/库里的令牌是否已被别的 goroutine 续过。
 		if fresh, ok := r.freshChmlToken(p.ID, p.TokenExpireAt); ok {
 			return NewChmlfrp("", fresh), nil
 		}
-		lock := r.lockFor(p.ID)
+		// 必须用 tokenLockFor 而不是 lockFor：调用方（Sync/建改删）已持有平台
+		// 操作锁，复用操作锁会在令牌过期时自锁死（见 tokenLocks 字段注释）。
+		lock := r.tokenLockFor(p.ID)
 		lock.Lock()
+		defer lock.Unlock()
 		// 锁内重读：前一个持锁者可能已完成续期并落库
 		if cur, err := r.DB.GetFRPPlatform(p.ID); err == nil && cur != nil && tokenFresh(cur) {
-			lock.Unlock()
 			return NewChmlfrp("", r.decrypt(cur.TokenEnc)), nil
 		}
 		refresh := r.decrypt(p.RefreshEnc)
 		if refresh == "" {
-			lock.Unlock()
 			return nil, fmt.Errorf("%w（缺少刷新令牌，请重新授权）", ErrAuth)
 		}
 		tok, err := RefreshChmlfrpToken(ctx, r.Flow.clientID, refresh)
 		if err != nil {
-			lock.Unlock()
 			return nil, err
 		}
 		if err := r.DB.UpdateFRPPlatformCreds(p.ID, r.encrypt(tok.AccessToken), r.encrypt(tok.RefreshToken), tok.ExpiresAt()); err != nil {
@@ -190,7 +212,6 @@ func (r *Runner) client(ctx context.Context, p *store.FRPPlatform) (platform, er
 			r.cacheChmlToken(p.ID, tok)
 		}
 		log.Printf("[frp] 平台 %d 的 ChmlFrp 令牌已自动续期（%ds）", p.ID, tok.ExpiresIn)
-		lock.Unlock()
 		return NewChmlfrp("", tok.AccessToken), nil
 
 	default:
