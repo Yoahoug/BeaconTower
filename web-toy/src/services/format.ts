@@ -27,3 +27,32 @@ export function formatUptime(seconds: number): string {
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}时${mins}分`;
 }
+
+// 能耗口径与 classic utils/format 对齐：今日 kWh 后端恒为 null（尚未接入），
+// 显示「—」而不是 0.000，避免 RAPL 机器被误读成零耗电
+export function formatKwh(kwh: number | null | undefined, digits = 3): string {
+  if (kwh === null || kwh === undefined || !Number.isFinite(Number(kwh))) return '—';
+  return `${Number(kwh).toFixed(digits)} kWh`;
+}
+
+export function formatCost(cny: number | null | undefined): string {
+  if (cny === null || cny === undefined || !Number.isFinite(Number(cny))) return '—';
+  return `¥${Number(cny).toFixed(2)}`;
+}
+
+export function formatGhz(mhz: number | null | undefined): string {
+  const n = Number(mhz);
+  if (!n) return '—';
+  return n >= 1000 ? `${(n / 1000).toFixed(2)} GHz` : `${Math.round(n)} MHz`;
+}
+
+// 「更新于 X」/「断开 X」文案（classic agoText 的秒级口径）
+export function formatAgo(seconds: number | null | undefined): string {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s < 5) return '刚刚';
+  if (s < 60) return `${s} 秒前`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+

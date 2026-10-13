@@ -1,51 +1,51 @@
 <template>
   <div class="space-y-5 select-none">
     <!-- 顶栏操作区 -->
-    <div class="flex items-center justify-between flex-wrap gap-2">
-      <div>
-        <h2 class="text-lg font-black text-toy-black flex items-center gap-2">
-          <span>安全与账号</span>
-          <span class="toy-badge bg-toy-yellow text-[10px]">密码学防护</span>
-        </h2>
-        <p class="text-xs font-bold text-toy-muted">管理员主密码修改 · 密码热更新即时生效（其余会话自动吊销）</p>
+    <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <h2 class="text-xl font-black text-toy-black">安全与账号</h2>
+          <span class="toy-badge bg-toy-yellow text-[11px] px-2.5 py-0.5">密码学防护</span>
+        </div>
+        <p class="text-xs font-bold text-zinc-500">管理员主密码修改 · 密码热更新即时生效（其余会话自动吊销）</p>
       </div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
       <!-- 1. 修改管理员密码 -->
-      <div class="toy-card p-5 bg-white space-y-4">
-        <div class="flex items-center gap-2 border-b-2 border-toy-black pb-2.5">
-          <span class="text-base">🔐</span>
+      <div class="toy-card p-6 bg-white space-y-4">
+        <div class="flex items-center gap-2.5 border-b-2 border-toy-black/15 pb-3">
+          <span class="text-lg">🔐</span>
           <h3 class="text-sm font-black text-toy-black">修改管理员密码</h3>
         </div>
 
-        <form @submit.prevent="handleSubmitPassword" class="space-y-3.5">
+        <form @submit.prevent="handleSubmitPassword" class="space-y-4">
           <div>
-            <label class="block text-xs font-black text-toy-black mb-1">当前旧密码</label>
+            <label class="block text-xs font-black text-toy-black mb-2">当前旧密码</label>
             <input 
               v-model="oldPassword"
               type="password" 
-              class="w-full px-3 py-1.5 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
+              class="w-full px-3.5 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
               required
             />
           </div>
 
           <div>
-            <label class="block text-xs font-black text-toy-black mb-1">设置新密码</label>
+            <label class="block text-xs font-black text-toy-black mb-2">设置新密码</label>
             <input 
               v-model="newPassword"
               type="password" 
-              class="w-full px-3 py-1.5 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
+              class="w-full px-3.5 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
               required
             />
           </div>
 
           <div>
-            <label class="block text-xs font-black text-toy-black mb-1">确认新密码</label>
+            <label class="block text-xs font-black text-toy-black mb-2">确认新密码</label>
             <input 
               v-model="confirmPassword"
               type="password" 
-              class="w-full px-3 py-1.5 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
+              class="w-full px-3.5 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-lg focus:outline-none font-mono"
               required
             />
           </div>

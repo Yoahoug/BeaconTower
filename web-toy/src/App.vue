@@ -51,8 +51,18 @@
             </div>
           </div>
 
-          <!-- 右侧：实时推流指示与管理员状态 -->
+          <!-- 右侧：数据新鲜度 + 实时推流指示 + 管理员状态 -->
           <div class="flex items-center gap-2 sm:gap-3">
+            <!-- 数据新鲜度：SSE 断流时显示离线快照时间（classic 顶栏同口径） -->
+            <span
+              class="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold border border-toy-black rounded-md"
+              :class="stale ? 'bg-toy-yellow/70 text-toy-black' : 'bg-white text-toy-muted'"
+              :title="stale ? `实时数据中断，当前展示 ${staleTimeText} 的离线快照` : '距最近一次采集刷新'"
+            >
+              <span class="w-1.5 h-1.5 rounded-full" :class="stale ? 'bg-toy-orange' : 'bg-toy-mint'"></span>
+              {{ stale ? `离线 · ${staleTimeText}` : `更新于 ${formatAgo(secondsSinceUpdate)}` }}
+            </span>
+
             <!-- 状态小标贴 (点击可切换登录/退出) -->
             <button
               @click="handleToggleAdmin"
@@ -78,18 +88,57 @@
       </header>
 
       <!-- 2.2 页面主内容区域 -->
-      <main class="flex-1 p-4 sm:p-6 lg:p-7 space-y-5 max-w-7xl w-full mx-auto">
-        <!-- 全局错误条（后端不可达等） -->
-        <div v-if="globalError" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
+      <main class="flex-1 p-4 sm:p-6 lg:p-7 space-y-7 sm:space-y-8 max-w-7xl w-full mx-auto">
+        <!-- 全局错误条（后端不可达等；失败态另有占位卡，这里只在已有数据时提示） -->
+        <div v-if="globalError && servers.length" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
           <span class="text-xs font-black text-red-700">⚠ {{ globalError }}</span>
-          <button @click="reloadAll" class="toy-btn px-3 py-1 bg-white text-xs rounded-lg">重试</button>
+          <button @click="reloadAll" class="toy-btn px-3 py-1 bg-white text-xs rounded-lg cursor-pointer">重试</button>
         </div>
 
         <!-- 核心 KPI 积木胶囊 (除子详情页外始终展示全局状态) -->
-        <SummaryKpiBar v-if="currentNav !== 'server-detail'" :summary="summary" />
+        <SummaryKpiBar
+          v-if="currentNav !== 'server-detail' && !publicFailed && !publicLoading"
+          :summary="summary"
+          :cost-measured="costMeasured"
+          :day-measured="dayMeasured"
+        />
+
+        <!-- 公开数据加载 / 失败态（管理页不依赖公开摘要，自管其内部状态） -->
+        <template v-if="publicLoading || publicFailed">
+          <div v-if="publicLoading" class="toy-card p-5 bg-white space-y-3">
+            <div class="h-4 w-40 bg-toy-gray/70 rounded animate-pulse"></div>
+            <div class="h-24 bg-toy-gray/40 rounded-xl animate-pulse"></div>
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div v-for="i in 3" :key="i" class="h-28 bg-toy-gray/30 rounded-xl animate-pulse"></div>
+            </div>
+          </div>
+          <div v-else class="toy-card p-12 text-center bg-white space-y-3">
+            <span class="text-4xl">{{ needLogin ? '🔒' : '⚠️' }}</span>
+            <h4 class="text-base font-black text-toy-black">
+              {{ needLogin ? '需登录查看' : '数据加载失败' }}
+            </h4>
+            <p class="text-xs font-bold text-toy-muted">
+              {{ needLogin ? (globalError || '私有模式下总览仅管理员可见，登录后继续浏览。') : (globalError || '请检查面板服务与网络连接后重试。') }}
+            </p>
+            <button
+              v-if="needLogin"
+              @click="openLogin"
+              class="toy-btn px-4 py-2 bg-toy-yellow text-xs font-black rounded-lg mt-2 inline-block cursor-pointer"
+            >
+              前往登录
+            </button>
+            <button
+              v-else
+              @click="reloadAll"
+              class="toy-btn px-4 py-2 bg-toy-yellow text-xs font-black rounded-lg mt-2 inline-block cursor-pointer"
+            >
+              重试
+            </button>
+          </div>
+        </template>
 
         <!-- 2.2.1 状态总览板块 (Overview) -->
-        <template v-if="currentNav === 'overview'">
+        <template v-else-if="currentNav === 'overview'">
           <!-- 实时波形趋势折线图 -->
           <ToyTrendChart
             :current-up-bps="summary.up_bps"
@@ -102,7 +151,7 @@
 
           <!-- 节点列表控制工具条 (筛选标签 + 搜索 + 排序) -->
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-            <!-- 分类过滤 Tab -->
+            <!-- 状态过滤 Tab（对齐 classic：全部 / 在线 / 离线） -->
             <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
               <button
                 v-for="tab in filterTabs"
@@ -152,6 +201,9 @@
               :key="server.id"
               :server="server"
               :avatar-mode="avatarMode"
+              :cpu-history="history[server.id]?.cpu || []"
+              :power-history="history[server.id]?.power || []"
+              :last-updated="secondsSinceUpdate"
               @select-detail="handleSelectServerDetail"
             />
           </div>
@@ -159,10 +211,10 @@
           <!-- 空结果提示 -->
           <div v-else class="toy-card p-12 text-center bg-white space-y-3">
             <span class="text-4xl">🔍</span>
-            <h4 class="text-base font-black text-toy-black">未找到符合条件的服务器</h4>
+            <h4 class="text-base font-black text-toy-black">没有匹配的节点</h4>
             <p class="text-xs text-toy-muted font-bold">可以尝试清空搜索词或切换到「全部节点」标签</p>
-            <button @click="resetFilters" class="toy-btn px-4 py-2 bg-toy-yellow text-xs rounded-lg mt-2 inline-block">
-              重置所有筛选
+            <button @click="resetFilters" class="toy-btn px-4 py-2 bg-toy-yellow text-xs rounded-lg mt-2 inline-block cursor-pointer">
+              清除筛选
             </button>
           </div>
         </template>
@@ -172,7 +224,11 @@
           <ServerDetailView
             v-if="selectedServer"
             :server="selectedServer"
+            :seconds-since-update="secondsSinceUpdate"
+            :stale="stale"
+            :stale-text="staleTimeText"
             @back="currentNav = 'overview'"
+            @need-login="openLogin"
           />
         </template>
 
@@ -188,7 +244,7 @@
 
         <!-- 2.2.5 管理面板: 节点管理 -->
         <template v-else-if="currentNav === 'admin-servers'">
-          <AdminServersView :servers="servers" @refresh="handleRefreshServers" />
+          <AdminServersView @refresh="handleRefreshServers" />
         </template>
 
         <!-- 2.2.6 管理面板: WG 组网管理 -->
@@ -266,6 +322,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import type { ServerItem, PublicSummary, WGPublicSnapshot, FRPPublicSnapshot } from './types/backend';
 import { api, IS_MOCK } from './services/api';
+import { formatAgo } from './services/format';
 
 // 基础组件
 import ToySidebar from './components/layout/ToySidebar.vue';
@@ -290,12 +347,34 @@ import AdminSettingsView from './components/views/admin/AdminSettingsView.vue';
 import AdminSecurityView from './components/views/admin/AdminSecurityView.vue';
 import AdminAuditView from './components/views/admin/AdminAuditView.vue';
 
+// ---------- 常量（对齐 classic monitor store 口径） ----------
+const HISTORY_LEN = 40;           // 节点走势滚动窗口
+const REFRESH_MS = 10000;         // 保底轮询间隔
+const SSE_STALE_MS = 25000;       // 超过此时长没收到任何 SSE 帧 → 判定断流，补全量
+const CLOCK_MS = 5000;            // 「更新于 X」计时
+const FRP_REFRESH_MS = 60000;     // 穿透摘要是平台侧 3 分钟同步，60s 低频轮询足够
+const WG_REFRESH_MS = 60000;      // 组网摘要是巡检回填的静态库表，同低频
+// 离线快照（classic doc/15 §离线体验）：断网打开先渲染旧快照，不白屏
+const OFFLINE_CACHE_KEY = 'beacontower.snapshot.v1';
+const OFFLINE_CACHE_MAX_AGE_S = 7 * 86400;
+
 // 核心状态管理（真实后端：summary 由 servers 归约，SSE 推送增量）
 const servers = ref<ServerItem[]>([]);
 const summary = ref<PublicSummary>({ total: 0, online: 0, offline: 0, up_bps: 0, down_bps: 0, watts: 0, measured_count: 0, month_kwh: 0, est_cost_month: 0, day_in_total: 0, day_out_total: 0 });
 const wgSnapshot = ref<WGPublicSnapshot>({ initialized: false, hubs: [], peers: [], summary: { hub_active: 0, hub_healthy: 0, member_total: 0, member_online: 0, device_total: 0, traffic_today: 0, traffic_month: 0, checked_at: 0 } });
 const frpSnapshot = ref<FRPPublicSnapshot>({ platforms: [], summary: { platform_total: 0, tunnel_total: 0, tunnel_online: 0, conns: 0, traffic_today: 0, node_in_use: 0, node_online: 0, updated_at: 0 } });
 const globalError = ref('');
+
+// 三态 + 会话失效 + 离线快照标记（classic：loading | ready | error）
+const status = ref<'loading' | 'ready' | 'error'>('loading');
+const needLogin = ref(false);
+const stale = ref(false);
+const staleAt = ref(0);
+const secondsSinceUpdate = ref(0);
+const nowSec = ref(Math.floor(Date.now() / 1000));
+
+// 每节点 40 点走势窗口（classic 由 monitor store 随每帧维护）
+const history = ref<Record<number, { cpu: number[]; power: number[] }>>({});
 
 // 详情与弹窗状态
 const selectedServer = ref<ServerItem | null>(null);
@@ -334,6 +413,20 @@ const currentNavMeta = computed(() => {
   return navMetaMap[currentNav.value] || { label: '信标塔', iconName: 'overview', desc: '监控面板' };
 });
 
+// 公开数据三态只作用于公开板块；管理页自管内部加载态
+const isPublicNav = computed(() => ['overview', 'tunnels', 'mesh', 'server-detail'].includes(currentNav.value));
+const publicLoading = computed(() => isPublicNav.value && status.value === 'loading' && !servers.value.length);
+const publicFailed = computed(() => isPublicNav.value && status.value === 'error' && !servers.value.length);
+
+// 电费/今日流量是否真的下发了（关闭「公开页电费」时不能兜成 ¥0.00；
+// 无按日流量记录时显示「累积中」而不是 0 B）
+const costMeasured = computed(() =>
+  servers.value.some((s) => s.status === 'online' && s.power?.est_cost_month != null),
+);
+const dayMeasured = computed(() => servers.value.some((s) => !!s.traffic_today));
+
+const staleTimeText = computed(() => (staleAt.value ? formatAgo(nowSec.value - staleAt.value) : ''));
+
 function handleNavSelect(key: string) {
   if (key.startsWith('admin-') && !isAdminLoggedIn.value) {
     pendingAdminNav.value = key;
@@ -346,6 +439,11 @@ function handleNavSelect(key: string) {
 function handleSelectServerDetail(server: ServerItem) {
   selectedServer.value = server;
   currentNav.value = 'server-detail';
+}
+
+function openLogin() {
+  pendingAdminNav.value = '';
+  isLoginModalOpen.value = true;
 }
 
 function handleToggleAdmin() {
@@ -362,8 +460,7 @@ function handleToggleAdmin() {
       }
     });
   } else {
-    pendingAdminNav.value = '';
-    isLoginModalOpen.value = true;
+    openLogin();
   }
 }
 
@@ -379,8 +476,7 @@ function handleLoginSuccess() {
 }
 
 async function handleRefreshServers() {
-  servers.value = await api.getServers();
-  summary.value = await api.getSummary();
+  await fetchAll();
 }
 
 // 交互状态
@@ -388,7 +484,7 @@ const avatarMode = ref<'bot' | 'os'>('bot');
 const isRealtime = ref(true);
 const isThemeModalOpen = ref(false);
 const searchQuery = ref('');
-const currentTab = ref('all');
+const currentTab = ref<'all' | 'online' | 'offline'>('all');
 const sortBy = ref('default');
 
 function handleUpdateAvatarMode(mode: 'bot' | 'os') {
@@ -401,15 +497,38 @@ function toggleRealtime() {
   if (isRealtime.value) {
     api.startStream();
     api.onServers(applyServers);
-    fetchAll();
+    void fetchAll();
   } else {
     api.stopStream();
   }
 }
 
+// 每节点走势窗口：在线节点逐帧追加 CPU/功耗，离线不追加（classic adaptServer 同口径）
+function updateHistories(list: ServerItem[]) {
+  const next: Record<number, { cpu: number[]; power: number[] }> = {};
+  for (const s of list) {
+    const prev = history.value[s.id] || { cpu: [], power: [] };
+    const cpu = prev.cpu.slice();
+    const power = prev.power.slice();
+    if (s.status === 'online') {
+      cpu.push(Math.round(s.metrics.cpu_pct));
+      while (cpu.length > HISTORY_LEN) cpu.shift();
+      if (s.power) {
+        power.push(s.power.total_w);
+        while (power.length > HISTORY_LEN) power.shift();
+      }
+    }
+    next[s.id] = { cpu, power };
+  }
+  history.value = next;
+}
+
 function applyServers(list: ServerItem[]) {
   servers.value = [...list];
-  summary.value = api.isStreamRunning() ? computeSummary(list) : summary.value;
+  updateHistories(list);
+  summary.value = computeSummary(list);
+  secondsSinceUpdate.value = 0;
+  nowSec.value = Math.floor(Date.now() / 1000);
 }
 
 function computeSummary(list: ServerItem[]): PublicSummary {
@@ -442,34 +561,22 @@ function resetFilters() {
   sortBy.value = 'default';
 }
 
+// 状态筛选（对齐 classic：全部 / 在线 / 离线）
 const filterTabs = computed(() => {
-  const allCount = servers.value.length;
-  const coreCount = servers.value.filter(s => s.tags.includes('核心')).length;
-  const homeCount = servers.value.filter(s => s.tags.includes('NAS')).length;
-  const edgeCount = servers.value.filter(s => s.tags.includes('边缘') || s.tags.includes('路由器') || s.tags.includes('穿透网关')).length;
-  const offlineCount = servers.value.filter(s => s.status === 'offline').length;
-
+  const all = servers.value.length;
+  const online = servers.value.filter((s) => s.status === 'online').length;
   return [
-    { key: 'all', label: '全部节点', count: allCount },
-    { key: 'core', label: '核心集群', count: coreCount },
-    { key: 'home', label: '家庭内网', count: homeCount },
-    { key: 'edge', label: '边缘穿透', count: edgeCount },
-    { key: 'offline', label: '离线节点', count: offlineCount },
+    { key: 'all' as const, label: '全部节点', count: all },
+    { key: 'online' as const, label: '在线节点', count: online },
+    { key: 'offline' as const, label: '离线节点', count: all - online },
   ];
 });
 
 const filteredServers = computed(() => {
   let list = [...servers.value];
 
-  if (currentTab.value === 'core') {
-    list = list.filter(s => s.tags.includes('核心'));
-  } else if (currentTab.value === 'home') {
-    list = list.filter(s => s.tags.includes('NAS'));
-  } else if (currentTab.value === 'edge') {
-    list = list.filter(s => s.tags.includes('边缘') || s.tags.includes('路由器') || s.tags.includes('穿透网关'));
-  } else if (currentTab.value === 'offline') {
-    list = list.filter(s => s.status === 'offline');
-  }
+  if (currentTab.value === 'online') list = list.filter((s) => s.status === 'online');
+  else if (currentTab.value === 'offline') list = list.filter((s) => s.status !== 'online');
 
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.toLowerCase().trim();
@@ -484,7 +591,7 @@ const filteredServers = computed(() => {
   if (sortBy.value === 'cpu') {
     list.sort((a, b) => b.metrics.cpu_pct - a.metrics.cpu_pct);
   } else if (sortBy.value === 'mem') {
-    list.sort((a, b) => (b.metrics.mem_used / b.profile.mem_total) - (a.metrics.mem_used / a.profile.mem_total));
+    list.sort((a, b) => (b.metrics.mem_used / (b.profile.mem_total || 1)) - (a.metrics.mem_used / (a.profile.mem_total || 1)));
   } else if (sortBy.value === 'power') {
     list.sort((a, b) => (b.power?.total_w || 0) - (a.power?.total_w || 0));
   }
@@ -506,7 +613,45 @@ function confirmNo() {
   confirmState.value = { open: false, text: '', action: null };
 }
 
-// ---------- 全局数据装载（真实后端：servers 初始拉取 + SSE 增量 + WG/FRP 60s 轮询） ----------
+// ---------- 离线快照（localStorage，见 doc/15 §离线体验） ----------
+function saveSnapshot(list: ServerItem[]) {
+  if (!list.length) return;
+  try {
+    localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify({ ts: Math.floor(Date.now() / 1000), servers: list }));
+  } catch {
+    /* 隐私模式/配额满：快照是增强功能，失败静默 */
+  }
+}
+
+function loadSnapshot(): boolean {
+  let snap: { ts?: number; servers?: ServerItem[] } | null = null;
+  try {
+    snap = JSON.parse(localStorage.getItem(OFFLINE_CACHE_KEY) || 'null');
+  } catch {
+    snap = null;
+  }
+  if (!snap || !Array.isArray(snap.servers) || !snap.servers.length) return false;
+  const ageS = Math.floor(Date.now() / 1000) - (snap.ts || 0);
+  if (ageS < 0 || ageS > OFFLINE_CACHE_MAX_AGE_S) {
+    try {
+      localStorage.removeItem(OFFLINE_CACHE_KEY);
+    } catch {
+      /* 忽略 */
+    }
+    return false;
+  }
+  applyServers(snap.servers);
+  // 快照垫底：标记 stale（顶栏显示「离线 · 数据时间」），实时数据到达后自动清除
+  stale.value = true;
+  staleAt.value = snap.ts || 0;
+  secondsSinceUpdate.value = Math.min(ageS, 3600);
+  status.value = 'ready';
+  return true;
+}
+
+// ---------- 全局数据装载（servers 首屏 + SSE 增量 + 保底轮询 + 60s WG/FRP） ----------
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let clockTimer: ReturnType<typeof setInterval> | null = null;
 let wgTimer: ReturnType<typeof setInterval> | null = null;
 let frpTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -514,10 +659,19 @@ async function fetchAll() {
   try {
     const list = await api.getServers();
     applyServers(list);
-    summary.value = computeSummary(list);
+    status.value = 'ready';
     globalError.value = '';
+    needLogin.value = false;
+    stale.value = false;
+    saveSnapshot(list);
   } catch (e) {
-    globalError.value = e instanceof Error ? e.message : '后端连接失败';
+    const code = (e as { code?: string } | null)?.code;
+    if (code === 'UNAUTHORIZED') needLogin.value = true;
+    if (!servers.value.length) {
+      // 无快照垫底才打错误页：旧数据好过白屏
+      status.value = 'error';
+      globalError.value = e instanceof Error ? e.message : '后端连接失败';
+    }
   }
 }
 
@@ -538,9 +692,23 @@ async function fetchFrp() {
 }
 
 function reloadAll() {
+  if (status.value === 'error') status.value = 'loading';
   void fetchAll();
   void fetchWg();
   void fetchFrp();
+}
+
+// 可见性：切后台停 SSE（PWA/标签页语义，防连接堆积），回前台重连并立即刷新
+function onVisibilityChange() {
+  if (document.hidden) {
+    if (isRealtime.value) api.stopStream();
+    return;
+  }
+  if (isRealtime.value && !api.isStreamRunning()) {
+    api.startStream();
+    api.onServers(applyServers);
+  }
+  void fetchAll();
 }
 
 onMounted(async () => {
@@ -553,6 +721,9 @@ onMounted(async () => {
     avatarMode.value = savedAvatarMode;
   }
 
+  // 断网也能先渲染旧数据，再被实时数据覆盖
+  loadSnapshot();
+
   // 检查登录状态（真实：/admin/status 会话 cookie）
   try {
     const st = await api.getAdminStatus();
@@ -563,16 +734,40 @@ onMounted(async () => {
 
   api.onServers(applyServers);
   api.startStream();
-  reloadAll();
+  await reloadAll();
 
-  // WG/FRP 快照 60s 低频轮询（对齐 classic monitor store）
-  wgTimer = setInterval(fetchWg, 60000);
-  frpTimer = setInterval(fetchFrp, 60000);
+  // 保底轮询：SSE 活着时退居二线；被反代静默断流（readyState 仍 OPEN、
+  // onerror 不触发）时用「多久没收到帧」判活，超时补一次全量
+  pollTimer = setInterval(() => {
+    if (document.hidden) return;
+    const staleStream = !api.isStreamRunning() || Date.now() - api.lastEventAt() > SSE_STALE_MS;
+    if (staleStream) void fetchAll();
+  }, REFRESH_MS);
+
+  clockTimer = setInterval(() => {
+    secondsSinceUpdate.value += CLOCK_MS / 1000;
+    nowSec.value = Math.floor(Date.now() / 1000);
+  }, CLOCK_MS);
+
+  // WG/FRP 快照低频轮询（对齐 classic monitor store）
+  wgTimer = setInterval(() => {
+    if (document.hidden) return;
+    void fetchWg();
+  }, WG_REFRESH_MS);
+  frpTimer = setInterval(() => {
+    if (document.hidden) return;
+    void fetchFrp();
+  }, FRP_REFRESH_MS);
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
 });
 
 onUnmounted(() => {
   api.stopStream();
+  if (pollTimer) clearInterval(pollTimer);
+  if (clockTimer) clearInterval(clockTimer);
   if (wgTimer) clearInterval(wgTimer);
   if (frpTimer) clearInterval(frpTimer);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
 });
 </script>

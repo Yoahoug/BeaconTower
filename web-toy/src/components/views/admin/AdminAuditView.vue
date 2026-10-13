@@ -1,13 +1,13 @@
 <template>
   <div class="space-y-5 select-none">
     <!-- 顶栏操作区 -->
-    <div class="flex items-center justify-between flex-wrap gap-2">
-      <div>
-        <h2 class="text-lg font-black text-toy-black flex items-center gap-2">
-          <span>审计日志</span>
-          <span class="toy-badge bg-toy-yellow text-[10px]">不可篡改</span>
-        </h2>
-        <p class="text-xs font-bold text-toy-muted">管理操作留痕 · 来源 IP 哈希脱敏 · 历史追踪</p>
+    <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <h2 class="text-xl font-black text-toy-black">审计日志</h2>
+          <span class="toy-badge bg-toy-yellow text-[11px] px-2.5 py-0.5">不可篡改</span>
+        </div>
+        <p class="text-xs font-bold text-zinc-500">管理操作留痕 · 来源 IP 哈希脱敏 · 历史追踪</p>
       </div>
 
       <div class="flex items-center gap-2">

@@ -172,3 +172,54 @@ export function withTimeout<T>(promise: Promise<T>, ms = 15000): Promise<T> {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
+
+/**
+ * 非 JSON 响应（frpc 配置 text/plain、WG 凭证 zip）的下载出口。
+ * 不能走 request()：它无条件 res.json()，二进制/文本会被解析炸掉。
+ * 错误体仍是 JSON 封套，这里手工解出来保留后端原 msg。
+ */
+export async function downloadRaw(
+  path: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ blob: Blob; filename: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60000);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', signal: ctrl.signal });
+    if (!res.ok) {
+      let msg = `下载失败（HTTP ${res.status}）`;
+      try {
+        const data = await res.clone().json();
+        if (data?.msg) msg = data.msg;
+        if (typeof data?.code === 'number' && data.code !== 0) throw envelopeError(data.code, data.msg, res.status);
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+      }
+      throw new ApiError({ code: 'HTTP_ERROR', message: msg, status: res.status });
+    }
+    const dispo = res.headers.get('Content-Disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(dispo);
+    const filename = m ? decodeURIComponent(m[1]) : '';
+    return { blob: await res.blob(), filename };
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new ApiError({ code: 'TIMEOUT', message: '下载超时，请重试' });
+    }
+    throw new ApiError({ code: 'NETWORK', message: e instanceof Error ? e.message : '下载失败' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 触发浏览器保存一个 blob（下载 = 用户主动动作，失败由调用方提示） */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

@@ -14,6 +14,7 @@ on:
     paths:
       - 'Dockerfile'
       - 'web/**'
+      - 'web-toy/**'
       - 'internal/**'
       - 'main.go'
       - 'go.mod'

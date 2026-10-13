@@ -11,10 +11,16 @@ import type {
   WGPublicSnapshot,
   FRPPublicSnapshot,
   WGOverviewData,
+  WGHubDetailData,
   FRPPlatformItem,
   FRPTunnelItem,
+  FRPNodeItem,
+  FRPPlatformDetailData,
+  FRPDeployItem,
+  FRPSubdomainItem,
   SystemSettingsData,
   AuditLogItem,
+  AdminServerItem,
 } from '../types/backend';
 
 // ---------- 仿真数据 ----------
@@ -69,8 +75,8 @@ export const INITIAL_WG: WGPublicSnapshot = {
 
 export const INITIAL_FRP: FRPPublicSnapshot = {
   platforms: [
-    { name: 'Sakura FRP', kind: 'sakura', online: true, tunnel_total: 2, tunnel_online: 2, conns: 7, conns_src: 'platform', traffic_today: 14.2 * 1024 ** 3, nodes: [{ name: 'jp-tyo-01', group: '', online: true, load: 0.2, uptime: '12d' }], updated_at: Math.floor(Date.now() / 1000) },
-    { name: 'Cloudflare', kind: 'cloudflare', online: true, tunnel_total: 1, tunnel_online: 1, conns: 2, conns_src: 'local', traffic_today: 3.8 * 1024 ** 3, nodes: [{ name: 'Cloudflare 连接器', group: '', online: true, load: 0.1, uptime: '30d' }], updated_at: Math.floor(Date.now() / 1000) },
+    { name: 'Sakura FRP', kind: 'natfrp', online: true, tunnel_total: 2, tunnel_online: 2, conns: 7, conns_src: 'platform', traffic_today: 14.2 * 1024 ** 3, nodes: [{ name: 'jp-tyo-01', group: '', online: true, load: 0.2, uptime: 12 * 86400 }], updated_at: Math.floor(Date.now() / 1000) },
+    { name: 'Cloudflare', kind: 'cloudflared', online: true, tunnel_total: 1, tunnel_online: 1, conns: 2, conns_src: 'local', traffic_today: 3.8 * 1024 ** 3, nodes: [{ name: 'Cloudflare 连接器', group: '', online: true, load: 0.1, uptime: 30 * 86400 }], updated_at: Math.floor(Date.now() / 1000) },
   ],
   summary: { platform_total: 2, tunnel_total: 3, tunnel_online: 3, conns: 9, traffic_today: 18.0 * 1024 ** 3, node_in_use: 2, node_online: 2, updated_at: Math.floor(Date.now() / 1000) },
 };
@@ -149,24 +155,104 @@ export class MockDataEngine {
     return false;
   }
 
+  // 管理态清单（含 ssh/隐藏/暂停/排序/画像），供节点管理页联调
+  getAdminServers(): AdminServerItem[] {
+    return this.servers.map((s) => ({
+      id: s.id,
+      name: s.name,
+      region: s.region,
+      region_source: s.region_source,
+      tags: s.tags,
+      note_public: s.note_public,
+      note_private: '（mock）私有备注',
+      sort_order: s.id,
+      hidden: false,
+      enabled: true,
+      is_self: s.is_self,
+      created_at: Math.floor(Date.now() / 1000) - 86400 * 30,
+      ssh: {
+        local: s.is_self,
+        host: s.is_self ? 'host.docker.internal' : `10.0.0.${s.id}`,
+        port: 22,
+        username: 'root',
+        auth_type: 'key',
+        has_password: false,
+        has_key: !s.is_self,
+        host_key_fp: 'SHA256:（mock）',
+        ssh_ready: true,
+      },
+      profile: {
+        hostname: s.name,
+        os_name: s.profile.os,
+        os_version: s.profile.os_version,
+        kernel: '（mock）6.x',
+        arch: s.profile.arch,
+        cpu_model: '（mock）Virtual CPU',
+        cpu_cores: s.profile.cpu_cores,
+        mem_total: s.profile.mem_total,
+        disk_total: s.profile.disk_total,
+        virt: s.profile.virt,
+        public_ip: '',
+        geo_country: s.region,
+        geo_city: s.region,
+        power: { rapl: !!s.power, battery: false, base_load_w: 0, base_load_source: 'default' },
+      },
+      power: { rapl: !!s.power, battery: false, base_load_w: 0, base_load_source: 'default', last_error: '' },
+      last_success_at: Math.floor(Date.now() / 1000),
+      ssh_suggest_host: 'host.docker.internal',
+    } as AdminServerItem));
+  }
+
   getWGOverview(): WGOverviewData {
     return {
       network: { subnet: '10.66.66.0/24', hub_ip: '10.66.66.1', iface: 'wg0', keepalive: 25, mtu: 1420, active_hub_server_id: 1 },
       hubs: [
         { server_id: 1, name: 'Tokyo-Master-01', listen_port: 51820, endpoint: '141.147.18.92:51820', status: 'ok', last_error: '', quota_gb: null, month_rx: 142 * 1024 ** 3, month_tx: 284 * 1024 ** 3, month_billed: 284 * 1024 ** 3, is_active: true, has_keys: true },
         { server_id: 2, name: 'HongKong-Edge-02', listen_port: 51820, endpoint: '43.154.88.102:51820', status: 'ok', last_error: '', quota_gb: null, month_rx: 12 * 1024 ** 3, month_tx: 24 * 1024 ** 3, month_billed: 24 * 1024 ** 3, is_active: false, has_keys: true },
+        { server_id: 3, name: 'Rack-Standby-03', listen_port: 51830, endpoint: '107.173.35.9:51830', status: 'ok', last_error: '', quota_gb: null, month_rx: 96, month_tx: 184, month_billed: 184, is_active: false, has_keys: false },
       ],
       retired_hubs: [],
       peers: [
         { id: 1, kind: 'server', server_id: 1, name: 'Tokyo-Master-01', wg_ip: '10.66.66.1', public_key: 'MOCK', managed: true, status: 'online', last_error: '', last_handshake: Math.floor(Date.now() / 1000) - 12, rx_bytes: 142 * 1024 ** 3, tx_bytes: 284 * 1024 ** 3, can_export: true },
         { id: 2, kind: 'server', server_id: 2, name: 'HongKong-Edge-02', wg_ip: '10.66.66.2', public_key: 'MOCK', managed: true, status: 'online', last_error: '', last_handshake: Math.floor(Date.now() / 1000) - 8, rx_bytes: 48 * 1024 ** 3, tx_bytes: 92 * 1024 ** 3, can_export: true },
+        { id: 3, kind: 'server', server_id: 3, name: 'Rack-Standby-03', wg_ip: '10.66.66.3', public_key: 'MOCK', managed: false, status: 'offline', last_error: '巡检未回包（备援待命）', last_handshake: null, rx_bytes: 96, tx_bytes: 184, can_export: false },
         { id: 101, kind: 'device', server_id: null, name: 'Admin-iPhone', wg_ip: '10.66.66.11', public_key: 'MOCK', managed: true, status: 'online', last_error: '', last_handshake: Math.floor(Date.now() / 1000) - 45, rx_bytes: 3.2 * 1024 ** 3, tx_bytes: 1.1 * 1024 ** 3, can_export: true },
+        { id: 102, kind: 'device', server_id: null, name: 'Imported-Laptop', wg_ip: '10.66.66.12', public_key: 'MOCK', managed: false, status: 'online', last_error: '', last_handshake: Math.floor(Date.now() / 1000) - 300, rx_bytes: 1.4 * 1024 ** 3, tx_bytes: 0.6 * 1024 ** 3, can_export: false },
       ],
       servers: [
         { id: 1, name: 'Tokyo-Master-01', is_self: true, in_network: true, ssh_ready: true, wg_role: 'hub' },
         { id: 2, name: 'HongKong-Edge-02', is_self: false, in_network: true, ssh_ready: true, wg_role: 'standby' },
+        { id: 3, name: 'Rack-Standby-03', is_self: false, in_network: true, ssh_ready: true, wg_role: 'standby' },
       ],
       running_task: false,
+    };
+  }
+
+  // 中心节点面板：与后端口径一致——hub 是被点的这台，creds=设备、members=SSH 节点
+  getWGHubDetail(hubServerId: number): WGHubDetailData {
+    const ov = this.getWGOverview();
+    const hub = ov.hubs.find((h) => h.server_id === hubServerId) ?? ov.hubs[0];
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      hub: {
+        ...hub,
+        public_key: 'MOCKPUBKEYMOCKPUBKEYMOCKPUBKEYMOCKPUBKEYMOCK1234=',
+        key_fp: 'a1b2 c3d4 e5f6 0708',
+        checked_at: now - 120,
+        can_render: hub.has_keys,
+      },
+      creds: ov.peers.filter((p) => p.kind === 'device'),
+      members: ov.peers.filter((p) => p.kind === 'server'),
+      hubs_readiness: ov.hubs.map((h) => ({
+        server_id: h.server_id, name: h.name, is_active: h.is_active, status: h.status,
+        ready: h.has_keys && !!h.endpoint,
+        missing: h.has_keys ? (h.endpoint ? '' : '端点未知（先完成一次配置或巡检）') : '面板未持有私钥（导入的备援无法在此重渲染）',
+        endpoint: h.endpoint, listen_port: h.listen_port,
+      })),
+      network: {
+        subnet: ov.network!.subnet, hub_ip: ov.network!.hub_ip,
+        iface: ov.network!.iface, active_hub_server_id: ov.network!.active_hub_server_id,
+      },
     };
   }
 
@@ -191,14 +277,107 @@ export class MockDataEngine {
   }
 
   getFRPOverview(): { platforms: FRPPlatformItem[]; tunnels: FRPTunnelItem[] } {
+    const now = Math.floor(Date.now() / 1000);
     return {
       platforms: [
-        { id: 1, name: 'Sakura FRP', kind: 'sakura', username: 'mock', uid: '', group_name: '', speed_limit: '', realname: '', tunnel_used: 2, tunnel_quota: 10, tunnel_total: 2, tunnel_online: 2, conns: 7, conns_src: 'platform', traffic_day_used: 14.2 * 1024 ** 3, traffic_remain: 48 * 1024 ** 3, traffic_up: 0, traffic_down: 0, status: 'ok', last_error: '', last_sync_at: Math.floor(Date.now() / 1000), has_token: true, profile: '', token_expire_at: 0 },
+        {
+          id: 1, name: 'Sakura', kind: 'natfrp', username: 'mock', uid: '10001', group_name: '免费用户',
+          speed_limit: '10 Mbps', realname: '已实名', tunnel_used: 2, tunnel_quota: 2, tunnel_total: 2, tunnel_online: 2,
+          conns: 0, conns_src: '', traffic_day_used: 561781691, traffic_remain: 24443484504, traffic_up: 0, traffic_down: 0,
+          status: 'ok', last_error: '', last_sync_at: now, has_token: true,
+          profile: { sign_signed: true, sign_days: 6, sign_traffic: 253.1 }, token_expire_at: 0,
+        },
+        {
+          id: 2, name: 'ChmlFrp', kind: 'chmlfrp', username: 'mock', uid: '20002', group_name: 'VIP',
+          speed_limit: '8 Mbps（境外 32 Mbps）', realname: '已实名', tunnel_used: 1, tunnel_quota: 4, tunnel_total: 1, tunnel_online: 1,
+          conns: 3, conns_src: 'platform', traffic_day_used: 0, traffic_remain: 0, traffic_up: 0, traffic_down: 4.2 * 1024 ** 3,
+          status: 'ok', last_error: '', last_sync_at: now, has_token: true,
+          profile: { group_expire: '9999-09-09', integral: 17188, regtime: '2025-05-15' }, token_expire_at: now + 540,
+        },
+        {
+          id: 3, name: 'Cloudflare', kind: 'cloudflared', username: '', uid: '', group_name: '',
+          speed_limit: '', realname: '', tunnel_used: 2, tunnel_quota: -1, tunnel_total: 2, tunnel_online: 2,
+          conns: 2, conns_src: 'platform', traffic_day_used: 6994, traffic_remain: 0, traffic_up: 0, traffic_down: 0,
+          status: 'ok', last_error: '', last_sync_at: now, has_token: true,
+          profile: { plan: 'cloudflare-tunnel' }, token_expire_at: 0,
+        },
       ],
       tunnels: [
-        { id: 1, platform_id: 1, platform_name: 'Sakura FRP', platform_kind: 'sakura', remote_id: '1', name: 'mock-ssh', proto: 'tcp', node_id: '1', node_name: 'jp-tyo-01', local_ip: '127.0.0.1', local_port: 22, remote: 'jp.natfrp.net:38291', online: true, status: 'ok', status_reason: '', conns: 3, local_conns: 3, today_up: 2 * 1024 ** 3, today_down: 6 * 1024 ** 3, uptime: '12d', client_ver: '', extra: '', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: Math.floor(Date.now() / 1000) },
+        { id: 1, platform_id: 1, platform_name: 'Sakura', platform_kind: 'natfrp', remote_id: '1', name: 'New', proto: 'tcp', node_id: 'n1', node_name: '重庆三线PLUS4', local_ip: '192.168.0.10', local_port: 3000, remote: '36878', online: true, status: 'normal', status_reason: '', conns: 0, local_conns: 6, today_up: 0, today_down: 0, uptime: 12 * 86400, client_ver: '', extra: '', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: now },
+        { id: 2, platform_id: 1, platform_name: 'Sakura', platform_kind: 'natfrp', remote_id: '2', name: 'ssh', proto: 'tcp', node_id: 'n2', node_name: '长沙电信PLUS2', local_ip: 'localhost', local_port: 22, remote: '29377', online: true, status: 'normal', status_reason: '', conns: 0, local_conns: 2, today_up: 0, today_down: 0, uptime: 30 * 86400, client_ver: '', extra: '', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: now },
+        { id: 3, platform_id: 2, platform_name: 'ChmlFrp', platform_kind: 'chmlfrp', remote_id: '3', name: 'new', proto: 'tcp', node_id: 'n3', node_name: '英国伦敦', local_ip: '192.168.0.10', local_port: 3000, remote: '34280', online: true, status: 'normal', status_reason: '', conns: 0, local_conns: 6, today_up: 517, today_down: 103, uptime: 3600, client_ver: '', extra: '节点 uk.frp.one', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: now },
+        { id: 4, platform_id: 3, platform_name: 'Cloudflare', platform_kind: 'cloudflared', remote_id: '4', name: 'new.example.dev', proto: 'https', node_id: 'new.example.dev', node_name: 'new.example.dev', local_ip: '192.168.0.10', local_port: 3000, remote: 'new.example.dev', online: true, status: 'normal', status_reason: '', conns: 0, local_conns: 0, today_up: 0, today_down: 0, uptime: 0, client_ver: '', extra: 'cloudflare-tunnel · 独立专线（只读）', lock_edit: true, lock_delete: true, lock_migrate: false, synced_at: now },
+        { id: 6, platform_id: 3, platform_name: 'Cloudflare', platform_kind: 'cloudflared', remote_id: '6', name: 'tower.example.dev', proto: 'https', node_id: 'tower.example.dev', node_name: 'tower.example.dev', local_ip: '192.168.0.10', local_port: 8091, remote: 'tower.example.dev', online: true, status: 'normal', status_reason: '', conns: 0, local_conns: 0, today_up: 6994, today_down: 0, uptime: 0, client_ver: '', extra: 'cloudflare-tunnel', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: now },
       ],
     };
+  }
+
+  getFRPNodes(): FRPNodeItem[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [
+      { id: 1, platform_id: 1, platform_name: 'Sakura', remote_id: 'n1', name: '重庆三线PLUS4', host: 'frp-cq.example', area: '重庆', group_name: '普通节点', caps: ['http', 'create', 'udp'], online: true, load: 21.5, uptime: 30 * 86400, description: '', in_use: true, synced_at: now },
+      { id: 2, platform_id: 1, platform_name: 'Sakura', remote_id: 'n2', name: '长沙电信PLUS2', host: 'frp-cs.example', area: '长沙', group_name: 'VIP 3', caps: ['https', 'mainland'], online: true, load: 63.2, uptime: 12 * 86400, description: '', in_use: true, synced_at: now },
+      { id: 3, platform_id: 2, platform_name: 'ChmlFrp', remote_id: 'n3', name: '英国伦敦', host: 'uk.frp.one', area: '伦敦', group_name: '境外', caps: ['tcp', 'udp', 'nodefense'], online: true, load: 12.4, uptime: 6 * 86400, description: '', in_use: true, synced_at: now },
+      { id: 9, platform_id: 1, platform_name: 'Sakura', remote_id: 'n9', name: '[BETA]中国台湾CHT1', host: 'frp-few.example', area: '台湾', group_name: '普通节点', caps: ['http', 'create', 'beta'], online: true, load: 87.9, uptime: 86400, description: '', in_use: false, synced_at: now },
+      { id: 10, platform_id: 1, platform_name: 'Sakura', remote_id: 'n10', name: '东莞三线PLUS1', host: '', area: '东莞', group_name: 'VIP 3', caps: ['https', 'mainland', 'udp'], online: false, load: 0, uptime: 0, description: '', in_use: false, synced_at: now },
+    ];
+  }
+
+  getFRPPlatformDetail(id: number): FRPPlatformDetailData {
+    const ov = this.getFRPOverview();
+    const p = ov.platforms.find((x) => x.id === id) ?? ov.platforms[0];
+    return {
+      platform: p,
+      tunnels: ov.tunnels.filter((t) => t.platform_id === p.id),
+      nodes: this.getFRPNodes().filter((n) => n.platform_id === p.id),
+      usage: [],
+    };
+  }
+
+  getFRPFlow(): { label: string; used: number; remain: number }[] {
+    const now = Date.now();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(now - (6 - i) * 86400000);
+      return {
+        label: `${d.getMonth() + 1}/${d.getDate()}`,
+        used: (8 + Math.random() * 12) * 1024 ** 3,
+        remain: (40 + Math.random() * 20) * 1024 ** 3,
+      };
+    });
+  }
+
+  getFRPDeployments(): FRPDeployItem[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [
+      {
+        id: 1, platform_id: 1, platform_kind: 'natfrp', platform_name: 'Sakura', server_id: 1, server_name: 'Tokyo-Master-01',
+        tunnels: [
+          { id: 1, name: 'New', proto: 'tcp', local_ip: '192.168.0.10', local_port: 3000, remote: '36878' },
+          { id: 2, name: 'ssh', proto: 'tcp', local_ip: 'localhost', local_port: 22, remote: '29377' },
+        ],
+        tunnel_ids: [1, 2], image: 'ghcr.io/example/beacontower-frpc-natfrp:latest', container: 'beacontower-frpc-natfrp-1',
+        config_path: '/etc/beacontower-frpc/natfrp/frpc.ini', status: 'running', last_error: '', docker_ver: '29.2.0',
+        dirty: false, last_sync_at: now - 120, created_at: now - 86400, updated_at: now - 120,
+      },
+      {
+        id: 2, platform_id: 3, platform_kind: 'cloudflared', platform_name: 'Cloudflare', server_id: 1, server_name: 'Tokyo-Master-01',
+        tunnels: [{ id: 5, name: '（已删除）', missing: true }],
+        tunnel_ids: [5], image: 'docker.io/cloudflare/cloudflared:latest', container: 'beacontower-frpc-cloudflared-1',
+        config_path: '/etc/beacontower-frpc/cloudflared/README.txt', status: 'stopped', last_error: '', docker_ver: 'Docker version 29.2.0, build 0b9d198',
+        dirty: true, last_sync_at: now - 5400, created_at: now - 172800, updated_at: now - 5400,
+      },
+    ];
+  }
+
+  getFRPSubdomains(): FRPSubdomainItem[] {
+    return [
+      { id: 1, domain: 'frp.example.cn', record: 'nas', type: 'A', target: '1.2.3.4', ttl: '10分钟', remarks: '（mock）家庭 NAS' },
+      { id: 2, domain: 'frp.example.cn', record: 'web', type: 'CNAME', target: 'uk.frp.one', ttl: '1小时', remarks: '' },
+    ];
+  }
+
+  getFRPAvailableDomains(): { domain: string }[] {
+    return [{ domain: 'frp.example.cn' }, { domain: 'example.top' }];
   }
 
   toggleFRPTunnel(id: number): boolean {
@@ -207,7 +386,7 @@ export class MockDataEngine {
   }
 
   createFRPTunnel(payload: Partial<FRPTunnelItem>): FRPTunnelItem {
-    return { id: 99, platform_id: payload.platform_id ?? 1, platform_name: 'Sakura FRP', platform_kind: 'sakura', remote_id: '99', name: payload.name || 'mock', proto: 'tcp', node_id: '', node_name: '', local_ip: '127.0.0.1', local_port: 8080, remote: '', online: true, status: 'ok', status_reason: '', conns: 0, local_conns: 0, today_up: 0, today_down: 0, uptime: '', client_ver: '', extra: '', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: 0 };
+    return { id: 99, platform_id: payload.platform_id ?? 1, platform_name: 'Sakura FRP', platform_kind: 'natfrp', remote_id: '99', name: payload.name || 'mock', proto: 'tcp', node_id: '', node_name: '', local_ip: '127.0.0.1', local_port: 8080, remote: '', online: true, status: 'ok', status_reason: '', conns: 0, local_conns: 0, today_up: 0, today_down: 0, uptime: 0, client_ver: '', extra: '', lock_edit: false, lock_delete: false, lock_migrate: false, synced_at: 0 };
   }
 
   deleteFRPTunnel(id: number): boolean {

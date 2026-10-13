@@ -5,7 +5,7 @@
  * mock.ts 仅在显式 VITE_API_MODE=mock 的 dev 构建里启用，生产默认走本文件。
  */
 
-import { http, withTimeout, ApiError, notifyUnauthorized } from './http';
+import { http, withTimeout, downloadRaw, ApiError, notifyUnauthorized } from './http';
 import type {
   PublicSummary,
   ServerItem,
@@ -18,9 +18,28 @@ import type {
   WGOverviewData,
   WGTask,
   WGHubProbeResp,
+  WGHubDetailData,
+  WGSyncHubsResp,
   FRPOverviewData,
   FRPPlatformItem,
   FRPTunnelItem,
+  FRPNodeItem,
+  FRPPlatformDetailData,
+  FRPFlowPoint,
+  FRPTunnelInput,
+  FRPDeployItem,
+  FRPDockerStatus,
+  FRPSubdomainItem,
+  FRPSubdomainInput,
+  FRPDeviceStartData,
+  FRPDevicePollData,
+  WGPlanInput,
+  WGPlanResp,
+  WGImportInput,
+  WGTakeoverInput,
+  WGAssetItem,
+  WGAssetInput,
+  WGAssetProbeResult,
   SystemSettingsData,
   AuditResp,
   AdminServerItem,
@@ -129,6 +148,9 @@ export class RealtimeStream {
   private retryMs = 3000;
   private listeners: SSEListener[] = [];
   private lastServerList: ServerItem[] = [];
+  // 最近一次收到任何帧（snapshot/update/ping/open）的时刻：SSE 被反代静默断流时
+  // readyState 仍是 OPEN、onerror 也不触发，调用方据此判活并退化为全量轮询
+  lastEventAt = 0;
 
   subscribe(cb: SSEListener): void {
     this.listeners.push(cb);
@@ -140,6 +162,7 @@ export class RealtimeStream {
     if (this.es || typeof window === 'undefined') return;
     const es = new EventSource('/api/v1/public/stream');
     this.es = es;
+    this.lastEventAt = Date.now();
     const apply = (ev: MessageEvent) => {
       try {
         const list = JSON.parse(ev.data);
@@ -147,6 +170,7 @@ export class RealtimeStream {
           this.lastServerList = list;
           for (const cb of this.listeners) cb(list);
         }
+        this.lastEventAt = Date.now();
         this.retryMs = 3000;
       } catch {
         /* 坏帧静默忽略（classic 同口径） */
@@ -155,8 +179,13 @@ export class RealtimeStream {
     es.addEventListener('snapshot', apply);
     es.addEventListener('update', apply);
     es.addEventListener('ping', () => {
+      this.lastEventAt = Date.now();
       this.retryMs = 3000;
     });
+    es.onopen = () => {
+      this.lastEventAt = Date.now();
+      this.retryMs = 3000;
+    };
     es.onerror = () => {
       this.stop();
       this.retryTimer = setTimeout(() => this.start(), this.retryMs);
@@ -239,6 +268,11 @@ export const realApi = {
     }
   },
 
+  // 首次初始化（仅在未初始化时可用）：建管理员账号，成功后即持会话
+  async setup(payload: { username: string; password: string; setup_token?: string }): Promise<void> {
+    await withTimeout(http.post('/v1/admin/setup', payload, { timeoutMs: 20000, retries: 0 }), 25000);
+  },
+
   async logout(): Promise<void> {
     try {
       await http.post('/v1/admin/logout', {});
@@ -265,6 +299,34 @@ export const realApi = {
 
   async deleteServer(id: number): Promise<void> {
     await withTimeout(http.del(`/v1/admin/servers/${id}`, { timeoutMs: 20000 }));
+  },
+
+  // 编辑节点（名称/区域/标签/备注/排序/隐藏/暂停/SSH 参数）
+  async updateServer(id: number, payload: Record<string, unknown>): Promise<void> {
+    await withTimeout(http.put(`/v1/admin/servers/${id}`, payload, { timeoutMs: 20000 }), 25000);
+  },
+
+  // 密钥失联自愈：重输一次性密码重建面板代管密钥（不落库密码）
+  async rotateServerKey(id: number, password: string): Promise<{ detail?: string }> {
+    return withTimeout(
+      http.post<{ detail?: string }>(`/v1/admin/servers/${id}/rotate-key`, { password }, { timeoutMs: 45000, retries: 0 }),
+      50000,
+    );
+  },
+
+  // 重新定位（公网 IP 归属多源兜底，修「未定位」）
+  relocate(id: number): Promise<{ detail?: string; region?: string }> {
+    return withTimeout(http.post<{ detail?: string; region?: string }>(`/v1/admin/servers/${id}/locate`, {}, { timeoutMs: 40000, retries: 0 }), 45000);
+  },
+
+  // 功耗校准：写入基础功耗（电池放电实测口径）
+  async recalibratePower(id: number, baseLoadW: number): Promise<void> {
+    await withTimeout(http.put(`/v1/admin/servers/${id}/power-calibration`, { base_load_w: baseLoadW }, { timeoutMs: 20000 }), 25000);
+  },
+
+  // 排序（拖拽后的顺序写回）
+  async reorderServers(ids: number[]): Promise<void> {
+    await withTimeout(http.put('/v1/admin/servers/order', { ids }, { timeoutMs: 20000 }), 25000);
   },
 
   testConnection(ssh: Record<string, unknown>): Promise<TestConnResp> {
@@ -296,6 +358,22 @@ export const realApi = {
     );
   },
 
+  // 中心节点面板：概览 + 使用端凭证 + SSH 成员 + 主备就绪度（只读聚合，一次渲染一屏）
+  getWGHubDetail(hubServerId: number): Promise<WGHubDetailData> {
+    return withTimeout(
+      http.get<WGHubDetailData>(`/v1/admin/wg/hubs/${hubServerId}`, { retries: 0 }),
+      20000,
+    );
+  },
+
+  // 把某个成员整体下发到所有未退役中心（重建各中心 conf 并 syncconf）
+  syncWGPeerHubs(peerId: number): Promise<WGSyncHubsResp> {
+    return withTimeout(
+      http.post<WGSyncHubsResp>(`/v1/admin/wg/peers/${peerId}/sync-hubs`, {}, { timeoutMs: 90000, retries: 0 }),
+      95000,
+    );
+  },
+
   patrol(): Promise<{ ok: boolean }> {
     return withTimeout(http.post<{ ok: boolean }>('/v1/admin/wg/patrol', {}, { timeoutMs: 45000, retries: 0 }), 50000);
   },
@@ -308,17 +386,169 @@ export const realApi = {
     return withTimeout(http.del<{ detail: string }>(`/v1/admin/wg/peers/${id}`, { timeoutMs: 60000, retries: 0 }), 65000);
   },
 
-  getWGDeviceConf(id: number): Promise<{ conf: string; filename: string; endpoint: string; wg_ip: string }> {
-    return withTimeout(http.get<{ conf: string; filename: string; endpoint: string; wg_ip: string }>(`/v1/admin/wg/peers/${id}/conf`, { retries: 0 }), 20000);
+  // hub 为 0 时后端取现役中心；中心面板里导出的是「你正打开的这台中心」的视图
+  getWGDeviceConf(id: number, hubId = 0): Promise<{ conf: string; filename: string; endpoint: string; wg_ip: string }> {
+    const q = hubId ? `?hub=${hubId}` : '';
+    return withTimeout(
+      http.get<{ conf: string; filename: string; endpoint: string; wg_ip: string }>(`/v1/admin/wg/peers/${id}/conf${q}`, { retries: 0 }),
+      20000,
+    );
   },
 
-  // 内网穿透 FRP 管理
+  // 成员复验（SSH 实查接口与握手，返回判定与原文）：面板侧要真握手，给足 60s
+  verifyWGPeer(id: number): Promise<{ online: boolean; detail: string }> {
+    return withTimeout(
+      http.post<{ online: boolean; detail: string }>(`/v1/admin/wg/peers/${id}/verify`, {}, { timeoutMs: 60000, retries: 0 }),
+      70000,
+    );
+  },
+
+  // 重命名使用端（只影响面板显示与导出文件名）
+  async renameWGPeer(id: number, name: string): Promise<void> {
+    await withTimeout(http.put(`/v1/admin/wg/peers/${id}`, { name }, { timeoutMs: 20000, retries: 0 }), 25000);
+  },
+
+  // 重新签发使用端凭证（设备换钥重导入；面板托管成员走同一接口＝重新下发）
+  reissueWGPeer(id: number): Promise<{ wg_ip?: string; warn?: string }> {
+    return withTimeout(
+      http.post<{ wg_ip?: string; warn?: string }>(`/v1/admin/wg/peers/${id}/reissue`, {}, { timeoutMs: 60000, retries: 0 }),
+      65000,
+    );
+  },
+
+  // 清理已退役中心的记录（机器上的配置在退役时已备份，不动目标机）
+  async cleanupWGHub(serverId: number): Promise<void> {
+    await withTimeout(http.del(`/v1/admin/wg/hubs/${serverId}`, { timeoutMs: 20000, retries: 0 }), 25000);
+  },
+
+  // 把网外节点配置为中心（备援/现役）：整链路后台任务，进度走 /wg/tasks/:id
+  provisionWGHub(serverId: number, listenPort = 0): Promise<{ task_id: number; role: string; listen_port: number }> {
+    return withTimeout(
+      http.post<{ task_id: number; role: string; listen_port: number }>(
+        '/v1/admin/wg/hubs/provision',
+        { server_id: serverId, listen_port: listenPort },
+        { timeoutMs: 30000, retries: 0 },
+      ),
+      35000,
+    );
+  },
+
+  // 只读登记：机器上已有手工配好的 WG，仅读取登记为备援槽位，不写目标机
+  registerWGStandby(serverId: number): Promise<{
+    endpoint: string;
+    listen_port: number;
+    status: string;
+    udp: { checked: boolean; mode: string; ok: boolean; hint: string };
+  }> {
+    return withTimeout(
+      http.post<{
+        endpoint: string;
+        listen_port: number;
+        status: string;
+        udp: { checked: boolean; mode: string; ok: boolean; hint: string };
+      }>('/v1/admin/wg/hubs/standby', { server_id: serverId }, { timeoutMs: 60000, retries: 0 }),
+      65000,
+    );
+  },
+
+  // 纳管本机（面板宿主）入网：经宿主 SSH 拉起成员接口并回填握手
+  adoptWGServer(serverId: number): Promise<{ server_id: number; detail: string }> {
+    return withTimeout(
+      http.post<{ server_id: number; detail: string }>('/v1/admin/wg/adopt', { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
+      95000,
+    );
+  },
+
+  /** 组网预检（dry-run）：分配 IP + 并发 SSH 探测，不落库不改配置 */
+  wgPlan(payload: WGPlanInput): Promise<WGPlanResp> {
+    return withTimeout(http.post<WGPlanResp>('/v1/admin/wg/plan', payload, { timeoutMs: 60000, retries: 0 }), 65000);
+  },
+
+  /** 执行组网：落库 → 建任务 → 后台执行（进度走 /wg/tasks/:id） */
+  async wgApply(payload: WGPlanInput): Promise<{ task_id: number }> {
+    return withTimeout(
+      http.post<{ task_id: number }>('/v1/admin/wg/apply', payload, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  /** 导入现有网络：读现役 hub 实况建网收编成员 */
+  async wgImport(payload: WGImportInput): Promise<{ task_id: number }> {
+    return withTimeout(
+      http.post<{ task_id: number }>('/v1/admin/wg/import', payload, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  /** 新机接管现役中心：继承密钥与端口，成员只改端点 */
+  async wgTakeover(payload: WGTakeoverInput): Promise<{ task_id: number }> {
+    return withTimeout(
+      http.post<{ task_id: number }>('/v1/admin/wg/takeover', payload, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  // 资产中转：面板缓存安装包并推送到节点
+  wgAssets(): Promise<{ assets: WGAssetItem[] }> {
+    return withTimeout(http.get<{ assets: WGAssetItem[] }>('/v1/admin/wg/assets'), 20000);
+  },
+
+  async wgAssetUpsert(payload: WGAssetInput): Promise<{ id: number }> {
+    return withTimeout(http.post<{ id: number }>('/v1/admin/wg/assets', payload, { retries: 0 }), 20000);
+  },
+
+  async wgAssetDelete(id: number): Promise<void> {
+    await withTimeout(http.del(`/v1/admin/wg/assets/${id}`, { retries: 0 }), 20000);
+  },
+
+  wgAssetProbe(id: number): Promise<{ results: WGAssetProbeResult[] }> {
+    return withTimeout(
+      http.post<{ results: WGAssetProbeResult[] }>(`/v1/admin/wg/assets/${id}/probe`, {}, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  wgAssetFetch(id: number): Promise<{ path: string; size: number; sha256: string; via: string }> {
+    return withTimeout(
+      http.post<{ path: string; size: number; sha256: string; via: string }>(
+        `/v1/admin/wg/assets/${id}/fetch`,
+        {},
+        { timeoutMs: 600000, retries: 0 },
+      ),
+      610000,
+    );
+  },
+
+  async wgAssetPush(id: number, serverId: number): Promise<void> {
+    await withTimeout(
+      http.post(`/v1/admin/wg/assets/${id}/push`, { server_id: serverId }, { timeoutMs: 90000, retries: 0 }),
+      95000,
+    );
+  },
+
+  /** 使用端凭证 zip（A=现役 / B=备援） */
+  downloadWGCreds(): Promise<{ blob: Blob; filename: string }> {
+    return downloadRaw('/v1/admin/wg/creds.zip', { timeoutMs: 120000 });
+  },
+
+  // 内网穿透 FRP 管理（全部走外部平台 API：统一 retries:0，重试会重复建隧道/重复删除）
   getFRPOverview(): Promise<FRPOverviewData> {
     return withTimeout(http.get<FRPOverviewData>('/v1/admin/frp/overview'), 20000);
   },
 
-  getFRPNodes(): Promise<{ nodes: import('../types/backend').FRPNodeItem[] }> {
-    return withTimeout(http.get<{ nodes: import('../types/backend').FRPNodeItem[] }>('/v1/admin/frp/nodes'), 20000);
+  getFRPNodes(): Promise<{ nodes: FRPNodeItem[] }> {
+    return withTimeout(http.get<{ nodes: FRPNodeItem[] }>('/v1/admin/frp/nodes'), 20000);
+  },
+
+  getFRPPlatformDetail(id: number): Promise<FRPPlatformDetailData> {
+    return withTimeout(http.get<FRPPlatformDetailData>(`/v1/admin/frp/platforms/${id}`, { retries: 0 }), 20000);
+  },
+
+  getFRPFlow(id: number, kind = 'day'): Promise<{ points: FRPFlowPoint[] }> {
+    return withTimeout(
+      http.get<{ points: FRPFlowPoint[] }>(`/v1/admin/frp/platforms/${id}/flow?kind=${encodeURIComponent(kind)}`, { retries: 0 }),
+      20000,
+    );
   },
 
   async bindSakuraPlatform(name: string, token: string): Promise<void> {
@@ -329,6 +559,14 @@ export const realApi = {
     await withTimeout(http.post('/v1/admin/frp/cloudflared', { name, token }, { timeoutMs: 60000, retries: 0 }), 65000);
   },
 
+  async renameFRPPlatform(id: number, name: string): Promise<void> {
+    await withTimeout(http.put(`/v1/admin/frp/platforms/${id}`, { name }), 20000);
+  },
+
+  async deleteFRPPlatform(id: number): Promise<void> {
+    await withTimeout(http.del(`/v1/admin/frp/platforms/${id}`, { retries: 0 }), 35000);
+  },
+
   async syncFRPPlatform(platformId: number, full = true): Promise<void> {
     await withTimeout(
       http.post(`/v1/admin/frp/platforms/${platformId}/sync?full=${full ? 1 : 0}`, {}, { timeoutMs: 60000, retries: 0 }),
@@ -336,22 +574,177 @@ export const realApi = {
     );
   },
 
-  async createFRPTunnel(
-    platformId: number,
-    payload: { name: string; proto: string; node_id?: string; local_ip: string; local_port: number; remote_port?: number; domain?: string },
-  ): Promise<void> {
-    await withTimeout(
-      http.post(`/v1/admin/frp/platforms/${platformId}/tunnels`, payload, { timeoutMs: 60000, retries: 0 }),
+  async createFRPTunnel(platformId: number, payload: FRPTunnelInput): Promise<{ remote_id?: string; sync_error?: string }> {
+    return withTimeout(
+      http.post<{ remote_id?: string; sync_error?: string }>(
+        `/v1/admin/frp/platforms/${platformId}/tunnels`,
+        payload,
+        { timeoutMs: 60000, retries: 0 },
+      ),
       65000,
     );
+  },
+
+  async updateFRPTunnel(id: number, payload: FRPTunnelInput): Promise<void> {
+    await withTimeout(http.put(`/v1/admin/frp/tunnels/${id}`, payload, { timeoutMs: 30000, retries: 0 }), 35000);
   },
 
   async deleteFRPTunnel(id: number): Promise<void> {
     await withTimeout(http.del(`/v1/admin/frp/tunnels/${id}`, { timeoutMs: 30000, retries: 0 }), 35000);
   },
 
+  async lockFRPTunnel(id: number, locks: { edit: boolean; delete: boolean; migrate: boolean }): Promise<void> {
+    await withTimeout(http.post(`/v1/admin/frp/tunnels/${id}/lock`, locks, { timeoutMs: 30000, retries: 0 }), 35000);
+  },
+
+  async migrateFRPTunnel(id: number, nodeId: string): Promise<void> {
+    await withTimeout(
+      http.post(`/v1/admin/frp/tunnels/${id}/migrate`, { node_id: nodeId }, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
   async offlineFRPTunnel(id: number): Promise<void> {
     await withTimeout(http.post(`/v1/admin/frp/tunnels/${id}/offline`, {}, { timeoutMs: 30000, retries: 0 }), 35000);
+  },
+
+  async authFRPTunnel(id: number, ip = ''): Promise<{ ip: string }> {
+    return withTimeout(
+      http.post<{ ip: string }>(`/v1/admin/frp/tunnels/${id}/auth`, { ip }, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  /** frpc 配置下载：裸文本（text/plain），必须绕开 JSON 解包 */
+  downloadFRPTunnelConfig(id: number): Promise<{ blob: Blob; filename: string }> {
+    return downloadRaw(`/v1/admin/frp/tunnels/${id}/config`, { timeoutMs: 60000 });
+  },
+
+  getFRPTunnelTraffic(id: number): Promise<{ points: { label: string; used: number }[] }> {
+    return withTimeout(http.get<{ points: { label: string; used: number }[] }>(`/v1/admin/frp/tunnels/${id}/traffic`, { retries: 0 }), 30000);
+  },
+
+  // ---------- ChmlFrp 免费二级域名 ----------
+  getFRPSubdomains(platformId: number): Promise<{ subdomains: FRPSubdomainItem[] }> {
+    return withTimeout(http.get<{ subdomains: FRPSubdomainItem[] }>(`/v1/admin/frp/platforms/${platformId}/subdomains`, { retries: 0 }), 30000);
+  },
+
+  getFRPAvailableDomains(platformId: number): Promise<{ domains: { domain: string; [k: string]: unknown }[] }> {
+    return withTimeout(
+      http.get<{ domains: { domain: string; [k: string]: unknown }[] }>(
+        `/v1/admin/frp/platforms/${platformId}/subdomains/available`,
+        { retries: 0 },
+      ),
+      30000,
+    );
+  },
+
+  async createFRPSubdomain(platformId: number, payload: FRPSubdomainInput): Promise<void> {
+    await withTimeout(
+      http.post(`/v1/admin/frp/platforms/${platformId}/subdomains`, payload, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  async updateFRPSubdomain(platformId: number, payload: FRPSubdomainInput): Promise<void> {
+    await withTimeout(
+      http.put(`/v1/admin/frp/platforms/${platformId}/subdomains`, payload, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  async deleteFRPSubdomain(platformId: number, domain: string, record: string): Promise<void> {
+    await withTimeout(
+      http.del(
+        `/v1/admin/frp/platforms/${platformId}/subdomains?domain=${encodeURIComponent(domain)}&record=${encodeURIComponent(record)}`,
+        { timeoutMs: 30000, retries: 0 },
+      ),
+      35000,
+    );
+  },
+
+  // ---------- 客户端托管：面板经 SSH 在节点上部署/管理 frpc 容器 ----------
+  getFRPDeployments(refresh = false): Promise<{ deployments: FRPDeployItem[] }> {
+    return withTimeout(
+      http.get<{ deployments: FRPDeployItem[] }>(`/v1/admin/frp/deployments${refresh ? '?refresh=1' : ''}`, { retries: 0 }),
+      120000,
+    );
+  },
+
+  createFRPDeployment(payload: {
+    platform_id: number;
+    server_id: number;
+    tunnel_ids: number[];
+    install_docker: boolean;
+    image?: string;
+  }): Promise<{ deployment: FRPDeployItem; log_tail?: string }> {
+    return withTimeout(
+      http.post<{ deployment: FRPDeployItem; log_tail?: string }>('/v1/admin/frp/deployments', payload, {
+        timeoutMs: 720000,
+        retries: 0,
+      }),
+      730000,
+    );
+  },
+
+  async syncFRPDeployment(id: number): Promise<{ deployment: FRPDeployItem; log_tail?: string }> {
+    return withTimeout(
+      http.post<{ deployment: FRPDeployItem; log_tail?: string }>(`/v1/admin/frp/deployments/${id}/sync`, {}, { timeoutMs: 360000, retries: 0 }),
+      370000,
+    );
+  },
+
+  async actionFRPDeployment(id: number, action: 'restart' | 'stop' | 'start'): Promise<{ deployment: FRPDeployItem }> {
+    return withTimeout(
+      http.post<{ deployment: FRPDeployItem }>(`/v1/admin/frp/deployments/${id}/action`, { action }, { timeoutMs: 60000, retries: 0 }),
+      65000,
+    );
+  },
+
+  async statusFRPDeployment(id: number): Promise<{ deployment: FRPDeployItem }> {
+    return withTimeout(
+      http.post<{ deployment: FRPDeployItem }>(`/v1/admin/frp/deployments/${id}/status`, {}, { timeoutMs: 60000, retries: 0 }),
+      65000,
+    );
+  },
+
+  getFRPDeployLogs(id: number, tail = 200): Promise<{ container: string; logs: string }> {
+    return withTimeout(
+      http.get<{ container: string; logs: string }>(`/v1/admin/frp/deployments/${id}/logs?tail=${tail}`, { retries: 0 }),
+      65000,
+    );
+  },
+
+  async deleteFRPDeployment(id: number, keep = false): Promise<void> {
+    await withTimeout(http.del(`/v1/admin/frp/deployments/${id}${keep ? '?keep=1' : ''}`, { retries: 0 }), 65000);
+  },
+
+  /** 节点 Docker 探测/一键安装（install=true 会跑几分钟，前端需给出等待提示） */
+  async serverDocker(serverId: number, install = false): Promise<{ docker?: FRPDockerStatus; error?: string }> {
+    return withTimeout(
+      http.post<{ docker?: FRPDockerStatus; error?: string }>(
+        `/v1/admin/frp/servers/${serverId}/docker`,
+        { install },
+        { timeoutMs: install ? 720000 : 60000, retries: 0 },
+      ),
+      install ? 730000 : 65000,
+    );
+  },
+
+  // ChmlFrp 走 OAuth2 设备码（令牌 10 分钟寿命，续不上时前端弹重新授权）
+  startFRPDevice(reuseId = 0): Promise<FRPDeviceStartData> {
+    return withTimeout(
+      http.post<FRPDeviceStartData>('/v1/admin/frp/chmlfrp/device', { reuse_id: reuseId }, { timeoutMs: 30000, retries: 0 }),
+      35000,
+    );
+  },
+
+  pollFRPDevice(sessionId: string): Promise<FRPDevicePollData> {
+    return withTimeout(http.get<FRPDevicePollData>(`/v1/admin/frp/chmlfrp/device/${sessionId}`, { retries: 0 }), 30000);
+  },
+
+  async cancelFRPDevice(sessionId: string): Promise<void> {
+    await withTimeout(http.del(`/v1/admin/frp/chmlfrp/device/${sessionId}`, { retries: 0 }), 30000);
   },
 
   // 系统设置

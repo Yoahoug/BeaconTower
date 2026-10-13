@@ -29,7 +29,8 @@ export interface ServerProfile {
   mem_total: number;
   disk_total: number;
   virt: string;
-  net_ifaces?: number;
+  // 采集侧实际统计的网卡名（物理口逗号分隔列表；空＝未判定）
+  net_ifaces?: string;
 }
 
 export interface ServerMetrics {
@@ -128,14 +129,15 @@ export interface WGPublicSnapshot {
 /** GET /public/frp —— handler/frp.go FRPPublicSnapshot（platforms + summary 子对象） */
 export interface FRPPlatformView {
   name: string;
-  kind: 'sakura' | 'chmlfrp' | 'cloudflare' | string;
+  // 与 admin 端同口径：natfrp（樱花）/ chmlfrp / cloudflared
+  kind: 'natfrp' | 'chmlfrp' | 'cloudflared' | string;
   online: boolean;
   tunnel_total: number;
   tunnel_online: number;
   conns: number;
   conns_src: string;
   traffic_today: number;
-  nodes: { name: string; group: string; online: boolean; load: number; uptime: string }[];
+  nodes: { name: string; group: string; online: boolean; load: number; uptime: number }[];
   updated_at: number;
 }
 export interface FRPPublicSnapshot {
@@ -224,6 +226,43 @@ export interface WGTask {
   steps: { id: number; seq: number; server_id: number | null; title: string; status: string; log: string }[];
 }
 
+/** 中心槽位视图：overview.hubs[] 与中心面板 hub 同一形状，差别只在面板多几个只读字段 */
+export type WGHubView = WGOverviewData['hubs'][number];
+export type WGPeerView = WGOverviewData['peers'][number];
+
+/** GET /admin/wg/hubs/:id —— 中心节点面板（handler/wg_hub.go:134） */
+export interface WGHubDetailData {
+  hub: WGHubView & {
+    public_key: string;
+    key_fp: string;
+    checked_at: number | null;
+    can_render: boolean;
+  };
+  /** 使用端（设备）成员：手机/笔记本扫码即用 */
+  creds: WGPeerView[];
+  /** SSH 服务器成员：配置由面板下发 */
+  members: WGPeerView[];
+  /** 主备就绪度：现役 + 所有未退役备援能否一键换中心 */
+  hubs_readiness: {
+    server_id: number;
+    name: string;
+    is_active: boolean;
+    status: string;
+    ready: boolean;
+    missing: string;
+    endpoint: string;
+    listen_port: number;
+  }[];
+  network: { subnet: string; hub_ip: string; iface: string; active_hub_server_id: number };
+}
+
+/** POST /admin/wg/peers/:id/sync-hubs —— 把成员公钥整体下发给每台中心 */
+export interface WGSyncHubsResp {
+  synced: number;
+  total: number;
+  results: { ok: boolean; name?: string; server_id?: number; error?: string }[];
+}
+
 /** GET /admin/wg/hubs/:id/probe 响应字段（handler/wg_hub.go:240） */
 export interface WGHubProbeResp {
   mode: 'handshake' | 'reach';
@@ -239,10 +278,12 @@ export interface WGHubProbeResp {
 }
 
 // ---------- 管理端：内网穿透（/admin/frp/overview，handler/frp.go:65-128） ----------
+// kind 取值来自 internal/frp：natfrp（樱花）/ chmlfrp / cloudflared。
+// 注意不是 'sakura'/'cloudflare'——平台卡与页签都按后端口径分流。
 
 export interface FRPPlatformItem {
   id: number;
-  kind: 'sakura' | 'chmlfrp' | 'cloudflare' | string;
+  kind: 'natfrp' | 'chmlfrp' | 'cloudflared' | string;
   name: string;
   username: string;
   uid: string;
@@ -250,10 +291,12 @@ export interface FRPPlatformItem {
   speed_limit: string;
   realname: string;
   tunnel_used: number;
+  /** >0 配额；<0 不限；0 平台未报 */
   tunnel_quota: number;
   tunnel_total: number;
   tunnel_online: number;
   conns: number;
+  /** platform=平台侧连接数；local=面板节点侧实测 */
   conns_src: string;
   traffic_day_used: number;
   traffic_remain: number;
@@ -263,7 +306,9 @@ export interface FRPPlatformItem {
   last_error: string;
   last_sync_at: number;
   has_token: boolean;
-  profile: string;
+  /** frpPlatformView 解 JSON 后下发：任意键值（natfrp 有 sign_signed/sign_days） */
+  profile: Record<string, unknown>;
+  /** ChmlFrp access_token 到期时刻（10 分钟寿命） */
   token_expire_at: number;
 }
 
@@ -271,7 +316,7 @@ export interface FRPTunnelItem {
   id: number;
   platform_id: number;
   platform_name: string;
-  platform_kind: 'sakura' | 'chmlfrp' | 'cloudflare' | string;
+  platform_kind: 'natfrp' | 'chmlfrp' | 'cloudflared' | string;
   remote_id: string;
   name: string;
   proto: 'tcp' | 'udp' | 'http' | 'https' | string;
@@ -287,7 +332,8 @@ export interface FRPTunnelItem {
   local_conns: number;
   today_up: number;
   today_down: number;
-  uptime: string;
+  /** 秒（store.FRPTunnel.Uptime int64） */
+  uptime: number;
   client_ver: string;
   extra: string;
   lock_edit: boolean;
@@ -317,13 +363,209 @@ export interface FRPNodeItem {
   host: string;
   area: string;
   group_name: string;
-  caps: string;
+  /** store.FRPNode.Caps []string → JSON 数组 */
+  caps: string[];
   online: boolean;
   load: number;
-  uptime: string;
+  /** 秒 */
+  uptime: number;
   description: string;
   in_use: boolean;
   synced_at: number;
+}
+
+/** GET /admin/frp/platforms/:id → FRPPlatformDetail（账号 + 趋势 + 该平台隧道与节点） */
+export interface FRPUsagePoint {
+  ts: number;
+  traffic_day_used: number;
+  traffic_remain: number;
+  traffic_up: number;
+  traffic_down: number;
+  conns: number;
+  tunnel_online: number;
+  tunnel_total: number;
+}
+
+export interface FRPPlatformDetailData {
+  platform: FRPPlatformItem;
+  tunnels: FRPTunnelItem[];
+  nodes: FRPNodeItem[];
+  usage: FRPUsagePoint[];
+}
+
+/** GET /admin/frp/platforms/:id/flow → {points:[{label,used,remain}]} */
+export interface FRPFlowPoint {
+  label: string;
+  used: number;
+  remain?: number;
+}
+
+export type FRPTunnelInput = {
+  name: string;
+  proto: string;
+  node_id?: string;
+  local_ip?: string;
+  local_port?: number;
+  remote_port?: number;
+  domain?: string;
+  note?: string;
+  extra?: string;
+  encryption?: boolean;
+  compression?: boolean;
+};
+
+/** /admin/frp/deployments 视图（frpDeployView） */
+export interface FRPDeployTunnelRef {
+  id: number;
+  name: string;
+  proto?: string;
+  local_ip?: string;
+  local_port?: number;
+  remote?: string;
+  missing?: boolean;
+}
+
+export interface FRPDeployItem {
+  id: number;
+  platform_id: number;
+  platform_kind: string;
+  platform_name: string;
+  server_id: number;
+  server_name: string;
+  tunnels: FRPDeployTunnelRef[];
+  tunnel_ids: number[];
+  image: string;
+  container: string;
+  config_path: string;
+  /** running | stopped | missing | error | ... */
+  status: string;
+  last_error: string;
+  docker_ver: string;
+  /** 隧道增删改后置位：需「同步」重建容器 */
+  dirty: boolean;
+  last_sync_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** POST /admin/frp/servers/:id/docker → {docker:{present,version,daemon_ok,err}, error?} */
+export interface FRPDockerStatus {
+  present: boolean;
+  version: string;
+  daemon_ok: boolean;
+  err: string;
+}
+
+/** ChmlFrp 免费二级域名（仅 chmlfrp 平台支持） */
+export interface FRPSubdomainItem {
+  id: number;
+  domain: string;
+  record: string;
+  type: string;
+  target: string;
+  ttl: string;
+  remarks: string;
+}
+
+export interface FRPSubdomainInput {
+  domain: string;
+  record: string;
+  type: string;
+  target: string;
+  ttl: string;
+  remarks?: string;
+}
+
+/** POST /admin/frp/chmlfrp/device → 设备码授权会话 */
+export interface FRPDeviceStartData {
+  session_id: string;
+  user_code: string;
+  verify_url: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface FRPDevicePollData {
+  status: string;
+  user_code?: string;
+  verify_url?: string;
+  error?: string;
+  platform_id?: number;
+  username?: string;
+  sync_error?: string;
+}
+
+// ---------- 管理端：WG 组网向导 / 导入 / 接管 / 资产中转（handler/wg.go） ----------
+
+/** 预检/执行共用的入参（wgPlanInput） */
+export interface WGPlanInput {
+  network?: {
+    subnet?: string;
+    hub_ip?: string;
+    iface?: string;
+    keepalive?: number;
+    mtu?: number;
+  };
+  hub_server_id: number;
+  hub_port?: number;
+  spokes: { server_id: number; wg_ip?: string }[];
+}
+
+export interface WGIssue {
+  level: 'warn' | 'error';
+  msg: string;
+}
+
+export interface WGPlanResp {
+  network: { subnet: string; hub_ip: string; iface: string; keepalive: number; mtu: number };
+  hub: { server_id: number; name: string; listen_port: number; role: string; issues: WGIssue[] };
+  spokes: { server_id: number; name: string; wg_ip: string; allocated: boolean; issues: WGIssue[] }[];
+  /** true = 存在 error 级问题，向导不应放行执行 */
+  blocked: boolean;
+}
+
+/** 导入现有网络（wgImportInput） */
+export interface WGImportInput {
+  hub_server_id: number;
+  standby_server_id?: number;
+  candidates?: number[];
+}
+
+/** 新机接管现役中心（wgTakeoverInput） */
+export interface WGTakeoverInput {
+  target_server_id: number;
+  port?: number;
+  canary_server_id?: number;
+}
+
+export interface WGAssetItem {
+  id: number;
+  name: string;
+  version: string;
+  arch: string;
+  sha256: string;
+  sources: string[];
+  /** 已缓存到 data/assets/（可直接推送） */
+  cached: boolean;
+  size: number;
+  note: string;
+  updated_at: number;
+}
+
+export interface WGAssetInput {
+  name: string;
+  version: string;
+  arch: string;
+  sha256?: string;
+  sources: string[];
+  note?: string;
+}
+
+export interface WGAssetProbeResult {
+  url: string;
+  status: number;
+  latency_ms: number;
+  err?: string;
 }
 
 // ---------- 管理端：设置 / 审计 ----------

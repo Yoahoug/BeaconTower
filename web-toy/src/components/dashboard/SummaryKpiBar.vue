@@ -7,12 +7,15 @@
     >
       <div>
         <span class="text-xs font-black text-toy-black uppercase tracking-wider block">节点运行状态</span>
-        <div class="flex items-baseline gap-2 mt-1">
+        <div class="flex items-baseline gap-2 mt-1 flex-wrap">
           <span class="text-2xl font-black font-mono text-toy-black">
             {{ summary.online }} <span class="text-sm font-bold text-toy-muted">/ {{ summary.total }}</span>
           </span>
-          <span class="text-xs font-extrabold px-1.5 py-0.2 bg-toy-mint border border-toy-black rounded">
-            正常
+          <span
+            class="text-xs font-extrabold px-1.5 py-0.2 border border-toy-black rounded"
+            :class="summary.offline ? 'bg-toy-pink/70 text-white' : 'bg-toy-mint text-toy-black'"
+          >
+            {{ summary.offline ? `${summary.offline} 台离线` : '全部在线' }}
           </span>
         </div>
       </div>
@@ -74,14 +77,16 @@
             {{ summary.measured_count }}台计量
           </span>
         </div>
-        <div class="flex items-baseline gap-2 mt-1">
+        <div class="flex items-baseline gap-2 mt-1 flex-wrap">
           <span class="text-2xl font-black font-mono text-toy-black">
             {{ summary.watts }} <span class="text-xs font-bold">W</span>
           </span>
-          <span class="text-xs font-bold text-toy-muted">
-            ¥{{ summary.est_cost_month }}/月
+          <span class="text-xs font-bold text-toy-muted" title="本月累计用电量与估算电费">
+            {{ summary.month_kwh }} kWh<template v-if="costMeasured"> · ≈¥{{ summary.est_cost_month }}/月</template>
           </span>
         </div>
+        <span v-if="!summary.measured_count" class="text-[10px] font-bold text-toy-muted">暂无可测机型</span>
+        <span v-else-if="!costMeasured" class="text-[10px] font-bold text-toy-muted">电费未公开</span>
       </div>
       <!-- 纯 SVG 玩具能量闪电电池 (告别灯泡emoji) -->
       <div 
@@ -106,12 +111,18 @@
       <div>
         <span class="text-xs font-black text-toy-black uppercase tracking-wider block">今日消耗流量</span>
         <div class="flex items-baseline gap-2 mt-1">
-          <span class="text-2xl font-black font-mono text-toy-black">
-            {{ formatBytes(summary.day_in_total + summary.day_out_total) }}
-          </span>
-          <span class="text-xs font-mono text-toy-muted">
-            (入:{{ formatBytes(summary.day_in_total) }})
-          </span>
+          <template v-if="dayMeasured">
+            <span class="text-2xl font-black font-mono text-toy-black">
+              {{ formatBytes(summary.day_in_total + summary.day_out_total) }}
+            </span>
+            <span class="text-xs font-mono text-toy-muted">
+              ↑{{ formatBytes(summary.day_out_total) }} · ↓{{ formatBytes(summary.day_in_total) }}
+            </span>
+          </template>
+          <template v-else>
+            <span class="text-2xl font-black font-mono text-toy-black">—</span>
+            <span class="text-xs font-bold text-toy-muted">按日流量记录累积中</span>
+          </template>
         </div>
       </div>
       <!-- 纯 SVG 玩具数据存储盒 (告别纸箱emoji) -->
@@ -140,5 +151,9 @@ import { formatBytes, formatBps } from '../../services/format';
 
 defineProps<{
   summary: PublicSummary;
+  // 是否有节点下发了电费（关闭「公开页电费」时后端不下发 est_cost_month，
+  // 不能兜成 ¥0.00 误导）与今日流量（无按日记录时显示「累积中」而非 0 B）
+  costMeasured?: boolean;
+  dayMeasured?: boolean;
 }>();
 </script>
