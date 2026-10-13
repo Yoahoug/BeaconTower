@@ -656,14 +656,16 @@
 
         <div>
           <label class="block text-xs font-black text-toy-black mb-1">
-            隧道名<span v-if="tunnelModalIsCf" class="text-toy-muted font-bold">（Cloudflare 填完整 ingress 域名）</span>
+            {{ tunnelModalIsCf ? 'Ingress 域名' : '隧道名' }}<span class="text-red-600 font-black"> *</span>
           </label>
-          <input v-model="tunnelModal.name" type="text" :placeholder="tunnelModalIsCf ? 'app.example.com' : '例如 nas-web-drive'" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black" />
+          <input v-model="tunnelModal.name" type="text" :disabled="tunnelModalIsCf && tunnelModal.mode === 'edit'" :placeholder="tunnelModalIsCf ? 'app.example.com' : '例如 nas-web-drive'" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black disabled:opacity-60" />
+          <p v-if="tunnelModalIsCf && tunnelModal.mode === 'edit'" class="text-[10px] font-bold text-toy-muted mt-1">编辑时域名不可改（只支持改本地地址 / 端口）；换域名请删除后重建。</p>
+          <p v-else-if="tunnelModalIsCf" class="text-[10px] font-bold text-toy-muted mt-1">即对外访问的完整域名（须已在 Cloudflare 托管），本地服务由下方「本地地址 / 本地端口」决定。</p>
           <p v-if="tunnelModalIsChml" class="text-[10px] font-bold text-toy-muted mt-1">ChmlFrp 隧道名只允许字母、数字与下划线（不能带连字符、中文或空格）。</p>
         </div>
 
-        <div class="grid grid-cols-2 gap-2">
-          <div>
+        <div class="grid gap-2" :class="tunnelModalIsCf ? 'grid-cols-1' : 'grid-cols-2'">
+          <div v-if="!tunnelModalIsCf">
             <label class="block text-xs font-black text-toy-black mb-1">协议</label>
             <select v-model="tunnelModal.proto" class="w-full px-3 py-2 text-xs font-black bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none">
               <option value="tcp">TCP</option>
@@ -678,23 +680,22 @@
           </div>
         </div>
 
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid gap-2" :class="tunnelModalIsCf ? 'grid-cols-1' : 'grid-cols-2'">
           <div>
             <label class="block text-xs font-black text-toy-black mb-1">本地地址</label>
             <input v-model="tunnelModal.localIp" type="text" placeholder="127.0.0.1" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black font-mono" />
           </div>
-          <div>
+          <div v-if="!tunnelModalIsCf">
             <label class="block text-xs font-black text-toy-black mb-1">公网端口（0=平台分配）</label>
             <input v-model="tunnelModal.remotePort" type="number" min="0" max="65535" placeholder="0" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black font-mono" />
           </div>
         </div>
 
-        <div>
+        <div v-if="!tunnelModalIsCf">
           <label class="block text-xs font-black text-toy-black mb-1">
-            绑定域名<span v-if="tunnelModal.proto === 'http' || tunnelModal.proto === 'https'" class="text-red-600 font-black">*</span>
+            绑定域名<span v-if="tunnelModal.proto === 'http' || tunnelModal.proto === 'https'" class="text-red-600 font-black"> *</span>
           </label>
           <input v-model="tunnelModal.domain" type="text" placeholder="例如 nas.example.com" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black font-mono" />
-          <p v-if="tunnelModalIsCf" class="text-[10px] font-bold text-toy-muted mt-1">Cloudflare 平台下，隧道名本身即 ingress 域名，此处留空即可。</p>
         </div>
 
         <div v-if="!tunnelModalIsCf">
@@ -707,10 +708,12 @@
           </select>
         </div>
 
-        <div>
+        <div v-if="!tunnelModalIsCf">
           <label class="block text-xs font-black text-toy-black mb-1">备注 / 附加说明</label>
           <input v-model="tunnelModal.note" type="text" placeholder="这条隧道给谁用、指向什么服务" class="w-full px-3 py-2 text-xs font-bold bg-toy-bg border-2 border-toy-black rounded-xl focus:outline-none text-toy-black" />
         </div>
+
+        <p v-if="tunnelModalIsCf" class="text-[10px] font-bold text-toy-muted">Cloudflare 规则：一条 Ingress 域名 = 一个对外服务，所有节点共用统一容器（cloudflared）；创建时自动写入 ingress 规则并补 DNS CNAME（需 Zone ID 权限）。本地地址留空 / localhost / 127.0.0.1 时按 Docker 网桥网关（172.17.0.1）处理。</p>
 
         <p v-if="tunnelModal.error" class="p-2 bg-red-100 border border-red-500 rounded-lg text-xs font-bold text-red-700">{{ tunnelModal.error }}</p>
         <div class="pt-1 flex items-center justify-end gap-2">
@@ -1406,6 +1409,9 @@ function onCreatePlatformChange() {
   m.platformName = p?.name || '';
   m.platformKind = p?.kind || '';
   m.nodeId = '';
+  // Cloudflare 没有协议概念（ingress service 固定 http://），切到 CF 时复位，
+  // 避免把别的平台上选过的 http/https 一起带过去
+  if (p?.kind === 'cloudflared') m.proto = 'tcp';
   m.nodes = details.value[m.platformId]?.nodes || [];
 }
 
@@ -1436,19 +1442,23 @@ function openTunnelEdit(t: FRPTunnelItem) {
 async function submitTunnel() {
   const m = tunnelModal.value;
   if (!m) return;
+  const isCf = tunnelModalIsCf.value;
+  // Cloudflare 下 name 即 ingress 域名，协议/公网端口/绑定域名/备注都没有平台语义
+  // （后端 CF 分支只消费 name/local_ip/local_port），在这里统一归一，避免把界面上
+  // 隐藏字段里的陈留值发给后端
   const payload = {
     name: m.name.trim(),
-    proto: m.proto,
+    proto: isCf ? 'tcp' : m.proto,
     node_id: m.nodeId,
     local_ip: m.localIp.trim(),
     local_port: Number(m.localPort) || 0,
-    remote_port: Number(m.remotePort) || 0,
-    domain: m.domain.trim(),
-    note: m.note.trim(),
+    remote_port: isCf ? 0 : Number(m.remotePort) || 0,
+    domain: isCf ? '' : m.domain.trim(),
+    note: isCf ? '' : m.note.trim(),
     extra: '',
   };
   if (!payload.name) {
-    m.error = '请填写隧道名';
+    m.error = isCf ? '请填写 Ingress 域名' : '请填写隧道名';
     return;
   }
   if (!payload.local_port) {
@@ -1459,12 +1469,12 @@ async function submitTunnel() {
     m.error = '本地端口必须在 1-65535 之间';
     return;
   }
-  if ((m.proto === 'http' || m.proto === 'https') && !payload.domain && !tunnelModalIsCf.value) {
+  if ((m.proto === 'http' || m.proto === 'https') && !payload.domain && !isCf) {
     m.error = 'HTTP(S) 隧道必须填写绑定域名';
     return;
   }
-  if (tunnelModalIsCf.value && !payload.name.includes('.')) {
-    m.error = 'Cloudflare 的隧道名是 ingress 域名，须填完整域名（如 app.example.com）';
+  if (isCf && !payload.name.includes('.')) {
+    m.error = 'Cloudflare 的 Ingress 域名须是完整域名（如 app.example.com）';
     return;
   }
   if (tunnelModalIsChml.value && !/^[A-Za-z0-9_]+$/.test(payload.name)) {
@@ -1475,7 +1485,7 @@ async function submitTunnel() {
   m.error = '';
   try {
     if (m.mode === 'create') {
-      if (!tunnelModalIsCf.value && !payload.node_id) {
+      if (!isCf && !payload.node_id) {
         m.error = '请选择节点';
         return;
       }
