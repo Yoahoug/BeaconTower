@@ -5,11 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> [1/3] 构建 toy 前端（默认主题）"
-npm run build:toy
-
-echo "==> [2/3] 构建 classic 前端（/classic/ 主题）"
+echo "==> [1/3] 构建 classic 前端（Sky Glass，默认主题，挂根路径 /）"
 npm run build:classic
+
+echo "==> [2/3] 构建 toy 前端（/toy/ 主题）"
+npm run build:toy
 
 echo "==> [3/3] 编译后端（嵌入两套 dist）"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o beacontower .

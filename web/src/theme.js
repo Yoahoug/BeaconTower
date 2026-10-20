@@ -15,7 +15,7 @@ export const THEMES = [
     id: 'toy',
     name: 'Toy Neubrutalism · 玩具新野兽派',
     desc: '纯黑物理注塑外框、高对比度积木明黄配色、趣味像素机器人与清晰运维大字。',
-    path: '/',
+    path: '/toy/',
     icon: '🧸',
     current: false,
     available: true,
@@ -24,7 +24,7 @@ export const THEMES = [
     id: 'classic',
     name: 'Sky Glass · 天空玻璃拟态',
     desc: '经典亮色拟态界面，极光渐变背景与半透明玻璃卡片设计。',
-    path: '/classic/',
+    path: '/',
     icon: '🪟',
     current: true,
     available: true,
@@ -66,7 +66,7 @@ export function savePreferredTheme(id) {
 export function switchTheme(t) {
   savePreferredTheme(t.id)
   if (window.location.port === '5173' && t.id === 'toy') {
-    window.location.href = `http://${window.location.hostname}:5174`
+    window.location.href = `http://${window.location.hostname}:5174/toy/`
     return
   }
   if (window.location.port === '5174' && t.id === 'classic') {

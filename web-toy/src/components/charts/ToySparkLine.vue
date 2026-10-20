@@ -12,7 +12,7 @@
         <line :x1="padX" :y1="H - padY" :x2="W - padX" :y2="H - padY" stroke="#121212" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="3 3" />
         <!-- 面积 + 折线 -->
         <polygon v-if="areaPoints" :points="areaPoints" :fill="color" fill-opacity="0.25" />
-        <polyline v-if="linePoints" :points="linePoints" fill="none" stroke="#121212" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <polyline v-if="linePoints" :points="linePoints" fill="none" stroke="#121212" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
         <!-- 末点 -->
         <circle v-if="lastPoint" :cx="lastPoint.x" :cy="lastPoint.y" r="3.2" :fill="color" stroke="#121212" stroke-width="1.6" />
         <!-- Hover 指示 -->
@@ -46,10 +46,16 @@ const props = withDefaults(defineProps<{
   color?: string;
   height?: number;
   format?: (v: number) => string;
+  // 固定量程（可选）：CPU 传 0–100 才不会把小波动放大成满屏锯齿；
+  // 不传时从 0 起、峰值的 1.12 倍封顶，比「窗口内 min–max」更诚实地反映量级。
+  min?: number | null;
+  max?: number | null;
 }>(), {
   color: '#38BDF8',
   height: 56,
   format: (v: number) => String(Math.round(v)),
+  min: null,
+  max: null,
 });
 
 const W = 300;
@@ -57,16 +63,24 @@ const H = 80;
 const padX = 4;
 const padY = 8;
 
-const min = computed(() => (props.data.length ? Math.min(...props.data) : 0));
-const max = computed(() => (props.data.length ? Math.max(...props.data) : 1));
+const domainMin = computed(() => {
+  if (props.min != null) return props.min;
+  return 0;
+});
+
+const domainMax = computed(() => {
+  if (props.max != null) return Math.max(props.max, domainMin.value + 1);
+  const peak = props.data.length ? Math.max(...props.data) : 1;
+  return Math.max(peak * 1.12, domainMin.value + 1, 1);
+});
 
 const points = computed(() => {
   const n = props.data.length;
   if (!n) return [] as { x: number; y: number }[];
-  const span = Math.max(max.value - min.value, 1e-6);
+  const span = Math.max(domainMax.value - domainMin.value, 1e-6);
   return props.data.map((v, i) => ({
     x: padX + (n === 1 ? 0 : (i / (n - 1)) * (W - 2 * padX)),
-    y: H - padY - ((v - min.value) / span) * (H - 2 * padY),
+    y: H - padY - ((Math.max(v, domainMin.value) - domainMin.value) / span) * (H - 2 * padY),
   }));
 });
 

@@ -15,10 +15,10 @@ const keepDistPlaceholder = {
 }
 
 export default defineConfig({
-  // v2.8 起 classic 主题挂载在 /classic/（doc/18）：资源、SW、manifest 的 URL
-  // 全部按此前缀生成，与后端 router 的主题作用域（/classic/assets、/classic/sw.js…）
-  // 对齐。缺了它产物引用根 /assets/*，会被根作用域的 toy 资源接管而 404（白屏）。
-  base: '/classic/',
+  // v2.9 起 Sky Glass（classic）成为根路径默认主题：资源、SW、manifest 的 URL
+  // 全部按根作用域生成，与后端 router 的默认主题作用域（/assets、/sw.js…）对齐。
+  // toy 迁至 /toy/（自身 base '/toy/'）；旧 /classic/* 地址由后端 302 回根路径。
+  base: '/',
   plugins: [
     vue(),
     keepDistPlaceholder,

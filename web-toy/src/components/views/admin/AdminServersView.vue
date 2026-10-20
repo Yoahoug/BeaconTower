@@ -194,7 +194,7 @@
     </div>
 
     <!-- 修复密钥弹窗 -->
-    <div v-if="repairTarget" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="repairTarget" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <h3 class="text-base font-black text-toy-black">修复密钥 · {{ repairTarget.name }}</h3>
         <p class="mt-1 text-[11px] font-bold text-toy-muted">
@@ -219,7 +219,7 @@
     </div>
 
     <!-- 功耗校准弹窗 -->
-    <div v-if="calibTarget" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="calibTarget" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <h3 class="text-base font-black text-toy-black">功耗校准 · {{ calibTarget.name }}</h3>
         <p class="mt-1 text-[11px] font-bold text-toy-muted">
@@ -252,7 +252,7 @@
     />
 
     <!-- 风格内确认弹窗（替代原生 confirm） -->
-    <div v-if="confirmText" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="confirmText" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }" role="alertdialog" aria-modal="true">
         <h3 class="text-base font-black text-toy-black flex items-center gap-2"><span>⚠️</span>请确认</h3>
         <p class="mt-2 text-xs font-bold text-toy-muted">{{ confirmText }}</p>

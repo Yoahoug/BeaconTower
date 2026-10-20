@@ -43,8 +43,21 @@ const a11yLabel = computed(() =>
 const labels = computed(() => {
   const n = props.series[0]?.data.length || 0
   if (props.xLabels?.length === n) return props.xLabels
-  return Array.from({ length: n }, (_, i) => `-${n - 1 - i}m`)
+  // 采样点间隔由采集设置决定（默认 10s），不能硬编码成「分钟」；
+  // 没有真实时间轴时用「第 N 次前」表达，避免把 40 点窗口误标成 40 分钟。
+  return Array.from({ length: n }, (_, i) => (i === n - 1 ? '现在' : `${n - 1 - i} 次前`))
 })
+
+// 40 个标签交给 hideOverlap 会隔一个显示，密且容易把「现在」挤掉，轴尾
+// 看着像停在「1 次前」。改用 interval 主动抽稀，并强制保留末点；窄屏
+// （手机单列卡片）再降一档密度，避免「现在」被 hideOverlap 二次裁掉。
+function labelInterval(index) {
+  const n = labels.value.length
+  if (n <= 18) return true
+  const narrow = (chartDom.value?.clientWidth || 0) < 520
+  const step = narrow ? 10 : 6
+  return index === n - 1 || (n - 1 - index) % step === 0
+}
 
 // #rrggbb → rgba()，用于渐变面积与柔光（不依赖 echarts 内部模块）
 function hexA(hex, alpha) {
@@ -81,7 +94,7 @@ function render() {
         data: labels.value,
         axisLine: { lineStyle: { color: 'rgba(23, 32, 64, 0.12)' } },
         axisTick: { show: false },
-        axisLabel: { color: '#9aa3bc', fontSize: 11, hideOverlap: true },
+        axisLabel: { color: '#9aa3bc', fontSize: 11, hideOverlap: true, interval: labelInterval },
       },
       yAxis: {
         type: 'value',

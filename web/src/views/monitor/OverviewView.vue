@@ -142,8 +142,23 @@ const powerSeries = computed(() => [
             <template v-else>—</template>
           </div>
           <div class="kpi-card__sub">
+            {{ monitor.summary.measuredCount ? `${monitor.summary.measuredCount} 台可测` : '暂无可测机型' }}
+          </div>
+        </div>
+
+        <div class="kpi-card kpi-card--violet spot bt-enter" style="--i: 7" v-spotlight>
+          <div class="kpi-card__label"><AppIcon name="calendar" aria-hidden="true" />本月电费</div>
+          <div class="kpi-card__value">
+            <TweenNumber
+              v-if="monitor.summary.costMeasured"
+              :value="monitor.summary.estCostMonth"
+              :format="fmtCost"
+            />
+            <template v-else>—</template>
+          </div>
+          <div class="kpi-card__sub">
             <template v-if="!monitor.summary.measuredCount">暂无可测机型</template>
-            <template v-else-if="monitor.summary.costMeasured">≈ {{ fmtCost(monitor.summary.estCostMonth) }}</template>
+            <template v-else-if="monitor.summary.costMeasured">按当前电价估算</template>
             <template v-else>电费未公开</template>
           </div>
         </div>
@@ -152,7 +167,7 @@ const powerSeries = computed(() => [
       <!-- 全网趋势 -->
       <section class="bt-card trend-panel" aria-label="全网趋势">
         <div class="bt-card__head">
-          <div class="bt-card__title">全网吞吐 · 近 2 分钟</div>
+          <div class="bt-card__title">全网吞吐 · 最近 40 次采集</div>
           <div class="trend-legend tnum">
             <span><i class="lg up" />上行 {{ fmtBps(monitor.summary.upBps) }}</span>
             <span><i class="lg down" />下行 {{ fmtBps(monitor.summary.downBps) }}</span>

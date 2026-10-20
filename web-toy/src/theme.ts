@@ -15,7 +15,7 @@ export interface ThemeEntry {
   id: string;
   name: string;
   desc: string;
-  /** 挂载路径：默认主题 '/', 其余 '/<id>/' */
+  /** 挂载路径：默认主题 '/', 其余 '/<id>/'（v2.9：classic 默认，toy 在 '/toy/'） */
   path: string;
   icon: string;
   /** 是否为当前代码所属主题 */
@@ -29,7 +29,7 @@ export const THEMES: ThemeEntry[] = [
     id: 'toy',
     name: 'Toy Neubrutalism · 玩具新野兽派',
     desc: '纯黑物理注塑外框、高对比度积木明黄配色、趣味像素机器人与清晰运维大字。',
-    path: '/',
+    path: '/toy/',
     icon: '🧸',
     current: true,
     available: true,
@@ -38,7 +38,7 @@ export const THEMES: ThemeEntry[] = [
     id: 'classic',
     name: 'Sky Glass · 天空玻璃拟态',
     desc: '经典亮色拟态界面，极光渐变背景与半透明玻璃卡片设计。',
-    path: '/classic/',
+    path: '/',
     icon: '🪟',
     current: false,
     available: true,

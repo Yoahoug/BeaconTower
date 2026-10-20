@@ -503,7 +503,7 @@
     </template>
 
     <!-- 弹窗 0: 后台任务进度（切换中心 / 配置备援等） -->
-    <div v-if="taskModal" class="fixed inset-0 z-[55] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="taskModal" class="fixed inset-0 z-[55] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-5 max-h-[85vh] overflow-y-auto" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black flex items-center gap-2">
@@ -536,7 +536,7 @@
     </div>
 
     <!-- 弹窗 1: 查看配置 & 扫码二维码弹窗 -->
-    <div v-if="selectedDevice" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="selectedDevice" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div 
         class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 relative overflow-hidden"
         :style="{ boxShadow: '6px 6px 0px #121212' }"
@@ -593,7 +593,7 @@
     </div>
 
     <!-- 弹窗 2: 新增设备弹窗 -->
-    <div v-if="isAddDeviceModalOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="isAddDeviceModalOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div 
         class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-6 relative overflow-hidden"
         :style="{ boxShadow: '6px 6px 0px #121212' }"
@@ -647,7 +647,7 @@
     </div>
 
     <!-- 弹窗 3: 重命名使用端 -->
-    <div v-if="renameTarget" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="renameTarget" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <h3 class="text-base font-black text-toy-black">重命名使用端</h3>
         <p class="mt-1 text-[11px] font-bold text-toy-muted">只影响面板显示与导出文件名，WG 公钥/私钥不变。</p>
@@ -734,7 +734,7 @@
     </div>
 
     <!-- 弹窗 4: 组网向导（预检 → 执行） -->
-    <div v-if="wizardOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="wizardOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-3xl w-full p-6 space-y-4 max-h-[92vh] overflow-y-auto" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <div>
@@ -831,7 +831,7 @@
     </div>
 
     <!-- 弹窗 5: 导入现有网络 -->
-    <div v-if="importOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="importOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <div>
@@ -873,7 +873,7 @@
     </div>
 
     <!-- 弹窗 6: 新机接管现役中心 -->
-    <div v-if="takeoverOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="takeoverOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3 max-h-[88vh] overflow-y-auto" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <div>
@@ -926,7 +926,7 @@
     </div>
 
     <!-- 弹窗 7: 注册/编辑资产 -->
-    <div v-if="assetModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="assetModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">{{ assetModal.id ? '编辑资产' : '注册资产' }}</h3>
@@ -963,7 +963,7 @@
     </div>
 
     <!-- 弹窗 8: 推送资产到节点 -->
-    <div v-if="pushAsset" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="pushAsset" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">推送资产到节点</h3>
@@ -988,7 +988,7 @@
     </div>
 
     <!-- 弹窗 4: 中心节点面板（概览 / 主备就绪度 / 使用端凭证 / SSH 成员） -->
-    <div v-if="hubModal" class="fixed inset-0 z-[45] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="hubModal" class="fixed inset-0 z-[45] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div
         class="bg-white border-3 border-toy-black rounded-2xl max-w-3xl w-full max-h-[88vh] overflow-y-auto"
         :style="{ boxShadow: '6px 6px 0px #121212' }"
@@ -1256,7 +1256,7 @@
     </div>
 
     <!-- 风格内确认弹窗（替代原生 confirm） -->
-    <div v-if="confirmText" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="confirmText" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }" role="alertdialog" aria-modal="true">
         <h3 class="text-base font-black text-toy-black flex items-center gap-2"><span>⚠️</span>请确认</h3>
         <p class="mt-2 text-xs font-bold text-toy-muted">{{ confirmText }}</p>

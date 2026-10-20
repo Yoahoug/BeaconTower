@@ -30,9 +30,14 @@ export function formatUptime(seconds: number): string {
 
 // 能耗口径与 classic utils/format 对齐：今日 kWh 后端恒为 null（尚未接入），
 // 显示「—」而不是 0.000，避免 RAPL 机器被误读成零耗电
-export function formatKwh(kwh: number | null | undefined, digits = 3): string {
+export function formatKwh(kwh: number | null | undefined): string {
   if (kwh === null || kwh === undefined || !Number.isFinite(Number(kwh))) return '—';
-  return `${Number(kwh).toFixed(digits)} kWh`;
+  const n = Number(kwh);
+  // 自适应小数位（与 classic fmtKwh 同口径）：13.320 → 13.3，0.014 保留 3 位，
+  // 避免卡片里出现无意义的三位小数噪声。
+  if (n >= 100) return `${Math.round(n)} kWh`;
+  if (n >= 10) return `${n.toFixed(1)} kWh`;
+  return `${n.toFixed(n >= 1 ? 2 : 3)} kWh`;
 }
 
 export function formatCost(cny: number | null | undefined): string {

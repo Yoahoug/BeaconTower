@@ -545,7 +545,7 @@
     </template>
 
     <!-- ===== 弹窗：绑定 Sakura / Cloudflare ===== -->
-    <div v-if="bindModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="bindModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 relative" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-3 border-b-2.5 border-toy-black">
           <div class="flex items-center gap-2">
@@ -584,7 +584,7 @@
     </div>
 
     <!-- ===== 弹窗：Cloudflare Token 获取指引 ===== -->
-    <div v-if="cfHelpModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="cfHelpModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">如何获取 Cloudflare API Token</h3>
@@ -610,7 +610,7 @@
     </div>
 
     <!-- ===== 弹窗：ChmlFrp 设备码授权 ===== -->
-    <div v-if="deviceModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="deviceModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">{{ deviceModal.reuseId ? '重新授权 ChmlFrp' : '授权 ChmlFrp' }}</h3>
@@ -639,7 +639,7 @@
     </div>
 
     <!-- ===== 弹窗：建/改隧道 ===== -->
-    <div v-if="tunnelModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="tunnelModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3 max-h-[92vh] overflow-y-auto" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">{{ tunnelModal.mode === 'create' ? '新建隧道' : '编辑隧道' }}</h3>
@@ -726,7 +726,7 @@
     </div>
 
     <!-- ===== 弹窗：迁移节点 ===== -->
-    <div v-if="migrateModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="migrateModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">迁移隧道节点</h3>
@@ -748,7 +748,7 @@
     </div>
 
     <!-- ===== 弹窗：锁定设置（Sakura） ===== -->
-    <div v-if="lockModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="lockModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">锁定设置</h3>
@@ -775,7 +775,7 @@
     </div>
 
     <!-- ===== 弹窗：二级域名 ===== -->
-    <div v-if="subModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="subModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <h3 class="text-base font-black text-toy-black">{{ subModal.mode === 'create' ? '新建解析' : '修改解析' }}</h3>
@@ -825,7 +825,7 @@
     </div>
 
     <!-- ===== 弹窗：部署 / 调整客户端托管 ===== -->
-    <div v-if="deployModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="deployModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-lg w-full p-6 space-y-3 max-h-[92vh] overflow-y-auto" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <div>
@@ -895,7 +895,7 @@
     </div>
 
     <!-- ===== 弹窗：托管客户端日志 ===== -->
-    <div v-if="deployLogs" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="deployLogs" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-3xl w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <div class="flex items-center justify-between pb-2 border-b-2.5 border-toy-black">
           <div>
@@ -915,7 +915,7 @@
     </div>
 
     <!-- ===== 危险操作确认 ===== -->
-    <div v-if="confirmState" class="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs select-none">
+    <div v-if="confirmState" class="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm select-none">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-md w-full p-6 space-y-3" :style="{ boxShadow: '6px 6px 0px #121212' }">
         <h3 class="text-base font-black text-toy-black">{{ confirmState.title }}</h3>
         <p class="text-xs font-bold text-toy-muted leading-relaxed">{{ confirmState.message }}</p>

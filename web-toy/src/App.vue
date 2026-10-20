@@ -8,6 +8,7 @@
       :online-count="summary.online"
       :total-count="summary.total"
       :total-watts="summary.watts"
+      :measured-count="summary.measured_count"
       :avatar-mode="avatarMode"
       :is-admin-logged-in="isAdminLoggedIn"
       @close="isMobileSidebarOpen = false"
@@ -24,71 +25,73 @@
       :class="isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64'"
     >
       <!-- 2.1 顶部全局导航栏 (Top Navigation Bar) -->
-      <header class="bg-white border-b-2.5 border-toy-black sticky top-0 z-30 px-4 sm:px-6 py-2.5 select-none">
+      <header class="bg-white border-b-2 border-toy-black sticky top-0 z-30 px-4 sm:px-6 py-2 select-none">
         <div class="flex items-center justify-between gap-3">
-          <!-- 左侧：移动端侧栏汉堡开关 + 当前板块名称 / 面包屑 -->
-          <div class="flex items-center gap-3">
+          <!-- 左侧：移动端侧栏开关 + 当前板块（标题 + 轻量副标题） -->
+          <div class="flex items-center gap-3 min-w-0">
             <button
               @click="isMobileSidebarOpen = true"
-              class="lg:hidden w-8 h-8 rounded-lg border-2 border-toy-black bg-toy-yellow flex items-center justify-center font-black text-sm"
+              class="lg:hidden w-8 h-8 shrink-0 rounded-lg border-2 border-toy-black bg-toy-yellow flex items-center justify-center font-black text-sm"
               title="打开侧边栏"
             >
               ☰
             </button>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <button
                 v-if="currentNav === 'server-detail'"
                 @click="currentNav = 'overview'"
-                class="px-2 py-0.5 rounded text-xs font-black border border-toy-black bg-toy-bg hover:bg-toy-yellow cursor-pointer"
+                class="shrink-0 px-2 py-0.5 rounded text-[10px] font-black border-2 border-toy-black bg-toy-bg hover:bg-toy-yellow cursor-pointer"
               >
-                ◀ 返回总览
+                ◀ 返回
               </button>
-              <ToyMenuIcons :name="currentNavMeta.iconName" class="w-5 h-5" />
-              <h2 class="text-base font-extrabold text-toy-black">{{ currentNavMeta.label }}</h2>
-              <span class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-bold bg-toy-gray border border-toy-black rounded text-toy-muted">
-                {{ currentNavMeta.desc }}
-              </span>
+              <ToyMenuIcons :name="currentNavMeta.iconName" class="w-4 h-4 shrink-0" />
+              <div class="min-w-0">
+                <h2 class="text-sm font-black text-toy-black truncate leading-tight" :title="currentNavMeta.desc">
+                  {{ currentNavMeta.label }}
+                </h2>
+                <p class="hidden sm:block text-[9px] font-bold text-toy-muted truncate leading-tight mt-0.5">
+                  {{ currentNavMeta.desc }}
+                </p>
+              </div>
             </div>
           </div>
 
-          <!-- 右侧：数据新鲜度 + 实时推流指示 + 管理员状态 -->
-          <div class="flex items-center gap-2 sm:gap-3">
-            <!-- 数据新鲜度：SSE 断流时显示离线快照时间（classic 顶栏同口径） -->
+          <!-- 右侧：数据新鲜度 + 管理员状态 + 实时推流开关 -->
+          <div class="flex items-center gap-2 sm:gap-3 shrink-0">
             <span
-              class="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold border border-toy-black rounded-md"
-              :class="stale ? 'bg-toy-yellow/70 text-toy-black' : 'bg-white text-toy-muted'"
+              class="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-bold"
+              :class="stale ? 'text-toy-orange' : 'text-toy-muted'"
               :title="stale ? `实时数据中断，当前展示 ${staleTimeText} 的离线快照` : '距最近一次采集刷新'"
             >
               <span class="w-1.5 h-1.5 rounded-full" :class="stale ? 'bg-toy-orange' : 'bg-toy-mint'"></span>
               {{ stale ? `离线 · ${staleTimeText}` : `更新于 ${formatAgo(secondsSinceUpdate)}` }}
             </span>
 
-            <!-- 状态小标贴 (点击可切换登录/退出) -->
             <button
               @click="handleToggleAdmin"
-              class="px-2 py-0.5 text-[11px] font-bold border border-toy-black rounded-md flex items-center gap-1 cursor-pointer transition-colors"
-              :class="isAdminLoggedIn ? 'bg-toy-yellow text-toy-black hover:bg-yellow-300' : 'bg-toy-gray/60 text-toy-muted hover:bg-toy-yellow/40 hover:text-toy-black'"
+              class="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold border-2 border-toy-black/60 rounded-md cursor-pointer transition-colors"
+              :class="isAdminLoggedIn ? 'bg-toy-yellow/60 hover:bg-toy-yellow text-toy-black' : 'bg-white hover:bg-toy-bg text-toy-muted'"
               :title="isAdminLoggedIn ? '点击退出管理员' : '点击登录管理员'"
             >
-              <span>{{ isAdminLoggedIn ? '👤 管理员' : '👀 访客模式' }}</span>
+              <span class="w-1.5 h-1.5 rounded-full" :class="isAdminLoggedIn ? 'bg-amber-500' : 'bg-gray-400'"></span>
+              {{ isAdminLoggedIn ? '管理员' : '访客' }}
             </button>
 
-            <!-- 实时刷新控制按钮（真实后端为 SSE 推流的 pause/resume） -->
             <button
               @click="toggleRealtime"
-              class="toy-btn px-2.5 py-1 rounded-lg text-xs flex items-center gap-1.5 cursor-pointer"
-              :class="isRealtime ? 'bg-toy-mint text-toy-black' : 'bg-gray-100 text-toy-muted'"
-              :title="isRealtime ? '已开启实时同步（SSE 推送）' : '已暂停自动刷新'"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-black border-2 border-toy-black rounded-md cursor-pointer transition-colors"
+              :class="isRealtime ? 'bg-toy-mint/30 hover:bg-toy-mint/45 text-toy-black' : 'bg-toy-gray/40 text-toy-muted'"
+              :title="isRealtime ? '已开启实时同步（SSE 推送），点击暂停' : '已暂停自动刷新，点击恢复'"
             >
-              <span class="w-2 h-2 rounded-full" :class="isRealtime ? 'bg-toy-black animate-ping' : 'bg-gray-400'"></span>
-              <span class="font-extrabold">{{ isRealtime ? '实时同步' : '已暂停' }}</span>
+              <span class="w-1.5 h-1.5 rounded-full" :class="isRealtime ? 'bg-toy-mint animate-pulse' : 'bg-gray-400'"></span>
+              {{ isRealtime ? '实时同步' : '已暂停' }}
             </button>
           </div>
         </div>
       </header>
 
       <!-- 2.2 页面主内容区域 -->
-      <main class="flex-1 p-4 sm:p-6 lg:p-7 space-y-7 sm:space-y-8 max-w-7xl w-full mx-auto">
+      <main class="flex-1 p-4 sm:p-6 space-y-5 sm:space-y-6 max-w-7xl w-full mx-auto">
         <!-- 全局错误条（后端不可达等；失败态另有占位卡，这里只在已有数据时提示） -->
         <div v-if="globalError && servers.length" class="toy-card p-3 bg-red-50 border-2.5 border-red-400 flex items-center justify-between gap-3">
           <span class="text-xs font-black text-red-700">⚠ {{ globalError }}</span>
@@ -101,6 +104,7 @@
           :summary="summary"
           :cost-measured="costMeasured"
           :day-measured="dayMeasured"
+          :stale="stale"
         />
 
         <!-- 公开数据加载 / 失败态（管理页不依赖公开摘要，自管其内部状态） -->
@@ -144,6 +148,8 @@
             :current-up-bps="summary.up_bps"
             :current-down-bps="summary.down_bps"
             :current-watts="summary.watts"
+            :power-available="summary.measured_count > 0"
+            :ready="status === 'ready'"
           />
 
           <!-- WireGuard 与 FRP 穿透微型状态条 -->
@@ -157,12 +163,12 @@
                 v-for="tab in filterTabs"
                 :key="tab.key"
                 @click="currentTab = tab.key"
-                class="px-3 py-1.5 rounded-lg text-xs font-black border-2 border-toy-black transition-all shrink-0 cursor-pointer"
+                class="px-3 py-1 rounded-lg text-[11px] font-black border-2 border-toy-black transition-all shrink-0 cursor-pointer"
                 :class="currentTab === tab.key ? 'bg-toy-black text-white shadow-toy-sm' : 'bg-white text-toy-black hover:bg-toy-yellow/30'"
               >
                 {{ tab.label }}
                 <span
-                  class="ml-1 px-1 py-0.2 rounded text-[10px]"
+                  class="ml-1 px-1 py-0.5 rounded text-[10px] leading-none"
                   :class="currentTab === tab.key ? 'bg-white text-toy-black' : 'bg-toy-gray text-toy-muted'"
                 >
                   {{ tab.count }}
@@ -195,7 +201,7 @@
           </div>
 
           <!-- 服务器节点卡片列表网格 -->
-          <div v-if="filteredServers.length > 0" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div v-if="filteredServers.length > 0" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
             <ServerToyCard
               v-for="server in filteredServers"
               :key="server.id"
@@ -205,6 +211,7 @@
               :power-history="history[server.id]?.power || []"
               :last-updated="secondsSinceUpdate"
               @select-detail="handleSelectServerDetail"
+              @toggle-avatar="handleUpdateAvatarMode(avatarMode === 'bot' ? 'os' : 'bot')"
             />
           </div>
 
@@ -305,7 +312,7 @@
     />
 
     <!-- 5. 风格内确认弹窗（替代原生 confirm） -->
-    <div v-if="confirmState.open" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-xs">
+    <div v-if="confirmState.open" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-toy-black/50 backdrop-blur-sm">
       <div class="bg-white border-3 border-toy-black rounded-2xl max-w-sm w-full p-5" :style="{ boxShadow: '6px 6px 0px #121212' }" role="alertdialog" aria-modal="true">
         <h3 class="text-base font-black text-toy-black flex items-center gap-2"><span>⚠️</span>请确认</h3>
         <p class="mt-2 text-xs font-bold text-toy-muted">{{ confirmState.text }}</p>
@@ -495,8 +502,9 @@ function handleUpdateAvatarMode(mode: 'bot' | 'os') {
 function toggleRealtime() {
   isRealtime.value = !isRealtime.value;
   if (isRealtime.value) {
+    // 订阅在 onMounted 已注册且常驻（start/stop 只切流，不清订阅）；
+    // 这里重复 onServers 会让每帧被 apply 多次，走势窗口被重复采样。
     api.startStream();
-    api.onServers(applyServers);
     void fetchAll();
   } else {
     api.stopStream();
@@ -529,6 +537,9 @@ function applyServers(list: ServerItem[]) {
   summary.value = computeSummary(list);
   secondsSinceUpdate.value = 0;
   nowSec.value = Math.floor(Date.now() / 1000);
+  // 能拿到节点数据就说明链路已恢复：撤掉离线快照标记。loadSnapshot() 会在
+  // 调用本函数后再置 true，所以不会把「正在展示快照」误清掉。
+  stale.value = false;
 }
 
 function computeSummary(list: ServerItem[]): PublicSummary {
@@ -706,7 +717,6 @@ function onVisibilityChange() {
   }
   if (isRealtime.value && !api.isStreamRunning()) {
     api.startStream();
-    api.onServers(applyServers);
   }
   void fetchAll();
 }
@@ -739,7 +749,8 @@ onMounted(async () => {
   // 保底轮询：SSE 活着时退居二线；被反代静默断流（readyState 仍 OPEN、
   // onerror 不触发）时用「多久没收到帧」判活，超时补一次全量
   pollTimer = setInterval(() => {
-    if (document.hidden) return;
+    // 用户点了「暂停」就不能再被后台轮询续上，否则按钮语义是假的。
+    if (document.hidden || !isRealtime.value) return;
     const staleStream = !api.isStreamRunning() || Date.now() - api.lastEventAt() > SSE_STALE_MS;
     if (staleStream) void fetchAll();
   }, REFRESH_MS);
@@ -751,11 +762,11 @@ onMounted(async () => {
 
   // WG/FRP 快照低频轮询（对齐 classic monitor store）
   wgTimer = setInterval(() => {
-    if (document.hidden) return;
+    if (document.hidden || !isRealtime.value) return;
     void fetchWg();
   }, WG_REFRESH_MS);
   frpTimer = setInterval(() => {
-    if (document.hidden) return;
+    if (document.hidden || !isRealtime.value) return;
     void fetchFrp();
   }, FRP_REFRESH_MS);
 

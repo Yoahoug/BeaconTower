@@ -5,11 +5,12 @@
    ============================================================ */
 
 /* ================= KPI 汇总条 ================= */
-/* 总览共 7 张 KPI 卡（节点/在线/全网上下行/今日流量/实时功耗/本月用电）：
-   写死 6 列会让第 7 张单独掉到第二行只占 1/6 宽；按可用宽度自适应铺满 */
+/* v2.9：总览 8 张 KPI 卡（节点/在线/全网上下行/今日流量/实时功耗/
+   本月用电/本月电费）固定 4 列 × 2 行。auto-fit 在 1440px 下会排成
+   「6 + 1」的孤儿卡，最后一张独占一行且只有 1/6 宽。 */
 .kpi-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--bt-space-4);
   margin-bottom: var(--bt-space-5);
 }
@@ -183,19 +184,15 @@
   gap: var(--bt-space-4);
 }
 
-@media (max-width: 460px) {
-  .node-grid {
-    grid-template-columns: 1fr;
-  }
-
+@media (max-width: 760px) {
   .kpi-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (min-width: 461px) and (max-width: 1080px) {
-  .kpi-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+@media (max-width: 460px) {
+  .node-grid {
+    grid-template-columns: 1fr;
   }
 }
 

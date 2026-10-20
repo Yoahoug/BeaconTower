@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// BeaconTower · classic 主题 Service Worker（v2.8.3 起改为 injectManifest 自管；doc/15 修订）
+// BeaconTower · Sky Glass（默认主题）Service Worker（v2.8.3 起 injectManifest 自管；doc/15 修订）
 //
 // 为什么不沿用 generateSW 的默认形态（v2.8.1→v2.8.2 线上「旧壳钉死」实测复盘）：
 //   1) 导航（HTML 壳）改为 NetworkFirst：在线永远拿服务器最新壳，离线才回退预缓存。
@@ -29,7 +29,7 @@ self.addEventListener('activate', (event) => {
 })
 
 // 关键顺序：导航路由必须先于 precacheAndRoute 注册。
-// workbox 的 PrecacheRoute 会把 /classic/ 这类目录导航按 directoryIndex 归到
+// workbox 的 PrecacheRoute 会把 / 这类目录导航按 directoryIndex 归到
 // index.html 上（等于「只认预缓存」），先注册哪一个，路由表就按谁先命中。
 // 因此这里先挂 NetworkFirst 导航，再让预缓存兜其余请求（含离线回退）。
 // 1.5s：正常网络在这个窗口内必定能拿到在线壳；超出即判慢网/断网，直接吃预缓存，
@@ -48,7 +48,9 @@ registerRoute(
         return (await matchPrecache('index.html')) || Response.error()
       }
     },
-    { denylist: [/^\/api\//] },
+    // /toy/ 是另一套前端：根 scope 的 SW 绝不能把 classic 的壳（或预缓存
+    // index.html）喂给它，直接放行到网络，由 toy 自己的静态资源接管。
+    { denylist: [/^\/api\//, /^\/toy(\/|$)/] },
   ),
 )
 

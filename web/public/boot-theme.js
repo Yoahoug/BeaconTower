@@ -3,7 +3,7 @@
 // 必须放在 index.html 里「模块加载前」同步执行，才能防住错误主题闪屏。
 // 之所以是同源外部脚本而非内联：应用自身的 CSP 是 default-src 'self'
 // （无 script-src / 无 nonce），内联脚本会被拦截而静默失效（v2.8 实为如此）。
-// 由后端按主题作用域提供（根 scope 的 /boot-theme.js 与 /classic/boot-theme.js）。
+// 由后端按主题作用域提供（根 scope 的 /boot-theme.js 与 /toy/boot-theme.js）。
 //
 // 1) ?theme=<id> → 写偏好并 replace 到该主题路径（清参防重复触发）
 // 2) 无参且偏好 ≠ 当前主题 → replace 过去。仅在「偏好 ≠ 当前」时跳，
@@ -14,8 +14,8 @@
     // 切换入口按端口直跳，boot 不做路径迁移，否则会对同源被重定向的路径刷屏。
     if (window.location.port === '5173' || window.location.port === '5174') return;
     var THEMES = {
-      toy: { path: '/', current: false },
-      classic: { path: '/classic/', current: true },
+      toy: { path: '/toy/', current: false },
+      classic: { path: '/', current: true },
     };
     var qs = new URLSearchParams(window.location.search);
     var wanted = qs.get('theme');

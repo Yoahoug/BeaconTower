@@ -164,6 +164,7 @@ export const useMonitorStore = defineStore('monitor', {
     _timer: 0,
     _clock: 0,
     _seeded: false,
+    _seededAt: 0,
     _boundVisibility: false,
     _sse: null,
     _sseRetryMs: SSE_RETRY_BASE_MS,
@@ -362,10 +363,25 @@ export const useMonitorStore = defineStore('monitor', {
         this.netDown = Array(HISTORY_LEN).fill(downTotal)
         this.watts = Array(HISTORY_LEN).fill(wattsTotal)
         this._seeded = true
+        this._seededAt = Date.now()
       } else {
-        this.netUp = [...this.netUp.slice(1), upTotal]
-        this.netDown = [...this.netDown.slice(1), downTotal]
-        this.watts = [...this.watts.slice(1), wattsTotal]
+        // 首帧采集可能还没回填（全 0）：若 30s 内拿到第一份真实值，整窗换成
+        // 真实值，避免画出「前面 39 格贴底、最右一格突然拉起」的假尖峰。
+        const startupWindow = Date.now() - this._seededAt < 30000
+        const allZero =
+          this.netUp.every((v) => !v) &&
+          this.netDown.every((v) => !v) &&
+          this.watts.every((v) => !v)
+        if (startupWindow && allZero && (upTotal || downTotal || wattsTotal)) {
+          this.netUp = Array(HISTORY_LEN).fill(upTotal)
+          this.netDown = Array(HISTORY_LEN).fill(downTotal)
+          this.watts = Array(HISTORY_LEN).fill(wattsTotal)
+          this._seededAt = Date.now()
+        } else {
+          this.netUp = [...this.netUp.slice(1), upTotal]
+          this.netDown = [...this.netDown.slice(1), downTotal]
+          this.watts = [...this.watts.slice(1), wattsTotal]
+        }
       }
       this.status = 'ready'
     },
@@ -482,7 +498,13 @@ export const useMonitorStore = defineStore('monitor', {
         this._lastEventAt = Date.now()
         try {
           const list = JSON.parse(ev.data)
-          if (Array.isArray(list)) this.applyList(list)
+          if (Array.isArray(list)) {
+            this.applyList(list)
+            // 实时帧即证明网络已恢复：清掉快照的「离线 · 数据时间」标记。
+            // 仅靠 fetchAll 成功清除不够——首屏全量若瞬时失败，SSE 仍会持续
+            // 推新数据，但 10s 轮询因 SSE 存活而退居二线，标记会一直挂着。
+            this.stale = false
+          }
         } catch {
           /* 坏帧忽略，等下次 update/轮询 */
         }
@@ -492,7 +514,10 @@ export const useMonitorStore = defineStore('monitor', {
         this._lastEventAt = Date.now()
         try {
           const list = JSON.parse(ev.data)
-          if (Array.isArray(list)) this.applyList(list)
+          if (Array.isArray(list)) {
+            this.applyList(list)
+            this.stale = false
+          }
         } catch {
           /* 坏帧忽略 */
         }

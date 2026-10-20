@@ -3,7 +3,7 @@
     <!-- 移动端遮罩 (Backdrop) -->
     <div 
       v-if="isOpen" 
-      class="fixed inset-0 z-40 bg-toy-black/50 backdrop-blur-xs lg:hidden transition-opacity"
+      class="fixed inset-0 z-40 bg-toy-black/50 backdrop-blur-sm lg:hidden transition-opacity"
       @click="$emit('close')"
     ></div>
 
@@ -102,7 +102,7 @@
               <!-- 在线状态胶囊 -->
               <span 
                 v-if="!collapsed && item.badge"
-                class="ml-auto px-1.5 py-0.2 text-[9px] font-extrabold rounded border border-toy-black"
+                class="ml-auto px-1.5 py-0.5 text-[9px] font-extrabold rounded border border-toy-black"
                 :class="item.badgeClass || 'bg-toy-mint text-toy-black'"
               >
                 {{ item.badge }}
@@ -211,14 +211,14 @@
               <span class="w-2 h-2 rounded-full bg-toy-mint animate-pulse"></span>
               <span>节点 {{ onlineCount }}/{{ totalCount }}</span>
             </span>
-            <span class="text-amber-800">
-              ⚡ {{ totalWatts.toFixed(1) }} W
+            <span class="text-amber-800" :title="measuredCount ? `已计量 ${measuredCount} 台` : '暂无可测机型'">
+              ⚡ {{ measuredCount ? `${totalWatts.toFixed(1)} W` : '—' }}
             </span>
           </div>
 
-          <!-- 正规产品版本号 (对齐原版 v2.4 · SKY BEACON) -->
+          <!-- 正规产品版本号 -->
           <div class="flex items-center justify-between text-[10px] font-bold text-toy-muted px-1">
-            <span>v2.8.4 · TOY BEACON</span>
+            <span>v2.9.0 · TOY BEACON</span>
             <span class="inline-flex items-center gap-1 text-[9px] text-toy-mint">
               <span class="w-1.5 h-1.5 rounded-full bg-toy-mint"></span> 运行中
             </span>
@@ -273,6 +273,7 @@ const props = defineProps<{
   onlineCount: number;
   totalCount: number;
   totalWatts: number;
+  measuredCount: number;
   avatarMode: 'bot' | 'os';
   isAdminLoggedIn: boolean;
   collapsed: boolean;

@@ -98,7 +98,7 @@ export class MockDataEngine {
   }
 
   subscribe(cb: (servers: ServerItem[], summary: PublicSummary) => void): void {
-    this.listeners.push(cb);
+    if (!this.listeners.includes(cb)) this.listeners.push(cb);
     cb(this.servers, this.getSummary());
   }
 

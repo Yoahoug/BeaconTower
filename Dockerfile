@@ -1,4 +1,4 @@
-# ---------- 阶段 1a：构建 toy 前端（默认主题，挂根路径） ----------
+# ---------- 阶段 1a：构建 toy 前端（/toy/ 主题） ----------
 FROM node:22-alpine AS frontend-toy
 WORKDIR /src/web-toy
 COPY web-toy/package.json web-toy/package-lock.json ./
@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY web-toy/ ./
 RUN npm run build          # 产出 /src/web-toy/dist（vue-tsc && vite build）
 
-# ---------- 阶段 1b：构建 classic 前端（玻璃拟态主题，挂 /classic/） ----------
+# ---------- 阶段 1b：构建 classic 前端（Sky Glass，默认主题，挂根路径） ----------
 FROM node:22-alpine AS frontend-classic
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./

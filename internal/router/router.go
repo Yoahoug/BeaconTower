@@ -15,14 +15,15 @@ import (
 )
 
 // ---------- 主题托管拓扑（doc/18） ----------
-// 根路径 "/" = 默认主题（toy）；其余主题挂独立前缀（/classic/），资源与根文件
-// 按前缀作用域隔离，SPA 回退分别落到各自的 index.html。
+// v2.9 起根路径 "/" = 默认主题 Sky Glass（classic）；其余主题挂独立前缀
+// （toy → /toy/），资源与根文件按前缀作用域隔离，SPA 回退分别落到各自的
+// index.html。旧 /classic/* 地址 302 回根路径，已装 PWA 的书签不失效。
 // 新增主题三步：前端新目录产出 dist → main.go 加 embed 并在 registerThemes 注册
-// → 两套前端 THEME 清单各加一条，即可经 ?theme=<id> 互跳与偏好持久化。
+// → 各前端 THEME 清单加一条，即可经 ?theme=<id> 互跳与偏好持久化。
 
 type themeApp struct {
 	id        string // 主题 ID = localStorage beacontower_preferred_theme 的合法值
-	mountPath string // "/" 或 "/classic/"（?theme= 302 的目标）
+	mountPath string // "/" 或 "/toy/"（?theme= 302 的目标）
 	fs        fs.FS
 	index     []byte
 	isDefault bool
@@ -204,27 +205,30 @@ func New(app *handler.App, toyDist embed.FS, toyReady bool, classicDist embed.FS
 	r.GET("/", func(c *gin.Context) {
 		if id := c.Query("theme"); id != "" {
 			if target, ok := byID[id]; ok && !target.isDefault {
-				c.Redirect(http.StatusFound, target.mountPath+"?theme="+id)
+				// 保留其他查询参数（?theme=toy&from=...），只覆写 theme。
+				q := c.Request.URL.Query()
+				q.Set("theme", id)
+				c.Redirect(http.StatusFound, target.mountPath+"?"+q.Encode())
 				return
 			}
 		}
 		serveIndex(c, defaultTheme)
 	})
 
-	// 根 scope 的 /sw.js 换成「退役 SW」：老版本把 classic 的 Workbox 预缓存 SW
-	// 注册在根 scope，主题化后若不处理，已装 PWA 的用户导航 / 会永远命中旧缓存
-	// classic 壳（又一类「强刷无效」）。此脚本被浏览器更新检查取到后：注销自身、
-	// 清空全部 Cache Storage、刷新受控页面，让老 PWA 用户安全迁出根 scope。
-	retireSW, err := fs.ReadFile(defaultTheme.fs, "sw-retire.js")
-	if err != nil {
-		retireSW = []byte(fallbackRetireSW)
+	// 旧主题前缀 /classic/* 永久迁回根路径（v2.8 及之前的书签 / 已装 PWA 的
+	// start_url 都指向这里）。302 而非 301：避免浏览器把迁移永久缓存，后续调整
+	// 拓扑时还有回旋余地。查询串一并保留（deep link 的 ?id= 等不丢）。
+	legacyRedirect := func(c *gin.Context) {
+		// 收敛为同源绝对路径：TrimLeft 防止 /classic//evil.com 变成协议相对
+		// 跳转（//evil.com 会被浏览器当成外站），这是一个真实的开放重定向面。
+		target := "/" + strings.TrimLeft(strings.TrimPrefix(c.Request.URL.Path, "/classic"), "/")
+		if c.Request.URL.RawQuery != "" {
+			target += "?" + c.Request.URL.RawQuery
+		}
+		c.Redirect(http.StatusFound, target)
 	}
-	serveRetireSW := func(c *gin.Context) {
-		c.Header("Cache-Control", "no-cache")
-		c.Data(http.StatusOK, "text/javascript; charset=utf-8", retireSW)
-	}
-	r.GET("/sw.js", serveRetireSW)
-	r.HEAD("/sw.js", serveRetireSW)
+	r.GET("/classic", legacyRedirect)
+	r.GET("/classic/*any", legacyRedirect)
 
 	r.NoRoute(func(c *gin.Context) {
 		p := c.Request.URL.Path
@@ -232,40 +236,48 @@ func New(app *handler.App, toyDist embed.FS, toyReady bool, classicDist embed.FS
 			c.JSON(http.StatusNotFound, gin.H{"code": 2002, "msg": "接口不存在", "data": nil})
 			return
 		}
-		// 经典主题前缀作用域：资源/根文件/SPA 回退都限定在 /classic/ 下
-		if p == "/classic" {
-			c.Redirect(http.StatusFound, "/classic/")
-			return
-		}
-		if strings.HasPrefix(p, "/classic/") {
-			if t, ok := byID["classic"]; ok {
-				serveThemeFile(c, t, strings.TrimPrefix(p, "/classic"))
+		// 非默认主题前缀作用域（当前仅 /toy/）：资源/根文件/SPA 回退都限定在
+		// 该前缀下，互不串扰。注册表顺序里默认主题永远排第一，这里跳过它。
+		for _, t := range themes {
+			if t.isDefault {
+				continue
+			}
+			prefix := strings.TrimSuffix(t.mountPath, "/")
+			if p == prefix {
+				target := t.mountPath
+				if c.Request.URL.RawQuery != "" {
+					target += "?" + c.Request.URL.RawQuery
+				}
+				c.Redirect(http.StatusFound, target)
 				return
 			}
-			c.String(http.StatusNotFound, "theme not embedded")
-			return
+			if strings.HasPrefix(p, t.mountPath) {
+				serveThemeFile(c, t, strings.TrimPrefix(p, prefix))
+				return
+			}
 		}
-		// 根 scope = 默认主题（toy）
+		// 根 scope = 默认主题（Sky Glass）
 		serveThemeFile(c, defaultTheme, p)
 	})
 	return r
 }
 
-// registerThemes 组装主题注册表；顺序即优先级，第一个是默认主题（约束：默认 = toy）。
+// registerThemes 组装主题注册表；顺序即优先级，第一个是默认主题。
+// v2.9 起默认 = Sky Glass（classic，根路径），toy 作为第二主题挂 /toy/。
 func registerThemes(toyDist embed.FS, toyReady bool, classicDist embed.FS, classicReady bool) []*themeApp {
 	var themes []*themeApp
-	if toyReady {
-		if sub, err := fs.Sub(toyDist, "web-toy/dist"); err == nil {
+	if classicReady {
+		if sub, err := fs.Sub(classicDist, "web/dist"); err == nil {
 			themes = append(themes, &themeApp{
-				id: "toy", mountPath: "/", fs: sub,
+				id: "classic", mountPath: "/", fs: sub,
 				index: mustReadIndex(sub), isDefault: true,
 			})
 		}
 	}
-	if classicReady {
-		if sub, err := fs.Sub(classicDist, "web/dist"); err == nil {
+	if toyReady {
+		if sub, err := fs.Sub(toyDist, "web-toy/dist"); err == nil {
 			themes = append(themes, &themeApp{
-				id: "classic", mountPath: "/classic/", fs: sub,
+				id: "toy", mountPath: "/toy/", fs: sub,
 				index: mustReadIndex(sub),
 			})
 		}
@@ -288,10 +300,15 @@ func serveThemeFile(c *gin.Context, t *themeApp, p string) {
 		c.FileFromFS(strings.TrimPrefix(p, "/"), http.FS(t.fs))
 		return
 	}
-	// 非默认主题的 SW 落在自己的前缀下（/classic/sw.js = classic 的 Workbox SW）。
-	// 默认主题的根 /sw.js 已在 New 里注册为退役脚本，走不到这里。
-	if p == "/sw.js" && !t.isDefault {
+	// 主题 SW：默认主题在根（/sw.js = Sky Glass 的 injectManifest SW），非默认
+	// 主题在自己的前缀下（/toy/sw.js）。toy 不装 PWA，缺文件时按 404 处理，
+	// 绝不回吐 HTML（SW 脚本拿到 HTML 会静默安装失败）。
+	if p == "/sw.js" {
 		c.Header("Cache-Control", "no-cache")
+		if _, err := fs.Stat(t.fs, "sw.js"); err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
 		c.FileFromFS("sw.js", http.FS(t.fs))
 		return
 	}
@@ -338,6 +355,16 @@ func serveThemeFile(c *gin.Context, t *themeApp, p string) {
 		c.Data(http.StatusOK, mime.TypeByExtension(filepath.Ext(name)), b)
 		return
 	}
+	// 其余根级静态文件（如 toy 的 beacon-toy.svg、apple-touch-icon.png）：
+	// 存在即按真实 MIME 返回；不存在才落 SPA 回退。不能一律回 index.html——
+	// nosniff 下图标/脚本拿到 text/html 会被浏览器拒绝，属于静默失效。
+	if name := strings.TrimPrefix(p, "/"); name != "" && !strings.Contains(name, "/") {
+		if st, err := fs.Stat(t.fs, name); err == nil && !st.IsDir() {
+			c.Header("Cache-Control", "public, max-age=3600")
+			c.FileFromFS(name, http.FS(t.fs))
+			return
+		}
+	}
 	serveIndex(c, t)
 }
 
@@ -353,19 +380,3 @@ func serveIndex(c *gin.Context, t *themeApp) {
 	c.Header("Cache-Control", "no-cache")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", t.index)
 }
-
-// fallbackRetireSW 与 web-toy/public/sw-retire.js 保持一致；文件缺失时兜底。
-const fallbackRetireSW = `// BeaconTower 根 scope 退役 Service Worker：注销自身并清空全部缓存。
-self.addEventListener('install', function () { self.skipWaiting(); });
-self.addEventListener('activate', function (event) {
-  event.waitUntil((async function () {
-    var keys = await caches.keys();
-    for (var i = 0; i < keys.length; i++) { await caches.delete(keys[i]); }
-    var list = await self.clients.matchAll({ type: 'window' });
-    for (var j = 0; j < list.length; j++) {
-      try { await list[j].navigate(list[j].url); } catch (e) { /* 隐藏窗口等场景忽略 */ }
-    }
-    await self.registration.unregister();
-  })());
-});
-`

@@ -153,7 +153,9 @@ export class RealtimeStream {
   lastEventAt = 0;
 
   subscribe(cb: SSEListener): void {
-    this.listeners.push(cb);
+    // 幂等订阅：页面在暂停/恢复、回前台时可能重复注册同一个回调，
+    // 不去重会让每帧 apply 多次（走势窗口被重复采样）。
+    if (!this.listeners.includes(cb)) this.listeners.push(cb);
     // 新订阅者立即拿到最近一份快照（避免空窗）
     if (this.lastServerList.length) cb(this.lastServerList);
   }

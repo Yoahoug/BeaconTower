@@ -25,10 +25,10 @@
     box-shadow: 1px 1px 0px #121212;
   }
 
-  /* 玩具卡片 */
+  /* 玩具卡片：v2.9 收紧描边与硬阴影，保留新野兽派识别度但降低整页噪点 */
   .toy-card {
-    @apply bg-white border-2.5 border-toy-black rounded-xl;
-    box-shadow: 4px 4px 0px #121212;
+    @apply bg-white border-2 border-toy-black rounded-xl;
+    box-shadow: 3px 3px 0px #121212;
   }
 
   /* 玩具内凹槽（用于进度条槽、状态栏槽） */
@@ -39,7 +39,7 @@
   /* 玩具胶囊徽章 */
   .toy-badge {
     @apply inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold border-2 border-toy-black rounded-md;
-    box-shadow: 2px 2px 0px #121212;
+    box-shadow: 1.5px 1.5px 0px #121212;
   }
 }
 

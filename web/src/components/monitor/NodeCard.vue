@@ -179,7 +179,7 @@ const netScopeTitle = computed(() => {
 
     <div class="node-spark">
       <div class="node-spark__head">
-        <span>CPU 走势 · 近 2 分钟</span>
+        <span>CPU 走势 · 最近 40 次采集</span>
         <span>负载 {{ server.metrics.load.map((l) => l.toFixed(2)).join(' / ') }}</span>
       </div>
       <SparkLine
